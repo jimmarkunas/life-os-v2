@@ -272,6 +272,24 @@ def resolve_final_vacancy_url(url: str, *, fetcher: Fetcher) -> ResolutionResult
     requires_downstream = is_provider_intermediary_source(url)
     direct = canonical_url(url)
     if direct and not requires_downstream:
+        score, _ = _downstream_score(direct)
+        if score >= 0:
+            # Already a recognizable ATS/job-path destination -- no fetch needed.
+            if direct != url:
+                chain.append(direct)
+            return ResolutionResult(direct, tuple(chain))
+        # Canonicalizable but not yet a proven trusted destination (e.g. a
+        # generic tracking-redirect host not on the known intermediary
+        # list): one bounded verification fetch using the actual
+        # post-redirect URL, never the originally requested tracking URL.
+        try:
+            response = fetcher.get(direct)
+        except Exception:
+            return ResolutionResult(None, tuple(chain))
+        final_candidate = canonical_url(response.final_url)
+        if final_candidate and final_candidate != direct and final_candidate not in chain:
+            chain.append(final_candidate)
+            return ResolutionResult(final_candidate, tuple(chain))
         if direct != url:
             chain.append(direct)
         return ResolutionResult(direct, tuple(chain))

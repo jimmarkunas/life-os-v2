@@ -48,15 +48,10 @@ class HttpClientFetcher:
     single bounded attempt per call, since terminal_evidence.py's own hop
     budget is the only retry-shaped behavior this resolution path uses.
 
-    Known limitation, not worked around here per the "do not build a second
-    HTTP client" boundary: Platform Core's HttpResponse does not currently
-    expose the final (post-redirect) URL, so `final_url` below falls back to
-    the requested URL. This only affects resolve_final_vacancy_url's direct-
-    redirect branch (a non-intermediary tracking host that 30x-redirects
-    without any known intermediary host match); the bounded multi-hop
-    intermediary path is unaffected since it parses the fetched body
-    regardless of the reported final_url. Flagged for Platform Core to add
-    response.final_url in a future pass.
+    Uses Platform Core's HttpResponse.final_url (the actual post-redirect
+    URL) so canonical identity resolves against the real employer/ATS
+    destination rather than the original tracking URL, even for a direct
+    non-intermediary 30x redirect.
     """
 
     def __init__(self, *, http: HttpClient, context: RunContext, timeout_seconds: float = 10.0) -> None:
@@ -73,7 +68,7 @@ class HttpClientFetcher:
             retry=RetryPolicy(max_attempts=1),
         )
         body = response.body.decode("utf-8", errors="replace")
-        return FetchResponse(final_url=url, body=body)
+        return FetchResponse(final_url=response.final_url or url, body=body)
 
 
 def _infer_work_mode(location_text: str | None) -> WorkMode:
@@ -126,6 +121,32 @@ class NewsletterJobsAdapter:
         company = (observation.company or "").strip()
         role = (observation.role or "").strip()
         location = observation.location_text
+
+        if observation.issues:
+            # Unresolved source-side parse/evidence issues are never
+            # silently accepted -- this observation can never become
+            # CREATED/UPDATED, only REVIEW_DEGRADED. Terminal evidence
+            # resolution is skipped entirely; the source itself is not
+            # trustworthy enough to spend the resolution budget on.
+            return NormalizedCandidate(
+                job=Job(
+                    company=Company(name=company),
+                    role=role,
+                    location=location,
+                    work_mode=_infer_work_mode(location),
+                    compensation_text=observation.compensation_text,
+                    compensation_minimum=None,
+                    posting_date=None,
+                    apply_url=None,
+                    source_lane=cfg.source_lane,
+                    provider_job_id=observation.provider_job_id,
+                ),
+                fit=None,
+                market=cfg.market,
+                freshness_status=FreshnessStatus.UNRESOLVED,
+                evidence_ref=observation.evidence_ref,
+                unresolved_reason=f"source observation has unresolved issues: {', '.join(observation.issues)}",
+            )
 
         unresolved_reason: str | None = None
         apply_url: str | None = None

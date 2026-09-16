@@ -29,6 +29,11 @@ from lifeos.jobs.repository import ReadBackMismatch
 
 STABLE_KEY_PROPERTY = "Stable Job Key"
 _LIST_SEPARATOR = "|"
+MAX_IDENTITY_VALUES_PER_QUERY = 50  # matches NotionIdentityQuery's own cap
+
+
+def _chunk(values: list[str], size: int) -> list[list[str]]:
+    return [values[i : i + size] for i in range(0, len(values), size)]
 
 
 def _rich_text(value: str) -> dict[str, Any]:
@@ -100,17 +105,28 @@ def _extract_checkbox(prop: Any) -> bool:
 
 
 def _record_to_properties(record: LifecycleRecord) -> dict[str, Any]:
+    """Canonical v1 production Job Ledger property names/types (see
+    jimmarkunas/life-os-automation jobs/notion_repository.py), reused
+    rather than invented. "Job" is the title property (company + role),
+    never bare "Role". Fields with no v1 canonical equivalent (this
+    domain's new lifecycle-state shape) keep descriptive v2-only names,
+    clearly additive rather than colliding with/renaming a canonical field."""
     job = record.opportunity.job
+    fit = record.opportunity.fit
     return {
+        "Job": _title(f"{job.company.name} — {job.role}" if job.company.name or job.role else ""),
         STABLE_KEY_PROPERTY: _rich_text(record.opportunity.stable_job_key),
-        "Role": _title(job.role),
         "Company": _rich_text(job.company.name),
-        "Location": _rich_text(job.location or ""),
+        "Role": _rich_text(job.role),
+        "Location / Work Mode": _rich_text(job.location or ""),
         "Work Mode": _select(job.work_mode.value),
         "Compensation": _rich_text(job.compensation_text or ""),
         "Compensation Minimum": _number(job.compensation_minimum),
         "Apply URL": _url(job.apply_url),
         "Posting Date": _date(job.posting_date),
+        "LIFE OS Fit": _number(fit),
+        "Fit Authority": _select("Authoritative" if fit is not None else "Non-Authoritative"),
+        "Provider Score": _number(job.provider_score),
         "Source Lane": _rich_text(job.source_lane),
         "Provider Job ID": _rich_text(job.provider_job_id or ""),
         "Description": _rich_text((job.description_text or "")[:2000]),
@@ -137,7 +153,7 @@ def _page_to_record(page: dict[str, Any]) -> LifecycleRecord:
     job = Job(
         company=Company(name=_plain_text(props.get("Company"))),
         role=_plain_text(props.get("Role")),
-        location=_plain_text(props.get("Location")) or None,
+        location=_plain_text(props.get("Location / Work Mode")) or None,
         work_mode=WorkMode(work_mode_value),
         compensation_text=_plain_text(props.get("Compensation")) or None,
         compensation_minimum=_extract_number(props.get("Compensation Minimum")),
@@ -146,6 +162,7 @@ def _page_to_record(page: dict[str, Any]) -> LifecycleRecord:
         source_lane=_plain_text(props.get("Source Lane")),
         provider_job_id=_plain_text(props.get("Provider Job ID")) or None,
         description_text=_plain_text(props.get("Description")) or None,
+        provider_score=_extract_number(props.get("Provider Score")),
     )
     admission_value = _extract_select(props.get("Admission Status")) or AdmissionStatus.PASSED_REVIEW.value
     source_lanes_raw = _plain_text(props.get("Source Lanes"))
@@ -156,6 +173,7 @@ def _page_to_record(page: dict[str, Any]) -> LifecycleRecord:
         admission_status=AdmissionStatus(admission_value),
         source_lanes=tuple(x for x in source_lanes_raw.split(_LIST_SEPARATOR) if x),
         aliases=tuple(x for x in aliases_raw.split(_LIST_SEPARATOR) if x),
+        fit=_extract_number(props.get("LIFE OS Fit")),
     )
 
     status_value = _extract_select(props.get("Lifecycle Status")) or LifecycleStatus.NEW.value
@@ -200,20 +218,24 @@ class NotionCareerRepository:
     def get_many(self, stable_job_keys: list[str]) -> dict[str, LifecycleRecord]:
         if not stable_job_keys:
             return {}
-        query = NotionIdentityQuery(
-            property_name=STABLE_KEY_PROPERTY,
-            property_type="rich_text",
-            values=tuple(stable_job_keys),
-        )
-        pages = self._transport.query_data_source(self._config.data_source_id, query)
+        # NotionIdentityQuery caps a single filter at _MAX_IDENTITY_VALUES
+        # (50). Chunk into bounded batches -- never a full-ledger scan, just
+        # multiple narrow identity-filtered queries for the same requested set.
         found: dict[str, LifecycleRecord] = {}
-        for page in pages:
-            record = _page_to_record(page)
-            key = record.opportunity.stable_job_key
-            found[key] = record
-            page_id = page.get("id")
-            if page_id:
-                self._page_ids[key] = str(page_id)
+        for chunk in _chunk(stable_job_keys, MAX_IDENTITY_VALUES_PER_QUERY):
+            query = NotionIdentityQuery(
+                property_name=STABLE_KEY_PROPERTY,
+                property_type="rich_text",
+                values=tuple(chunk),
+            )
+            pages = self._transport.query_data_source(self._config.data_source_id, query)
+            for page in pages:
+                record = _page_to_record(page)
+                key = record.opportunity.stable_job_key
+                found[key] = record
+                page_id = page.get("id")
+                if page_id:
+                    self._page_ids[key] = str(page_id)
         return found
 
     def upsert(self, record: LifecycleRecord) -> LifecycleRecord:
