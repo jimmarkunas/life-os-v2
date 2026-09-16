@@ -34,7 +34,7 @@ Rules:
 - No new scheduler, workflow family, datastore, event bus, trigger-file RPC, numbered QA hierarchy, generic orchestration framework, permanent recovery subsystem, or duplicate live implementation without explicit architectural approval.
 - No consequential Gmail, Job Ledger, Notion schema, scheduler, Jira planning, or canonical-state mutation unless the current task explicitly authorizes it.
 - Production secrets, personal identifiers, private Notion IDs, production payloads, and Jim-specific scoring policy must never enter this public repository.
-- GitHub-hosted Actions are CI only, not production runtime/recovery infrastructure.
+- Standard GitHub-hosted Actions in this public repo may execute approved bounded production code from protected `main`; they may not schedule production, use cron, become a workflow family/state layer, or use paid/larger runners without Jim's explicit approval. `LIFE OS Daily Runs` remains the sole recurring scheduler.
 - For structured Notion queries, read `docs/notion-query-conservation-policy.md` first.
 
 ## v2 architecture direction
