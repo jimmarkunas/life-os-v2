@@ -44,6 +44,7 @@ def make_job(
     apply_url: str | None = "https://synthetic-boards.example/jobs/12345?utm_source=test",
     source_lane: str = "Synthetic-Remote",
     provider_job_id: str | None = None,
+    canonical_identity: str | None = None,
 ) -> Job:
     return Job(
         company=Company(name=company_name),
@@ -56,6 +57,7 @@ def make_job(
         apply_url=apply_url,
         source_lane=source_lane,
         provider_job_id=provider_job_id,
+        canonical_identity=canonical_identity,
     )
 
 

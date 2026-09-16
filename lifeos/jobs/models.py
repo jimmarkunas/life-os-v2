@@ -62,6 +62,15 @@ class Job:
     apply_url: str | None
     source_lane: str
     provider_job_id: str | None = None
+    """Source-native identity (e.g. a LinkedIn/Lensa posting ID). Evidence
+    and provenance only -- never primary cross-source identity, since two
+    providers assign different IDs to the identical vacancy. See
+    identity.provider_alias()."""
+    canonical_identity: str | None = None
+    """An already-resolved canonical Job identity, supplied by a caller that
+    knows it (e.g. a prior reconciliation, or an explicit human-confirmed
+    merge). When present this is authoritative and skips URL/company-role-
+    location derivation entirely."""
 
 
 @dataclass(frozen=True)
@@ -92,6 +101,10 @@ class Opportunity:
     job: Job
     admission_status: AdmissionStatus
     source_lanes: tuple[str, ...] = field(default_factory=tuple)
+    aliases: tuple[str, ...] = field(default_factory=tuple)
+    """Provider-native identity strings (see identity.provider_alias) seen
+    across every observation that converged onto this canonical Job.
+    Provenance only -- never used to re-derive stable_job_key."""
 
 
 @dataclass(frozen=True)
