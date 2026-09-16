@@ -10,6 +10,7 @@ from urllib.parse import quote, urlencode
 
 from lifeos.core.http import HttpClient, RetryPolicy
 from lifeos.core.runtime import RunContext
+from lifeos.newsletter.models import RoutedNewsletterMessage
 
 from .mailbox import MailMessageFactory, MailboxTransportError
 
@@ -43,6 +44,12 @@ class GmailMailboxTransport(Generic[T]):
         self._label_ids: dict[str, str] = {}
         self._label_lock = Lock()
 
+    @property
+    def mailbox(self) -> str:
+        """Alias satisfying NewsletterSourcePort's provider-neutral shape --
+        same value as `provider`, this transport's identity either way."""
+        return self.provider
+
     def scan_window(self, start: datetime, end: datetime) -> tuple[T, ...]:
         _validate_window(start, end)
         ids = self._list_message_ids(start, end)
@@ -63,6 +70,35 @@ class GmailMailboxTransport(Generic[T]):
         messages.sort(key=lambda item: (getattr(item, "received_at"), getattr(item, "message_id")))
         return tuple(messages)
 
+    def fetch_unprocessed(
+        self, start: datetime, end: datetime, boundary_name: str
+    ) -> tuple[RoutedNewsletterMessage, ...]:
+        """Satisfies NewsletterSourcePort: message detail for whatever is
+        currently under the named label (e.g. "J Newsletters") within the
+        window. Reuses the same bounded list/fetch/retry mechanics as
+        scan_window -- only the Gmail search filter (label instead of no
+        filter) and the returned shape (RoutedNewsletterMessage, this
+        Protocol's own provider-neutral type, not the generic T) differ."""
+        _validate_window(start, end)
+        label_id = self._resolve_label_id(boundary_name)
+        ids = self._list_message_ids(start, end, label_id=label_id)
+        if not ids:
+            return ()
+
+        messages: list[RoutedNewsletterMessage] = []
+        failures = 0
+        with ThreadPoolExecutor(max_workers=min(self._max_workers, len(ids))) as pool:
+            futures = {pool.submit(self._fetch_routed_message, message_id): message_id for message_id in ids}
+            for future in as_completed(futures):
+                try:
+                    messages.append(future.result())
+                except Exception:
+                    failures += 1
+        if failures:
+            raise MailboxTransportError(f"Gmail Newsletter message acquisition incomplete: {failures} failed")
+        messages.sort(key=lambda item: (item.received_at, item.message_id))
+        return tuple(messages)
+
     def route_to_newsletters(self, message_id: str, boundary_name: str) -> None:
         if not message_id:
             raise ValueError("message_id is required")
@@ -80,12 +116,16 @@ class GmailMailboxTransport(Generic[T]):
             retry=_NO_RETRY,
         )
 
-    def _list_message_ids(self, start: datetime, end: datetime) -> tuple[str, ...]:
+    def _list_message_ids(
+        self, start: datetime, end: datetime, *, label_id: str | None = None
+    ) -> tuple[str, ...]:
         query = f"after:{int(start.timestamp())} before:{int(end.timestamp())}"
         page_token: str | None = None
         ids: list[str] = []
         while True:
             params = {"q": query, "maxResults": "500"}
+            if label_id:
+                params["labelIds"] = label_id
             if page_token:
                 params["pageToken"] = page_token
             url = f"{_GMAIL_API}/users/{quote(self._user_id, safe='')}/messages?{urlencode(params)}"
@@ -109,6 +149,14 @@ class GmailMailboxTransport(Generic[T]):
         return tuple(ids)
 
     def _fetch_message(self, message_id: str) -> T:
+        fields = self._fetch_message_fields(message_id)
+        return self._factory(provider=self.provider, **fields)
+
+    def _fetch_routed_message(self, message_id: str) -> RoutedNewsletterMessage:
+        fields = self._fetch_message_fields(message_id)
+        return RoutedNewsletterMessage(mailbox=self.provider, **fields)
+
+    def _fetch_message_fields(self, message_id: str) -> dict[str, Any]:
         url = f"{_GMAIL_API}/users/{quote(self._user_id, safe='')}/messages/{quote(message_id, safe='')}?format=full"
         payload = self._http.request_json(
             self._context,
@@ -126,15 +174,14 @@ class GmailMailboxTransport(Generic[T]):
             received_at = datetime.fromtimestamp(int(str(internal_date)) / 1000.0, tz=timezone.utc)
         except (TypeError, ValueError, OSError) as exc:
             raise MailboxTransportError("Gmail message timestamp invalid") from exc
-        return self._factory(
-            provider=self.provider,
-            message_id=str(payload.get("id") or message_id),
-            received_at=received_at,
-            sender=headers.get("From", ""),
-            subject=headers.get("Subject", ""),
-            body_text=_gmail_body_text(payload.get("payload") or {}),
-            headers=headers,
-        )
+        return {
+            "message_id": str(payload.get("id") or message_id),
+            "received_at": received_at,
+            "sender": headers.get("From", ""),
+            "subject": headers.get("Subject", ""),
+            "body_text": _gmail_body_text(payload.get("payload") or {}),
+            "headers": headers,
+        }
 
     def _resolve_label_id(self, name: str) -> str:
         with self._label_lock:
