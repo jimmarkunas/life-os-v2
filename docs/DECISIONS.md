@@ -72,3 +72,9 @@ The minimum cross-owner contracts for the Newsletter vertical slice are fixed be
 - **Security/CI boundary:** Codex owns synthetic-fixture enforcement, leak/secret checks, PR-safe CI, and shared security/performance harnesses. Those harnesses may validate public contracts and budgets but must not contain domain business logic or production/private identifiers.
 
 No trigger file, handoff manifest, event bus, workflow engine, secondary persistence layer, or recovery subsystem is introduced to connect these contracts.
+
+## D-011 — Bespoke policy stays private; public code stays generic
+
+LIFE OS v2 remains bespoke without publishing Jim-specific production policy. User-specific scoring criteria, thresholds, account/workspace identifiers, market/visa preferences, compensation rules, and other private personalization are supplied at trusted runtime through validated private configuration or canonical private sources.
+
+Public code may contain generic policy schemas and deterministic evaluators, but it must not hard-code a personal career profile or other private personalization. For Career, provider scores remain source evidence only and never substitute for authoritative LIFE OS Fit. The Jobs domain may evaluate an injected private Fit/policy profile against normalized employer/ATS vacancy evidence, while the resulting canonical Job state remains private in the Job Ledger.
