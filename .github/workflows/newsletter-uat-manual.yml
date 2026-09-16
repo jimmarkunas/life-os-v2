@@ -13,7 +13,7 @@ concurrency:
 jobs:
   uat:
     name: Bounded Newsletter production UAT
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
       PYTHONDONTWRITEBYTECODE: "1"
@@ -23,24 +23,38 @@ jobs:
       GMAIL_OAUTH_REFRESH_TOKEN: ${{ secrets.GMAIL_OAUTH_REFRESH_TOKEN }}
       NOTION_API_TOKEN: ${{ secrets.NOTION_API_TOKEN }}
       NOTION_JOB_LEDGER_DATA_SOURCE_ID: ${{ secrets.NOTION_JOB_LEDGER_DATA_SOURCE_ID }}
+      NEWSLETTER_PRIVATE_POLICY_JSON: ${{ secrets.NEWSLETTER_PRIVATE_POLICY_JSON }}
     steps:
       - name: Checkout main
         uses: actions/checkout@v4
         with:
           persist-credentials: false
 
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Materialize private policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$NEWSLETTER_PRIVATE_POLICY_JSON"
+          POLICY_PATH="$RUNNER_TEMP/newsletter-policy.json"
+          umask 077
+          printf '%s' "$NEWSLETTER_PRIVATE_POLICY_JSON" > "$POLICY_PATH"
+          echo "NEWSLETTER_PRIVATE_POLICY_PATH=$POLICY_PATH" >> "$GITHUB_ENV"
+
       - name: Newsletter production run
         run: >
-          NEWSLETTER_PRIVATE_POLICY_PATH="$HOME/.config/life-os/newsletter-policy.json"
-          PYTHONPATH="$GITHUB_WORKSPACE" /opt/homebrew/bin/python3.12
+          PYTHONPATH="$GITHUB_WORKSPACE" python3.12
           scripts/run_newsletter_production.py
           --timeout-seconds 90
           --window-hours 24
 
       - name: Newsletter production replay (idempotency proof)
         run: >
-          NEWSLETTER_PRIVATE_POLICY_PATH="$HOME/.config/life-os/newsletter-policy.json"
-          PYTHONPATH="$GITHUB_WORKSPACE" /opt/homebrew/bin/python3.12
+          PYTHONPATH="$GITHUB_WORKSPACE" python3.12
           scripts/run_newsletter_production.py
           --timeout-seconds 90
           --window-hours 24
