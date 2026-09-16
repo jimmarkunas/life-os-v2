@@ -40,6 +40,7 @@ BLOCKED_PATH_PARTS = {
 }
 
 FIXTURE_PATH_PARTS = {"fixture", "fixtures", "testdata", "test-data"}
+SECURITY_TEST_PATH_PARTS = {"security"}
 FIXTURE_SYNTHETIC_MARKERS = (
     "synthetic",
     "fake",
@@ -117,13 +118,37 @@ CONTENT_RULES: tuple[tuple[str, re.Pattern[str], str], ...] = (
     ),
     (
         "notion-id-field",
-        re.compile(r"(?i)\b(?:notion_)?(?:page|database)_id\b\s*[:=]\s*['\"]?[a-f0-9-]{32,36}['\"]?"),
+        re.compile(
+            r"(?i)['\"]?\b(?:notion_)?(?:page|database|data_source)_id\b['\"]?\s*[:=]\s*['\"]?[a-f0-9-]{32,36}['\"]?"
+        ),
         "private Notion page/database identifier is prohibited",
     ),
     (
+        "jira-url",
+        re.compile(r"https?://[A-Za-z0-9-]+\.atlassian\.net/(?:browse|jira/[^\s)>\"]*)/[A-Z][A-Z0-9]+-\d+\b", re.I),
+        "private Jira workspace issue URL is prohibited",
+    ),
+    (
+        "calendar-url",
+        re.compile(r"https?://calendar\.google\.com/calendar/[^\s)>\"]*(?:cid=|eventedit|event\?)", re.I),
+        "private Calendar URL is prohibited",
+    ),
+    (
+        "calendar-id-field",
+        re.compile(r"(?i)['\"]?\bcalendar_?id\b['\"]?\s*[:=]\s*['\"][A-Za-z0-9._%-]+@[A-Za-z0-9.-]+['\"]"),
+        "private Calendar identifier is prohibited",
+    ),
+    (
         "message-id-field",
-        re.compile(r"(?i)\b(?:gmail|outlook|email|message)_?id\b\s*[:=]\s*['\"][A-Za-z0-9_-]{8,}['\"]"),
+        re.compile(
+            r"(?i)['\"]?\b(?:gmail|outlook|email|message)_?id\b['\"]?\s*[:=]\s*['\"](?!synthetic(?:-|_|\b))[A-Za-z0-9_-]{8,}['\"]"
+        ),
         "real mail/message identifiers are prohibited",
+    ),
+    (
+        "gmail-thread-id-field",
+        re.compile(r"(?i)['\"]?\bgmail_?thread_?id\b['\"]?\s*[:=]\s*['\"][A-Fa-f0-9]{12,}['\"]"),
+        "real Gmail thread identifiers are prohibited",
     ),
     (
         "tracking-url",
@@ -144,6 +169,10 @@ CONTENT_RULES: tuple[tuple[str, re.Pattern[str], str], ...] = (
 
 EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@([A-Z0-9.-]+\.[A-Z]{2,}|localhost|invalid)\b", re.I)
 PAN_CANDIDATE_RE = re.compile(r"(?<!\d)(?:\d[ -]?){13,19}(?!\d)")
+CHECKPOINT_KEY_RE = re.compile(
+    r"(?i)['\"]?\b(?:checkpoint|cursor|watermark|last_seen|processed)_"
+    r"(?:payload|state|id|ids|message_id|message_ids|thread_id|thread_ids)\b['\"]?\s*[:=]"
+)
 
 
 def repo_files(paths: Sequence[str]) -> list[Path]:
@@ -205,6 +234,12 @@ def path_findings(path: Path) -> Iterable[Finding]:
             yield Finding(path, 0, "fixture-name", "fixture path must not imply real production data")
 
 
+def synthetic_security_path(path: Path) -> bool:
+    lower_parts = {part.lower() for part in path.parts}
+    lower_name = path.name.lower()
+    return bool(lower_parts & FIXTURE_PATH_PARTS) or "fixture" in lower_name or bool(lower_parts & SECURITY_TEST_PATH_PARTS)
+
+
 def content_findings(path: Path, text: str) -> Iterable[Finding]:
     lower_text = text.lower()
     parts = {part.lower() for part in path.parts}
@@ -224,6 +259,9 @@ def content_findings(path: Path, text: str) -> Iterable[Finding]:
         for match in PAN_CANDIDATE_RE.finditer(line):
             if luhn_valid(match.group(0)):
                 yield Finding(path, line_number, "payment-card-pan", "payment card PAN is prohibited")
+
+        if synthetic_security_path(path) and CHECKPOINT_KEY_RE.search(line):
+            yield Finding(path, line_number, "runtime-checkpoint-payload", "runtime checkpoint payload is prohibited")
 
 
 def scan_file(path: Path) -> list[Finding]:

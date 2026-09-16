@@ -76,6 +76,73 @@ class LeakGuardTests(unittest.TestCase):
         self.assertIn("payment-card-pan", rules)
         self.assertIn("card-security-code", rules)
 
+    def test_known_good_synthetic_corpus_passes(self) -> None:
+        findings = self.scan_written(
+            "tests/fixtures/generic_jobs_synthetic.json",
+            """
+            {
+              "synthetic": true,
+              "owner": "user@example.com",
+              "gmail_fixture": {
+                "message_id": "synthetic-message-id",
+                "thread_ref": "synthetic-thread-id",
+                "subject": "Synthetic role digest"
+              },
+              "notion_fixture": {
+                "data_source_id": "synthetic-data-source-id",
+                "page_ref": "synthetic-page-ref"
+              },
+              "job": {
+                "stable_job_key": "synthetic-key",
+                "apply_url": "https://synthetic-boards.example/jobs/12345",
+                "policy_schema": {"minimum_score": "runtime-configured"}
+              },
+              "runtime_config_schema": {
+                "calendar_id": "synthetic-calendar",
+                "notion_token_env": "NOTION_API_TOKEN"
+              }
+            }
+            """,
+        )
+
+        self.assertEqual(findings, [])
+
+    def test_rejects_private_workspace_and_provider_identifiers(self) -> None:
+        content = "\n".join(
+            [
+                '{"synthetic": true,',
+                '"data_' + 'source_id": "0123456789abcdef0123456789abcdef",',
+                '"jira_url": "https://lifeos-private' + '.atlassian.net/browse/LIFE-123",',
+                '"calendar_' + 'id": "primary' + '@group.calendar' + '.google.com",',
+                '"calendar_url": "https://calendar.google' + '.com/calendar/u/0/r/eventedit/abc123",',
+                '"gmail_thread_' + 'id": "18af4c0ffee123",',
+                '"tracking_url": "https://provider.example/jobs?recip' + 'ient=person@example.com",',
+                '"processed_' + 'message_ids": ["synthetic-message-id"]',
+                "}",
+            ]
+        )
+
+        findings = self.scan_written("tests/fixtures/provider_ids_synthetic.json", content)
+
+        rules = {finding.rule for finding in findings}
+        self.assertIn("notion-id-field", rules)
+        self.assertIn("jira-url", rules)
+        self.assertIn("calendar-id-field", rules)
+        self.assertIn("calendar-url", rules)
+        self.assertIn("gmail-thread-id-field", rules)
+        self.assertIn("tracking-url", rules)
+        self.assertIn("runtime-checkpoint-payload", rules)
+
+    def test_failure_output_uses_category_and_path_not_source_line_content(self) -> None:
+        path = Path("tests/fixtures/provider_ids_synthetic.json")
+        finding = leak_guard.Finding(path, 7, "tracking-url", "personalized provider/tracking URL is prohibited")
+
+        rendered = finding.render()
+
+        self.assertIn("tests/fixtures/provider_ids_synthetic.json:7: tracking-url", rendered)
+        self.assertNotIn("provider.example", rendered)
+        self.assertNotIn("recipient=", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()
