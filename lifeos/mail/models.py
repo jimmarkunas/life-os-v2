@@ -34,6 +34,8 @@ class MailMessage:
     subject: str
     body_text: str = ""
     headers: Mapping[str, str] = field(default_factory=dict)
+    html_text: str = ""
+    raw_mime: str = ""
 
     @property
     def ref(self) -> MailRef:

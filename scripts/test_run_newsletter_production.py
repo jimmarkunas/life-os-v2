@@ -145,7 +145,7 @@ class SyntheticProductionBackend:
             return HttpResponse(200, {}, json.dumps({"messages": [{"id": "msg-1"}]}).encode())
         if method == "GET" and "/messages/msg-1?format=full" in url:
             job_body = base64.urlsafe_b64encode(
-                b"[Synthetic Labs\n90%\nSynthetic Engineer\nRemote](https://jobright.ai/jobs/info/synthetic-1)"
+                b"[Synthetic Labs\n90%\nSynthetic Engineer\nRemote](https://jobright.ai/jobs/info/synthetic-1)\nView more opportunities"
             ).decode("ascii").rstrip("=")
             return HttpResponse(
                 200,

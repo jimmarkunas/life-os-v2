@@ -166,7 +166,7 @@ class NewsletterJobsAdapter:
             else:
                 apply_url = evidence.canonical_url
                 description_text = evidence.description_text
-                posting_iso = parse_posting_date(evidence.posting_date_raw)
+                posting_iso = parse_posting_date(evidence.posting_date_raw, reference_time=observation.source_received_at)
                 posting_date = date.fromisoformat(posting_iso) if posting_iso else None
 
         job = Job(

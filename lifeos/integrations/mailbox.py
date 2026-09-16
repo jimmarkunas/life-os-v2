@@ -18,6 +18,8 @@ class MailMessageFactory(Protocol[T]):
         subject: str,
         body_text: str,
         headers: Mapping[str, str],
+        html_text: str = "",
+        raw_mime: str = "",
     ) -> T: ...
 
 

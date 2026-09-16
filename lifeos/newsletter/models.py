@@ -18,6 +18,8 @@ class RoutedNewsletterMessage:
     subject: str
     body_text: str
     headers: Mapping[str, str] = field(default_factory=dict)
+    html_text: str = ""
+    raw_mime: str = ""
 
 @dataclass(frozen=True, slots=True)
 class SourceVacancyObservation:
@@ -34,6 +36,7 @@ class SourceVacancyObservation:
     provider_job_id: str | None = None
     provider_score: int | None = None
     issues: tuple[str, ...] = ()
+    source_received_at: datetime | None = None
 
 @dataclass(frozen=True, slots=True)
 class ParseIssue:

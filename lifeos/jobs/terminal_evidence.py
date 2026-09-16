@@ -102,6 +102,7 @@ MAX_RESOLVE_BYTES = 512_000
 
 _RAW_HTTP_URL = re.compile(r"https?://[^\s\"'<>]+", re.I)
 _JSONLD_SCRIPT = re.compile(r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', re.I | re.S)
+_META_DESCRIPTION = re.compile(r'<meta[^>]+(?:name|property)=["\'](?:description|og:description)["\'][^>]+content=["\']([^"\']+)["\']', re.I | re.S)
 
 # Well-known discovery-provider/ATS hosts. Public market-standard domain
 # knowledge (job boards, applicant-tracking systems), not private policy --
@@ -370,6 +371,43 @@ def extract_job_posting_jsonld(html_text: str) -> dict[str, Any] | None:
     return None
 
 
+def _html_to_text(html_text: str) -> str:
+    text = html.unescape(re.sub(r"<[^>]+>", " ", html_text))
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _extract_terminal_description(html_text: str) -> str | None:
+    posting = extract_job_posting_jsonld(html_text)
+    if posting:
+        raw = str(posting.get("description") or "").strip()
+        if raw:
+            return _html_to_text(raw)
+    match = _META_DESCRIPTION.search(html_text)
+    if match:
+        text = _html_to_text(match.group(1))
+        if text:
+            return text
+    text = _html_to_text(html_text)
+    return text if len(text) >= 20 else None
+
+
+def _extract_posting_date_raw(html_text: str) -> str | None:
+    posting = extract_job_posting_jsonld(html_text)
+    if posting:
+        raw = str(posting.get("datePosted") or "").strip()
+        if raw:
+            return raw
+    for pattern in (
+        r"(?:datePosted|postedDate|posted_at|postedOn)[\"'\s:=]+([^\"'<>,]{4,40})",
+        r"(Posted\s+(?:today|yesterday|\d+\s+(?:minutes?|hours?|days?)\s+ago))",
+        r"(Posted\s+(?:20\d{2}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{2,4}))",
+    ):
+        match = re.search(pattern, html_text, re.I)
+        if match:
+            return html.unescape(match.group(1)).strip()
+    return None
+
+
 @dataclass(frozen=True)
 class TerminalVacancyEvidence:
     canonical_url: str
@@ -399,16 +437,10 @@ def acquire_terminal_vacancy_evidence(source_url: str, *, fetcher: Fetcher) -> T
     except Exception:
         return None
 
-    posting = extract_job_posting_jsonld(response.body)
-    if not posting:
+    description = _extract_terminal_description(response.body)
+    date_posted = _extract_posting_date_raw(response.body)
+    if not description or not date_posted:
         return None
-    raw_description = str(posting.get("description") or "").strip()
-    date_posted = str(posting.get("datePosted") or "").strip()
-    if not raw_description or not date_posted:
-        return None
-
-    description = html.unescape(re.sub(r"<[^>]+>", " ", raw_description))
-    description = re.sub(r"\s+", " ", description).strip()
     return TerminalVacancyEvidence(
         canonical_url=resolution.final_url,
         description_text=description,

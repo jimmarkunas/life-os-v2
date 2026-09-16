@@ -150,6 +150,8 @@ class GmailMailboxTransport(Generic[T]):
 
     def _fetch_message(self, message_id: str) -> T:
         fields = self._fetch_message_fields(message_id)
+        fields.pop("html_text", None)
+        fields.pop("raw_mime", None)
         return self._factory(provider=self.provider, **fields)
 
     def _fetch_routed_message(self, message_id: str) -> RoutedNewsletterMessage:
@@ -179,7 +181,7 @@ class GmailMailboxTransport(Generic[T]):
             "received_at": received_at,
             "sender": headers.get("From", ""),
             "subject": headers.get("Subject", ""),
-            "body_text": _gmail_body_text(payload.get("payload") or {}),
+            **_gmail_body_parts(payload.get("payload") or {}),
             "headers": headers,
         }
 
@@ -227,22 +229,31 @@ def _gmail_headers(message: Mapping[str, Any]) -> dict[str, str]:
     return result
 
 
-def _gmail_body_text(part: Mapping[str, Any]) -> str:
+def _gmail_body_parts(part: Mapping[str, Any]) -> dict[str, str]:
+    plain, html_text = _gmail_body_texts(part)
+    return {"body_text": plain or html_text, "html_text": html_text}
+
+
+def _gmail_body_texts(part: Mapping[str, Any]) -> tuple[str, str]:
     mime_type = str(part.get("mimeType") or "")
     body = part.get("body") or {}
     if mime_type == "text/plain" and isinstance(body, dict) and body.get("data"):
-        return _decode_base64url(str(body["data"]))
+        return _decode_base64url(str(body["data"])), ""
+    if mime_type == "text/html" and isinstance(body, dict) and body.get("data"):
+        return "", _decode_base64url(str(body["data"]))
     pieces: list[str] = []
+    html_pieces: list[str] = []
     for child in part.get("parts") or []:
         if isinstance(child, dict):
-            text = _gmail_body_text(child)
+            text, html_text = _gmail_body_texts(child)
             if text:
                 pieces.append(text)
-    if pieces:
-        return "\n".join(pieces)
+            if html_text:
+                html_pieces.append(html_text)
     if isinstance(body, dict) and body.get("data"):
-        return _decode_base64url(str(body["data"]))
-    return ""
+        fallback = _decode_base64url(str(body["data"]))
+        return fallback, ""
+    return "\n".join(pieces), "\n".join(html_pieces)
 
 
 def _decode_base64url(value: str) -> str:
