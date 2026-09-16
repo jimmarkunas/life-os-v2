@@ -23,9 +23,8 @@ jobs:
       GMAIL_OAUTH_REFRESH_TOKEN: ${{ secrets.GMAIL_OAUTH_REFRESH_TOKEN }}
       NOTION_API_TOKEN: ${{ secrets.NOTION_API_TOKEN }}
       NOTION_JOB_LEDGER_DATA_SOURCE_ID: ${{ secrets.NOTION_JOB_LEDGER_DATA_SOURCE_ID }}
-      NEWSLETTER_PRIVATE_POLICY_JSON: ${{ secrets.NEWSLETTER_PRIVATE_POLICY_JSON }}
     steps:
-      - name: Checkout main
+      - name: Checkout candidate
         uses: actions/checkout@v4
         with:
           persist-credentials: false
@@ -34,16 +33,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Materialize private policy
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -n "$NEWSLETTER_PRIVATE_POLICY_JSON"
-          POLICY_PATH="$RUNNER_TEMP/newsletter-policy.json"
-          umask 077
-          printf '%s' "$NEWSLETTER_PRIVATE_POLICY_JSON" > "$POLICY_PATH"
-          echo "NEWSLETTER_PRIVATE_POLICY_PATH=$POLICY_PATH" >> "$GITHUB_ENV"
 
       - name: Newsletter production run
         run: >
