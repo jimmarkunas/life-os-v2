@@ -32,6 +32,7 @@ from lifeos.jobs.newsletter_feature import _adapt_all
 from lifeos.jobs.notion_repository import NotionCareerRepository, NotionCareerRepositoryConfig
 from lifeos.jobs.qualification import LaneConfig
 from lifeos.jobs.terminal_evidence import FetchResponse, Fetcher
+from lifeos.jobs.us_remote_acquisition import USRemoteAcquirer
 from lifeos.mail.models import MailMessage
 from lifeos.mail.router import MailRouter
 from lifeos.newsletter.models import ParseState, SourceVacancyObservation
@@ -447,7 +448,6 @@ def main(argv: list[str] | None = None) -> int:
             max_workers=8,
         )
         timings["terminal_resolution"] = round(perf_counter() - stage_started, 3)
-
         stage_started = perf_counter()
         ingest_results = ingest(
             newsletter_candidates + web_candidates,
