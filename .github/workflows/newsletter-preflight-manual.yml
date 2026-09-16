@@ -1,0 +1,39 @@
+name: Newsletter Production Preflight (Manual)
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: newsletter-preflight-manual
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Read-only Newsletter preflight
+    runs-on: self-hosted
+    timeout-minutes: 5
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      GMAIL_OAUTH_CLIENT_ID: ${{ secrets.GMAIL_OAUTH_CLIENT_ID }}
+      GMAIL_OAUTH_CLIENT_SECRET: ${{ secrets.GMAIL_OAUTH_CLIENT_SECRET }}
+      GMAIL_OAUTH_REFRESH_TOKEN: ${{ secrets.GMAIL_OAUTH_REFRESH_TOKEN }}
+      NOTION_API_TOKEN: ${{ secrets.NOTION_API_TOKEN }}
+      NOTION_JOB_LEDGER_DATA_SOURCE_ID: ${{ secrets.NOTION_JOB_LEDGER_DATA_SOURCE_ID }}
+    steps:
+      - name: Checkout agent/newsletter-integration
+        uses: actions/checkout@v4
+        with:
+          ref: agent/newsletter-integration
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Read-only Newsletter preflight
+        run: PYTHONPATH=. python3.12 scripts/preflight_newsletter.py
