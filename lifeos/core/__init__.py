@@ -10,6 +10,7 @@ from .runtime import (
     ExecutionStatus,
     RunContext,
 )
+from .security import REDACTED, redact, safe_log_fields
 
 __all__ = [
     "ConfigField",
@@ -26,4 +27,7 @@ __all__ = [
     "ExecutionResult",
     "ExecutionStatus",
     "RunContext",
+    "REDACTED",
+    "redact",
+    "safe_log_fields",
 ]
