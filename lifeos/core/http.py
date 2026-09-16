@@ -65,9 +65,6 @@ class HttpResponse:
     headers: Mapping[str, str]
     body: bytes
     final_url: str = ""
-    """The actual URL after following redirects. Empty when a backend
-    cannot report it (e.g. an error path); callers needing redirect-aware
-    resolution should treat empty as "same as requested"."""
 
     def json(self) -> Any:
         try:
@@ -143,18 +140,17 @@ class HttpClient:
         last_error: HttpError | None = None
         for attempt in range(1, retry.max_attempts + 1):
             try:
-                per_attempt_timeout = context.bounded_timeout(timeout_seconds)
+                with context.http_permit():
+                    per_attempt_timeout = context.bounded_timeout(timeout_seconds)
+                    response = self._backend.request(
+                        method,
+                        url,
+                        headers=request_headers,
+                        body=request_body,
+                        timeout_seconds=per_attempt_timeout,
+                    )
             except DeadlineExceeded as exc:
                 raise HttpError(HttpErrorKind.DEADLINE, attempts=attempt) from exc
-
-            try:
-                response = self._backend.request(
-                    method,
-                    url,
-                    headers=request_headers,
-                    body=request_body,
-                    timeout_seconds=per_attempt_timeout,
-                )
             except (TimeoutError, socket.timeout) as exc:
                 last_error = HttpError(HttpErrorKind.TIMEOUT, attempts=attempt)
                 if attempt >= retry.max_attempts:
