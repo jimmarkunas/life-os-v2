@@ -54,6 +54,16 @@ class LeakGuardTests(unittest.TestCase):
 
         self.assertTrue(any(finding.rule == "oauth-token-field" for finding in findings))
 
+    def test_allows_message_id_variable_assignment(self) -> None:
+        findings = self.scan_written("router.py", "message_id=message_id")
+
+        self.assertEqual(findings, [])
+
+    def test_rejects_concrete_message_id_field(self) -> None:
+        findings = self.scan_written("fixture.txt", "message_" + 'id="abc123456789"')
+
+        self.assertTrue(any(finding.rule == "message-id-field" for finding in findings))
+
     def test_rejects_payment_card_data(self) -> None:
         findings = self.scan_written(
             "tests/fixtures/card_synthetic.json",

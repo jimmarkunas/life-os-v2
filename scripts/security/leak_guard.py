@@ -122,7 +122,7 @@ CONTENT_RULES: tuple[tuple[str, re.Pattern[str], str], ...] = (
     ),
     (
         "message-id-field",
-        re.compile(r"(?i)\b(?:gmail|outlook|email|message)_?id\b\s*[:=]\s*['\"]?[A-Za-z0-9_-]{8,}['\"]?"),
+        re.compile(r"(?i)\b(?:gmail|outlook|email|message)_?id\b\s*[:=]\s*['\"][A-Za-z0-9_-]{8,}['\"]"),
         "real mail/message identifiers are prohibited",
     ),
     (
