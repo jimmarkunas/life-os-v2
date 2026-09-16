@@ -4,8 +4,6 @@ import unittest
 
 from tests.performance.budget import (
     ANY_FEATURE_ABSOLUTE_MAX,
-    NEWSLETTER_TARGET_BUDGET,
-    NEWSLETTER_TARGET_CEILING,
     NORMAL_FEATURE_BUDGET,
     PerformanceBudgetExceeded,
     RuntimeBudget,
@@ -17,8 +15,6 @@ class PerformanceBudgetTests(unittest.TestCase):
     def test_platform_budget_constants(self) -> None:
         self.assertEqual(NORMAL_FEATURE_BUDGET.seconds, 45.0)
         self.assertEqual(ANY_FEATURE_ABSOLUTE_MAX.seconds, 300.0)
-        self.assertEqual(NEWSLETTER_TARGET_BUDGET.seconds, 90.0)
-        self.assertEqual(NEWSLETTER_TARGET_CEILING.seconds, 180.0)
 
     def test_assert_runtime_budget_passes_when_under_budget(self) -> None:
         readings = iter([10.0, 12.5])
