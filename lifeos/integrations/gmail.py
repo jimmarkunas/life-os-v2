@@ -18,6 +18,7 @@ T = TypeVar("T")
 _GMAIL_API = "https://gmail.googleapis.com/gmail/v1"
 _READ_RETRY = RetryPolicy(max_attempts=2, backoff_seconds=0.1, max_backoff_seconds=1.0)
 _NO_RETRY = RetryPolicy(max_attempts=1)
+MAX_MESSAGE_DETAIL_WORKERS = 8
 
 
 class GmailMailboxTransport(Generic[T]):
@@ -40,14 +41,12 @@ class GmailMailboxTransport(Generic[T]):
         self._token = access_token
         self._factory = message_factory
         self._user_id = user_id
-        self._max_workers = max(1, min(int(max_workers), 16))
+        self._max_workers = max(1, min(int(max_workers), MAX_MESSAGE_DETAIL_WORKERS))
         self._label_ids: dict[str, str] = {}
         self._label_lock = Lock()
 
     @property
     def mailbox(self) -> str:
-        """Alias satisfying NewsletterSourcePort's provider-neutral shape --
-        same value as `provider`, this transport's identity either way."""
         return self.provider
 
     def scan_window(self, start: datetime, end: datetime) -> tuple[T, ...]:
@@ -59,12 +58,14 @@ class GmailMailboxTransport(Generic[T]):
         messages: list[T] = []
         failures = 0
         with ThreadPoolExecutor(max_workers=min(self._max_workers, len(ids))) as pool:
-            futures = {pool.submit(self._fetch_message, message_id): message_id for message_id in ids}
-            for future in as_completed(futures):
-                try:
-                    messages.append(future.result())
-                except Exception:
-                    failures += 1
+            for chunk_start in range(0, len(ids), self._max_workers):
+                chunk = ids[chunk_start : chunk_start + self._max_workers]
+                futures = {pool.submit(self._fetch_message, message_id): message_id for message_id in chunk}
+                for future in as_completed(futures):
+                    try:
+                        messages.append(future.result())
+                    except Exception:
+                        failures += 1
         if failures:
             raise MailboxTransportError(f"Gmail message detail acquisition incomplete: {failures} failed")
         messages.sort(key=lambda item: (getattr(item, "received_at"), getattr(item, "message_id")))
@@ -73,12 +74,6 @@ class GmailMailboxTransport(Generic[T]):
     def fetch_unprocessed(
         self, start: datetime, end: datetime, boundary_name: str
     ) -> tuple[RoutedNewsletterMessage, ...]:
-        """Satisfies NewsletterSourcePort: message detail for whatever is
-        currently under the named label (e.g. "J Newsletters") within the
-        window. Reuses the same bounded list/fetch/retry mechanics as
-        scan_window -- only the Gmail search filter (label instead of no
-        filter) and the returned shape (RoutedNewsletterMessage, this
-        Protocol's own provider-neutral type, not the generic T) differ."""
         _validate_window(start, end)
         label_id = self._resolve_label_id(boundary_name)
         ids = self._list_message_ids(start, end, label_id=label_id)
@@ -88,12 +83,14 @@ class GmailMailboxTransport(Generic[T]):
         messages: list[RoutedNewsletterMessage] = []
         failures = 0
         with ThreadPoolExecutor(max_workers=min(self._max_workers, len(ids))) as pool:
-            futures = {pool.submit(self._fetch_routed_message, message_id): message_id for message_id in ids}
-            for future in as_completed(futures):
-                try:
-                    messages.append(future.result())
-                except Exception:
-                    failures += 1
+            for chunk_start in range(0, len(ids), self._max_workers):
+                chunk = ids[chunk_start : chunk_start + self._max_workers]
+                futures = {pool.submit(self._fetch_routed_message, message_id): message_id for message_id in chunk}
+                for future in as_completed(futures):
+                    try:
+                        messages.append(future.result())
+                    except Exception:
+                        failures += 1
         if failures:
             raise MailboxTransportError(f"Gmail Newsletter message acquisition incomplete: {failures} failed")
         messages.sort(key=lambda item: (item.received_at, item.message_id))
