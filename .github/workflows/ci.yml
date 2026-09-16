@@ -40,7 +40,7 @@ jobs:
         run: python scripts/security/leak_guard.py
 
       - name: Commit metadata guard
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/agent/')
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/agent/'))
         run: python scripts/security/commit_metadata_guard.py HEAD
 
       - name: Unit tests
