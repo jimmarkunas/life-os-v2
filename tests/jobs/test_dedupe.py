@@ -9,8 +9,8 @@ from tests.jobs.fixtures import make_job
 LANE_PRIORITY = {"Lane-A": 0, "Lane-B": 1, "Lane-C": 1}
 
 
-def _obs(key, lane, fit, admission=AdmissionStatus.ADMITTED, apply_url=None):
-    job = make_job(apply_url=apply_url)
+def _obs(key, lane, fit, admission=AdmissionStatus.ADMITTED, apply_url=None, provider_job_id=None):
+    job = make_job(apply_url=apply_url, provider_job_id=provider_job_id)
     return LaneObservation(stable_job_key=key, lane=lane, job=job, fit=fit, admission_status=admission)
 
 
@@ -74,3 +74,32 @@ def test_distinct_keys_never_merge():
     observations = [_obs("k1", "Lane-A", 90), _obs("k2", "Lane-A", 90)]
     result = reconcile(observations, lane_priority=LANE_PRIORITY)
     assert {r.opportunity.stable_job_key for r in result} == {"k1", "k2"}
+
+
+# --- Provider alias preservation across convergence -------------------------
+
+
+def test_aliases_from_all_converged_providers_are_preserved():
+    observations = [
+        _obs("k1", "Lane-A", 90, provider_job_id="linkedin-1"),
+        _obs("k1", "Lane-B", 85, provider_job_id="lensa-2"),
+    ]
+    result = reconcile(observations, lane_priority=LANE_PRIORITY)
+    assert result[0].opportunity.aliases == (
+        "Acme Synthetic Co::lensa-2",
+        "Acme Synthetic Co::linkedin-1",
+    )
+
+
+def test_aliases_empty_when_no_provider_ids_present():
+    result = reconcile([_obs("k1", "Lane-A", 90)], lane_priority=LANE_PRIORITY)
+    assert result[0].opportunity.aliases == ()
+
+
+def test_duplicate_provider_alias_deduplicated():
+    observations = [
+        _obs("k1", "Lane-A", 90, provider_job_id="same-id"),
+        _obs("k1", "Lane-B", 85, provider_job_id="same-id"),
+    ]
+    result = reconcile(observations, lane_priority=LANE_PRIORITY)
+    assert result[0].opportunity.aliases == ("Acme Synthetic Co::same-id",)

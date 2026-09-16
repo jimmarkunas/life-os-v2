@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from lifeos.jobs.identity import provider_alias
 from lifeos.jobs.models import AdmissionStatus, Job, Opportunity
 
 
@@ -82,11 +83,18 @@ def reconcile(
 
             merged_job = _replace(merged_job, apply_url=strongest_url)
 
+        # Cross-provider aliases: every observation in the group may carry a
+        # different provider_job_id for what is now proven to be the same
+        # canonical vacancy. Preserve all of them as provenance rather than
+        # letting convergence silently discard the losing provider's ID.
+        aliases = tuple(sorted({alias for o in group if (alias := provider_alias(o.job)) is not None}))
+
         opportunity = Opportunity(
             stable_job_key=key,
             job=merged_job,
             admission_status=_best_admission(group),
             source_lanes=source_lanes,
+            aliases=aliases,
         )
         reconciled.append(
             ReconciledOpportunity(

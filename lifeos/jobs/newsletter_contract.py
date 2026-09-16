@@ -43,117 +43,127 @@ def ingest(
     repository: CareerRepository,
     run_date: date,
 ) -> list[IngestResult]:
-    """Resolve identity, qualify, converge duplicates within this batch,
-    and idempotently persist. Returns exactly one IngestResult per input
-    candidate, in input order.
-    """
-    results: list[IngestResult] = []
-    resolved: list[tuple[NormalizedCandidate, str]] = []
+    """Resolve identity, qualify, converge duplicates, and idempotently
+    persist. Returns exactly one IngestResult per input candidate, in input
+    order (see the `results` pre-sizing below -- every branch writes to
+    `results[i]` by original index, so grouping/reordering downstream can
+    never desynchronize the input<->output correspondence).
 
-    for candidate in candidates:
+    Duplicate determination happens AFTER every same-key observation has
+    already contributed to reconcile() -- provenance, the strongest
+    available canonical URL, and provider aliases are merged from ALL
+    same-key observations before any of them is labeled a duplicate. At
+    most one canonical mutation is written per stable_job_key; every other
+    same-key observation is reported DUPLICATE but its evidence was not
+    discarded -- it already shaped the persisted canonical Opportunity.
+    """
+    results: list[IngestResult | None] = [None] * len(candidates)
+    observations: list[LaneObservation] = []
+    # input index -> the candidate/key that produced its (still-live) observation
+    live_by_index: dict[int, tuple[NormalizedCandidate, str]] = {}
+    # stable_job_key -> the lowest input index observed for it (deterministic
+    # "first source" -- see BLOCKER 2's example: first -> CREATED/UPDATED,
+    # every later same-key observation -> DUPLICATE).
+    primary_index_for_key: dict[str, int] = {}
+
+    for i, candidate in enumerate(candidates):
         try:
             key = stable_job_key(candidate.job)
         except ValueError as exc:
-            results.append(
-                IngestResult(
-                    evidence_ref=candidate.evidence_ref,
-                    disposition=Disposition.REVIEW_DEGRADED,
-                    stable_job_key=None,
-                    detail=str(exc),
-                )
+            results[i] = IngestResult(
+                evidence_ref=candidate.evidence_ref,
+                disposition=Disposition.REVIEW_DEGRADED,
+                stable_job_key=None,
+                detail=str(exc),
             )
             continue
-        resolved.append((candidate, key))
-
-    # Within-batch duplicate detection happens before qualification so a
-    # weaker duplicate observation never masks a stronger one's disposition.
-    seen_in_batch: dict[str, str] = {}
-
-    observations: list[LaneObservation] = []
-    observation_index: dict[str, tuple[NormalizedCandidate, str]] = {}
-
-    for candidate, key in resolved:
-        if key in seen_in_batch:
-            results.append(
-                IngestResult(
-                    evidence_ref=candidate.evidence_ref,
-                    disposition=Disposition.DUPLICATE,
-                    stable_job_key=key,
-                    detail=f"duplicate of evidence {seen_in_batch[key]} in this batch",
-                )
-            )
-            continue
-        seen_in_batch[key] = candidate.evidence_ref
 
         try:
             result = qualify(candidate, lane=lane, run_date=run_date)
         except Exception as exc:  # qualification must never crash the batch
-            results.append(
-                IngestResult(
-                    evidence_ref=candidate.evidence_ref,
-                    disposition=Disposition.REVIEW_DEGRADED,
-                    stable_job_key=key,
-                    detail=f"qualification error: {exc}",
-                )
+            results[i] = IngestResult(
+                evidence_ref=candidate.evidence_ref,
+                disposition=Disposition.REVIEW_DEGRADED,
+                stable_job_key=key,
+                detail=f"qualification error: {exc}",
             )
             continue
 
         if result.admission_status == AdmissionStatus.EXCLUDED:
-            results.append(
-                IngestResult(
-                    evidence_ref=candidate.evidence_ref,
-                    disposition=Disposition.EXCLUDED,
-                    stable_job_key=key,
-                    detail=result.review_reason,
-                )
+            results[i] = IngestResult(
+                evidence_ref=candidate.evidence_ref,
+                disposition=Disposition.EXCLUDED,
+                stable_job_key=key,
+                detail=result.review_reason,
             )
             continue
 
-        obs = LaneObservation(
-            stable_job_key=key,
-            lane=lane.name,
-            job=candidate.job,
-            fit=candidate.fit or 0,
-            admission_status=result.admission_status,
+        observations.append(
+            LaneObservation(
+                stable_job_key=key,
+                lane=lane.name,
+                job=candidate.job,
+                fit=candidate.fit or 0,
+                admission_status=result.admission_status,
+            )
         )
-        observations.append(obs)
-        observation_index[key] = (candidate, key)
+        live_by_index[i] = (candidate, key)
+        primary_index_for_key.setdefault(key, i)
 
     if not observations:
-        return results
+        return results  # type: ignore[return-value]  # every slot filled above
 
     reconciled = reconcile(observations, lane_priority=lane_priority)
     existing_records = repository.get_many([r.opportunity.stable_job_key for r in reconciled])
 
     for r in reconciled:
-        candidate, key = observation_index[r.opportunity.stable_job_key]
+        key = r.opportunity.stable_job_key
+        same_key_indices = [i for i, (_, k) in live_by_index.items() if k == key]
+        primary_index = primary_index_for_key[key]
+        primary_candidate = live_by_index[primary_index][0]
+
         existing = existing_records.get(key)
         try:
             if existing is None:
                 record = new_record(r.opportunity, run_date=run_date)
                 persisted = repository.upsert(record)
-                disposition = Disposition.CREATED
+                primary_disposition = Disposition.CREATED
             else:
                 record = apply_observation(existing, r.opportunity, run_date=run_date)
                 persisted = repository.upsert(record)
-                disposition = Disposition.UPDATED
+                primary_disposition = Disposition.UPDATED
         except ReadBackMismatch as exc:
-            results.append(
-                IngestResult(
-                    evidence_ref=candidate.evidence_ref,
+            # The one attempted canonical mutation for this key failed its
+            # read-back; every same-key observation is unresolved, not just
+            # the primary one -- report all of them REVIEW_DEGRADED.
+            for i in same_key_indices:
+                cand, _ = live_by_index[i]
+                results[i] = IngestResult(
+                    evidence_ref=cand.evidence_ref,
                     disposition=Disposition.REVIEW_DEGRADED,
                     stable_job_key=key,
                     detail=f"persistence read-back mismatch: {exc}",
                 )
-            )
             continue
 
-        results.append(
-            IngestResult(
-                evidence_ref=candidate.evidence_ref,
-                disposition=disposition,
-                stable_job_key=persisted.opportunity.stable_job_key,
-            )
-        )
+        for i in same_key_indices:
+            cand, _ = live_by_index[i]
+            if i == primary_index:
+                results[i] = IngestResult(
+                    evidence_ref=cand.evidence_ref,
+                    disposition=primary_disposition,
+                    stable_job_key=persisted.opportunity.stable_job_key,
+                )
+            else:
+                results[i] = IngestResult(
+                    evidence_ref=cand.evidence_ref,
+                    disposition=Disposition.DUPLICATE,
+                    stable_job_key=persisted.opportunity.stable_job_key,
+                    detail=(
+                        f"duplicate of evidence {primary_candidate.evidence_ref}; "
+                        "provenance merged into the canonical reconciliation"
+                    ),
+                )
 
-    return results
+    assert all(result is not None for result in results), "every input candidate must receive exactly one result"
+    return results  # type: ignore[return-value]

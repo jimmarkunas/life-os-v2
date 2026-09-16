@@ -1,17 +1,33 @@
 """Stable Job identity.
 
-MIGRATE/REFACTOR from v1 `jobs/identity.py`, generalized: v1's identity
-priority chain (existing key > company+provider id > canonical apply URL >
-normalized company|role|location) is proven and reused verbatim. Sanitized
-by removing the hardcoded discovery-provider hostnames v1 baked in directly
-(Lensa/jobright.ai email-tracking and intermediary-page detection) -- those
-are real, useful heuristics, but they are provider-specific knowledge that
-belongs in the Mail/Newsletter adapter's extraction step (where a source can
-tell Career "this URL is a tracking wrapper, not a destination"), not hard
-in Career's identity module. Career's job here is the deterministic
-fallback chain and URL canonicalization; a source is expected to have
-already resolved an intermediary/tracking URL to a real destination (or
-omitted apply_url) before handing Career a NormalizedCandidate.
+MIGRATE/REFACTOR from v1 `jobs/identity.py`, corrected. v1's chain put
+company+provider_job_id ahead of the canonical URL. That is wrong for
+cross-source convergence: two discovery providers (e.g. LinkedIn and Lensa)
+assign different IDs to the identical vacancy, so keying on provider ID
+first can produce two canonical Jobs for one real vacancy -- exactly the
+duplication bug this correction removes.
+
+Corrected priority, strongest cross-source trust first:
+
+1. an already-resolved canonical identity, when a caller supplies one
+   (Job.canonical_identity) -- authoritative, skips everything else.
+2. the canonical employer/ATS vacancy URL (tracking parameters stripped).
+   A resolved final URL is the strongest source-independent signal two
+   different providers can agree on for the same vacancy.
+3. normalized company|role|location -- deterministic fallback when no URL
+   is available.
+
+provider_job_id is never part of primary identity. It is preserved as
+provenance/alias evidence only -- see provider_alias() below -- so a
+duplicate-provider-ID case can still be traced without letting a bare ID
+fork identity for what is otherwise the same canonical vacancy.
+
+Sanitized by removing the hardcoded discovery-provider hostnames v1 baked
+in directly (Lensa/jobright.ai email-tracking and intermediary-page
+detection); that host-classification/resolution-policy logic now lives in
+terminal_evidence.py, which Jobs owns per the platform ownership boundary
+and which is expected to hand this module an already-resolved,
+canonicalizable apply_url before stable_job_key() runs.
 """
 from __future__ import annotations
 
@@ -51,28 +67,46 @@ def canonical_url(value: str | None) -> str | None:
 
 
 def stable_job_key(job: Job) -> str:
-    """Deterministic identity, strongest-available evidence first:
+    """Deterministic identity, strongest cross-source evidence first:
 
-    1. company + provider_job_id (source-native identity, when both present)
+    1. Job.canonical_identity, when a caller supplies one (authoritative)
     2. canonical apply URL (tracking parameters stripped)
     3. normalized company|role|location
+
+    provider_job_id is deliberately NOT part of this chain -- see module
+    docstring and provider_alias() -- so two providers observing the same
+    vacancy under different IDs still converge on one key whenever a URL
+    or company+role+location match.
 
     Raises ValueError when none of the three is derivable -- callers must
     treat that as a REVIEW-DEGRADED candidate, never a silent drop.
     """
-    company = (job.company.name or "").strip()
-    if company and job.provider_job_id:
-        return f"{company}::{job.provider_job_id.strip()}"
+    if job.canonical_identity and job.canonical_identity.strip():
+        return job.canonical_identity.strip()
 
     url = canonical_url(job.apply_url)
     if url:
         return f"url:{url}"
 
+    company = (job.company.name or "").strip()
     role = job.role or ""
     location = job.location or ""
     if not company or not role or not location:
         raise ValueError(
-            "cannot derive stable Job identity without provider_job_id, a canonical "
+            "cannot derive stable Job identity without canonical_identity, a canonical "
             "apply URL, or company+role+location"
         )
     return f"{_norm(company)}|{_norm(role)}|{_norm(location)}"
+
+
+def provider_alias(job: Job) -> str | None:
+    """Return a provenance/alias string for this observation's source-native
+    identity (company + provider_job_id), or None when unavailable.
+
+    Never used as primary identity -- see stable_job_key() -- but preserved
+    so cross-provider provenance (e.g. "this canonical Job was also seen as
+    LinkedIn posting 12345") is not silently lost during convergence."""
+    company = (job.company.name or "").strip()
+    if company and job.provider_job_id and job.provider_job_id.strip():
+        return f"{company}::{job.provider_job_id.strip()}"
+    return None
