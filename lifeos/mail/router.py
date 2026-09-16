@@ -29,6 +29,10 @@ class MailExecutionState(str, Enum):
     DEGRADED = "DEGRADED"
 
 
+MAX_PROVIDER_SCAN_WORKERS = 2
+MAX_MESSAGE_WORKERS = 8
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderScan:
     provider: str
@@ -76,9 +80,7 @@ class MailRouteResult:
 
     @property
     def checkpoint_safe(self) -> bool:
-        return self.state is MailExecutionState.PASS and all(
-            scan.complete for scan in self.provider_scans
-        )
+        return self.state is MailExecutionState.PASS and all(scan.complete for scan in self.provider_scans)
 
 
 class MailRouter:
@@ -93,7 +95,9 @@ class MailRouter:
     ) -> None:
         self._classifier = classifier or DeterministicMailClassifier()
         self._newsletter_boundary = newsletter_boundary
-        self._max_workers = max(1, max_workers)
+        requested = max(1, max_workers)
+        self._scan_workers = min(requested, MAX_PROVIDER_SCAN_WORKERS)
+        self._message_workers = min(requested, MAX_MESSAGE_WORKERS)
 
     def route_window(
         self,
@@ -121,9 +125,7 @@ class MailRouter:
                 timings=RoutingTimings(0.0, 0.0, 0.0, perf_counter() - total_started),
             )
 
-        messages, provider_scans, scan_errors, scan_seconds = self._scan_all(
-            mailboxes, start, end
-        )
+        messages, provider_scans, scan_errors, scan_seconds = self._scan_all(mailboxes, start, end)
 
         classify_started = perf_counter()
         classified = tuple((message, self._classifier.classify(message)) for message in messages)
@@ -134,11 +136,7 @@ class MailRouter:
         route_seconds = perf_counter() - route_started
 
         records = tuple(
-            RouteRecord(
-                ref=message.ref,
-                classification=classification,
-                routed=message.ref in routed_refs,
-            )
+            RouteRecord(ref=message.ref, classification=classification, routed=message.ref in routed_refs)
             for message, classification in classified
         )
         errors = tuple((*scan_errors, *route_errors))
@@ -147,7 +145,6 @@ class MailRouter:
             if not errors and all(scan.complete for scan in provider_scans)
             else MailExecutionState.DEGRADED
         )
-        total_seconds = perf_counter() - total_started
         return MailRouteResult(
             state=state,
             provider_scans=provider_scans,
@@ -157,7 +154,7 @@ class MailRouter:
                 scan_seconds=scan_seconds,
                 classify_seconds=classify_seconds,
                 route_seconds=route_seconds,
-                total_seconds=total_seconds,
+                total_seconds=perf_counter() - total_started,
             ),
         )
 
@@ -166,18 +163,13 @@ class MailRouter:
         mailboxes: Sequence[MailboxPort],
         start: datetime,
         end: datetime,
-    ) -> tuple[
-        tuple[MailMessage, ...],
-        tuple[ProviderScan, ...],
-        tuple[RoutingError, ...],
-        float,
-    ]:
+    ) -> tuple[tuple[MailMessage, ...], tuple[ProviderScan, ...], tuple[RoutingError, ...], float]:
         started = perf_counter()
         messages: list[MailMessage] = []
         scans: list[ProviderScan] = []
         errors: list[RoutingError] = []
 
-        with ThreadPoolExecutor(max_workers=min(self._max_workers, len(mailboxes))) as pool:
+        with ThreadPoolExecutor(max_workers=min(self._scan_workers, len(mailboxes))) as pool:
             future_to_mailbox = {
                 pool.submit(lambda box=mailbox: tuple(box.scan_window(start, end))): mailbox
                 for mailbox in mailboxes
@@ -188,20 +180,9 @@ class MailRouter:
                     batch = future.result()
                 except Exception as exc:
                     detail = type(exc).__name__
-                    scans.append(
-                        ProviderScan(
-                            provider=mailbox.provider,
-                            complete=False,
-                            message_count=0,
-                            detail=detail,
-                        )
-                    )
+                    scans.append(ProviderScan(mailbox.provider, False, 0, detail))
                     errors.append(
-                        RoutingError(
-                            ref=MailRef(provider=mailbox.provider, message_id="<scan>"),
-                            operation="scan",
-                            detail=detail,
-                        )
+                        RoutingError(MailRef(provider=mailbox.provider, message_id="<scan>"), "scan", detail)
                     )
                     continue
 
@@ -210,13 +191,7 @@ class MailRouter:
                 for message in batch:
                     if message.provider != mailbox.provider:
                         complete = False
-                        errors.append(
-                            RoutingError(
-                                ref=message.ref,
-                                operation="scan",
-                                detail="provider-mismatch",
-                            )
-                        )
+                        errors.append(RoutingError(message.ref, "scan", "provider-mismatch"))
                         continue
                     accepted += 1
                     messages.append(message)
@@ -247,41 +222,34 @@ class MailRouter:
         if not candidates:
             return frozenset(), ()
 
+        routable: list[MailMessage] = []
         routed: set[MailRef] = set()
         errors: list[RoutingError] = []
-        with ThreadPoolExecutor(max_workers=min(self._max_workers, len(candidates))) as pool:
-            future_to_message = {}
-            for message in candidates:
-                mailbox = mailbox_by_provider.get(message.provider)
-                if mailbox is None:
-                    errors.append(
-                        RoutingError(
-                            ref=message.ref,
-                            operation="route",
-                            detail="provider-port-missing",
-                        )
-                    )
-                    continue
-                future = pool.submit(
-                    mailbox.route_to_newsletters,
-                    message.message_id,
-                    self._newsletter_boundary,
-                )
-                future_to_message[future] = message
+        for message in candidates:
+            mailbox = mailbox_by_provider.get(message.provider)
+            if mailbox is None:
+                errors.append(RoutingError(message.ref, "route", "provider-port-missing"))
+                continue
+            routable.append(message)
 
-            for future in as_completed(future_to_message):
-                message = future_to_message[future]
-                try:
-                    future.result()
-                except Exception as exc:
-                    errors.append(
-                        RoutingError(
-                            ref=message.ref,
-                            operation="route",
-                            detail=type(exc).__name__,
-                        )
-                    )
-                else:
-                    routed.add(message.ref)
+        with ThreadPoolExecutor(max_workers=min(self._message_workers, len(routable) or 1)) as pool:
+            for chunk_start in range(0, len(routable), self._message_workers):
+                chunk = routable[chunk_start : chunk_start + self._message_workers]
+                future_to_message = {
+                    pool.submit(
+                        mailbox_by_provider[message.provider].route_to_newsletters,
+                        message.message_id,
+                        self._newsletter_boundary,
+                    ): message
+                    for message in chunk
+                }
+                for future in as_completed(future_to_message):
+                    message = future_to_message[future]
+                    try:
+                        future.result()
+                    except Exception as exc:
+                        errors.append(RoutingError(message.ref, "route", type(exc).__name__))
+                    else:
+                        routed.add(message.ref)
 
         return frozenset(routed), tuple(errors)
