@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import threading
+import time
 import unittest
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -115,6 +116,65 @@ class MailTransportTests(unittest.TestCase):
         self.assertEqual([m.message_id for m in messages], ["msg-a", "msg-b"])
         self.assertEqual(messages[0].body_text, "synthetic job alert")
         mailbox.route_to_newsletters("msg-a", "J Newsletters")
+
+    def test_gmail_worker_pool_is_clamped_to_supported_ceiling(self) -> None:
+        mailbox = GmailMailboxTransport(
+            context=self.context,
+            http=self.http,
+            access_token="synthetic-token",
+            message_factory=SyntheticMessage,
+            max_workers=1000,
+        )
+        self.assertLessEqual(mailbox._max_workers, 8)
+
+    def test_scan_window_bounds_in_flight_futures_for_1000_messages(self) -> None:
+        lock = threading.Lock()
+        state = {"active": 0, "max_active": 0}
+
+        class TrackingHttp:
+            def request_json(self, context, method, url, **kwargs):
+                if "/messages?" in url:
+                    return {"messages": [{"id": f"msg-{i:04d}"} for i in range(1000)]}
+                if "/messages/msg-" in url and "format=full" in url:
+                    with lock:
+                        state["active"] += 1
+                        state["max_active"] = max(state["max_active"], state["active"])
+                    time.sleep(0.0005)
+                    with lock:
+                        state["active"] -= 1
+                    message_id = url.split("/messages/")[1].split("?")[0]
+                    idx = int(message_id.split("-")[1])
+                    body = base64.urlsafe_b64encode(b"synthetic").decode("ascii").rstrip("=")
+                    return {
+                        "id": message_id,
+                        "internalDate": str(1000 + idx),
+                        "payload": {
+                            "mimeType": "text/plain",
+                            "headers": [
+                                {"name": "From", "value": "alerts@example.invalid"},
+                                {"name": "Subject", "value": "synthetic"},
+                            ],
+                            "body": {"data": body},
+                        },
+                    }
+                raise AssertionError(f"unexpected Gmail call {method} {url}")
+
+        http = TrackingHttp()
+        mailbox = GmailMailboxTransport(
+            context=self.context,
+            http=http,
+            access_token="synthetic-token",
+            message_factory=SyntheticMessage,
+            max_workers=8,
+        )
+
+        messages = mailbox.scan_window(self.start, self.end)
+
+        self.assertEqual(len(messages), 1000)
+        self.assertLessEqual(state["max_active"], 8)
+        self.assertGreater(state["max_active"], 1)
+        # Deterministic final ordering by (received_at, message_id).
+        self.assertEqual([m.message_id for m in messages], sorted(m.message_id for m in messages))
 
     def test_outlook_implements_agent2_port_shape(self) -> None:
         mailbox = OutlookMailboxTransport(

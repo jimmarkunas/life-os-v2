@@ -18,6 +18,11 @@ class NewsletterExecutionState(str, Enum):
     PASS = "PASS"
     DEGRADED = "DEGRADED"
 
+# Worker-pool ceilings: configuration above these is silently clamped, never
+# raised, so a later misconfiguration cannot explode concurrency.
+MAX_SOURCE_FETCH_WORKERS = 2  # provider-level source fetching
+MAX_PARSE_WORKERS = 8  # ordinary per-message processing
+
 @dataclass(frozen=True, slots=True)
 class NewsletterError:
     mailbox: str
@@ -47,7 +52,10 @@ class NewsletterProcessResult:
 
 class NewsletterProcessor:
     def __init__(self, *, boundary_name: str = "J Newsletters", max_workers: int = 8) -> None:
-        self._boundary_name = boundary_name; self._max_workers = max(1, max_workers)
+        self._boundary_name = boundary_name
+        requested = max(1, max_workers)
+        self._fetch_workers = min(requested, MAX_SOURCE_FETCH_WORKERS)
+        self._parse_workers = min(requested, MAX_PARSE_WORKERS)
     def process_window(self, sources: Sequence[NewsletterSourcePort], start: datetime, end: datetime) -> NewsletterProcessResult:
         if start.tzinfo is None or end.tzinfo is None: raise ValueError("newsletter window timestamps must be timezone-aware")
         if end <= start: raise ValueError("newsletter window end must be after start")
@@ -55,7 +63,7 @@ class NewsletterProcessor:
         if not sources:
             errors.append(NewsletterError("<config>", "fetch", "no-newsletter-sources"))
         if sources:
-            with ThreadPoolExecutor(max_workers=min(self._max_workers, len(sources))) as pool:
+            with ThreadPoolExecutor(max_workers=min(self._fetch_workers, len(sources))) as pool:
                 futures = {pool.submit(lambda source=s: tuple(source.fetch_unprocessed(start,end,self._boundary_name))): s for s in sources}
                 for future in as_completed(futures):
                     source = futures[future]
@@ -70,9 +78,13 @@ class NewsletterProcessor:
         messages.sort(key=lambda m:(m.received_at,m.mailbox,m.message_id))
         parse_started = perf_counter(); parsed: list[MessageParseResult] = []
         if messages:
-            with ThreadPoolExecutor(max_workers=min(self._max_workers, len(messages))) as pool:
-                futures = [pool.submit(parse_message,m) for m in messages]
-                for future in futures: parsed.append(future.result())
+            # Bounded in-flight futures: at most one worker's worth of
+            # pending parses per chunk, not one Future per message up front.
+            with ThreadPoolExecutor(max_workers=min(self._parse_workers, len(messages))) as pool:
+                for chunk_start in range(0, len(messages), self._parse_workers):
+                    chunk = messages[chunk_start : chunk_start + self._parse_workers]
+                    futures = [pool.submit(parse_message, m) for m in chunk]
+                    for future in futures: parsed.append(future.result())
         parse_seconds = perf_counter() - parse_started
         parsed.sort(key=lambda r:r.message_ref)
         state = NewsletterExecutionState.PASS if not errors and all(r.state is ParseState.PASS for r in parsed) else NewsletterExecutionState.DEGRADED

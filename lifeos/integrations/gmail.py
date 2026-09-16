@@ -17,6 +17,7 @@ T = TypeVar("T")
 _GMAIL_API = "https://gmail.googleapis.com/gmail/v1"
 _READ_RETRY = RetryPolicy(max_attempts=2, backoff_seconds=0.1, max_backoff_seconds=1.0)
 _NO_RETRY = RetryPolicy(max_attempts=1)
+MAX_MESSAGE_DETAIL_WORKERS = 8  # ordinary per-message processing ceiling
 
 
 class GmailMailboxTransport(Generic[T]):
@@ -39,7 +40,7 @@ class GmailMailboxTransport(Generic[T]):
         self._token = access_token
         self._factory = message_factory
         self._user_id = user_id
-        self._max_workers = max(1, min(int(max_workers), 16))
+        self._max_workers = max(1, min(int(max_workers), MAX_MESSAGE_DETAIL_WORKERS))
         self._label_ids: dict[str, str] = {}
         self._label_lock = Lock()
 
@@ -51,13 +52,19 @@ class GmailMailboxTransport(Generic[T]):
 
         messages: list[T] = []
         failures = 0
+        # Bounded in-flight futures: submit at most one worker's worth of
+        # message-detail fetches per chunk rather than one Future per id up
+        # front -- an unexpectedly large window can never queue thousands of
+        # pending futures even though the pool itself stays this small.
         with ThreadPoolExecutor(max_workers=min(self._max_workers, len(ids))) as pool:
-            futures = {pool.submit(self._fetch_message, message_id): message_id for message_id in ids}
-            for future in as_completed(futures):
-                try:
-                    messages.append(future.result())
-                except Exception:
-                    failures += 1
+            for chunk_start in range(0, len(ids), self._max_workers):
+                chunk = ids[chunk_start : chunk_start + self._max_workers]
+                futures = {pool.submit(self._fetch_message, message_id): message_id for message_id in chunk}
+                for future in as_completed(futures):
+                    try:
+                        messages.append(future.result())
+                    except Exception:
+                        failures += 1
         if failures:
             raise MailboxTransportError(f"Gmail message detail acquisition incomplete: {failures} failed")
         messages.sort(key=lambda item: (getattr(item, "received_at"), getattr(item, "message_id")))

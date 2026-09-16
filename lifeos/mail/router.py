@@ -29,6 +29,12 @@ class MailExecutionState(str, Enum):
     DEGRADED = "DEGRADED"
 
 
+# Worker-pool ceilings: configuration above these is silently clamped, never
+# raised, so a later misconfiguration cannot explode concurrency.
+MAX_PROVIDER_SCAN_WORKERS = 2  # provider-level mailbox scanning
+MAX_MESSAGE_WORKERS = 8  # ordinary per-message processing
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderScan:
     provider: str
@@ -93,7 +99,9 @@ class MailRouter:
     ) -> None:
         self._classifier = classifier or DeterministicMailClassifier()
         self._newsletter_boundary = newsletter_boundary
-        self._max_workers = max(1, max_workers)
+        requested = max(1, max_workers)
+        self._scan_workers = min(requested, MAX_PROVIDER_SCAN_WORKERS)
+        self._message_workers = min(requested, MAX_MESSAGE_WORKERS)
 
     def route_window(
         self,
@@ -177,7 +185,7 @@ class MailRouter:
         scans: list[ProviderScan] = []
         errors: list[RoutingError] = []
 
-        with ThreadPoolExecutor(max_workers=min(self._max_workers, len(mailboxes))) as pool:
+        with ThreadPoolExecutor(max_workers=min(self._scan_workers, len(mailboxes))) as pool:
             future_to_mailbox = {
                 pool.submit(lambda box=mailbox: tuple(box.scan_window(start, end))): mailbox
                 for mailbox in mailboxes
@@ -247,41 +255,41 @@ class MailRouter:
         if not candidates:
             return frozenset(), ()
 
+        routable: list[MailMessage] = []
         routed: set[MailRef] = set()
         errors: list[RoutingError] = []
-        with ThreadPoolExecutor(max_workers=min(self._max_workers, len(candidates))) as pool:
-            future_to_message = {}
-            for message in candidates:
-                mailbox = mailbox_by_provider.get(message.provider)
-                if mailbox is None:
-                    errors.append(
-                        RoutingError(
-                            ref=message.ref,
-                            operation="route",
-                            detail="provider-port-missing",
-                        )
-                    )
-                    continue
-                future = pool.submit(
-                    mailbox.route_to_newsletters,
-                    message.message_id,
-                    self._newsletter_boundary,
+        for message in candidates:
+            mailbox = mailbox_by_provider.get(message.provider)
+            if mailbox is None:
+                errors.append(
+                    RoutingError(ref=message.ref, operation="route", detail="provider-port-missing")
                 )
-                future_to_message[future] = message
+                continue
+            routable.append(message)
 
-            for future in as_completed(future_to_message):
-                message = future_to_message[future]
-                try:
-                    future.result()
-                except Exception as exc:
-                    errors.append(
-                        RoutingError(
-                            ref=message.ref,
-                            operation="route",
-                            detail=type(exc).__name__,
+        # Bounded in-flight futures: never queue more than one worker's
+        # worth of pending routes per chunk, regardless of how many
+        # confirmed messages this window produced.
+        with ThreadPoolExecutor(max_workers=min(self._message_workers, len(routable) or 1)) as pool:
+            for chunk_start in range(0, len(routable), self._message_workers):
+                chunk = routable[chunk_start : chunk_start + self._message_workers]
+                future_to_message = {
+                    pool.submit(
+                        mailbox_by_provider[message.provider].route_to_newsletters,
+                        message.message_id,
+                        self._newsletter_boundary,
+                    ): message
+                    for message in chunk
+                }
+                for future in as_completed(future_to_message):
+                    message = future_to_message[future]
+                    try:
+                        future.result()
+                    except Exception as exc:
+                        errors.append(
+                            RoutingError(ref=message.ref, operation="route", detail=type(exc).__name__)
                         )
-                    )
-                else:
-                    routed.add(message.ref)
+                    else:
+                        routed.add(message.ref)
 
         return frozenset(routed), tuple(errors)

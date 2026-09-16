@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 
@@ -209,6 +211,55 @@ class WholeMailboxRoutingTests(unittest.TestCase):
         self.assertFalse(result.records[0].routed)
         self.assertEqual(result.errors[0].operation, "route")
         self.assertEqual(result.errors[0].detail, "TimeoutError")
+
+
+    def test_worker_pools_are_clamped_to_supported_ceilings(self) -> None:
+        router = MailRouter(max_workers=1000)
+        self.assertLessEqual(router._scan_workers, 2)
+        self.assertLessEqual(router._message_workers, 8)
+
+    def test_1000_confirmed_messages_use_bounded_in_flight_futures(self) -> None:
+        lock = threading.Lock()
+        state = {"active": 0, "max_active": 0}
+
+        class TrackingMailbox(FakeMailbox):
+            def route_to_newsletters(self, message_id: str, boundary_name: str) -> None:
+                with lock:
+                    state["active"] += 1
+                    state["max_active"] = max(state["max_active"], state["active"])
+                time.sleep(0.0005)
+                with lock:
+                    state["active"] -= 1
+                super().route_to_newsletters(message_id, boundary_name)
+
+        messages = [
+            message(
+                "gmail",
+                f"synthetic-g-{i:04d}",
+                "Daily job alert: new roles for you",
+                sender="alerts@example.invalid",
+                headers={"List-Unsubscribe": "<https://example.invalid/unsub>"},
+                minute=0,
+            )
+            for i in range(1000)
+        ]
+        gmail = TrackingMailbox("gmail", messages)
+        router = MailRouter()
+
+        result = router.route_window([gmail], self.start, self.end)
+
+        self.assertEqual(result.scanned_count, 1000)
+        self.assertEqual(result.count(MailClass.AUTOMATED_JOB_SOURCE), 1000)
+        self.assertEqual(len(gmail.routed), 1000)
+        self.assertEqual(result.errors, ())
+        # Bounded: never more in flight than the clamped worker ceiling.
+        self.assertLessEqual(state["max_active"], 8)
+        self.assertGreater(state["max_active"], 1)
+        # Deterministic final ordering, independent of completion order.
+        self.assertEqual(
+            [record.ref.message_id for record in result.records],
+            [f"synthetic-g-{i:04d}" for i in range(1000)],
+        )
 
 
 if __name__ == "__main__":
