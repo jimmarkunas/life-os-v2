@@ -58,3 +58,17 @@ v2 development uses parallel workstreams with non-overlapping mutation surfaces.
 - Codex owns public-repo security, CI, synthetic-data protection, and performance/security harnesses.
 
 One implementation owner exists per package. Review is consolidated rather than creating reviewer chains, duplicate agents, or parallel implementations of the same behavior.
+
+## D-010 — Newsletter Wave 1 integration contracts
+
+The minimum cross-owner contracts for the Newsletter vertical slice are fixed before implementation diverges.
+
+- **Canonical Jobs package:** shared vacancy identity, normalization, qualification, lifecycle, final employer/ATS URL resolution, Posting Date interpretation, Job Ledger persistence, and read-back live under `lifeos/jobs/**`. Earlier `lifeos/career/**` path references are naming residue, not a second domain or package.
+- **Platform Core → all domains:** Agent 1 provides only reusable execution mechanics: `RunContext`/deadline budget, bounded HTTP/retry behavior, validated runtime config, redaction, and a standard execution status/result shape. Core does not sequence Newsletter stages or own Jobs policy.
+- **Mail/Newsletter → Jobs:** Agent 2 owns whole-mailbox acquisition, message classification/routing, routed-newsletter parsing, and source-specific extraction. It emits in-memory vacancy observations into the Jobs-owned request contract. It does not compute Stable Job Keys, own shared final-vacancy resolution, qualify lifecycle, or write the Job Ledger.
+- **Jobs → Mail/Newsletter:** Claude Code owns normalization, Stable Job Key generation, cross-source dedupe, shared employer/ATS and Posting Date resolution, qualification/lifecycle, idempotent Job Ledger persistence, and authoritative read-back. The Jobs result must account for every input observation with exactly one terminal disposition: `created`, `updated`, `duplicate`, `excluded`, or `REVIEW-DEGRADED`.
+- **One vacancy invariant:** multiple source observations may resolve to one Stable Job Key. The Jobs Engine performs at most one canonical mutation per Stable Job Key for a reconciliation batch and merges provenance rather than creating source-specific canonical vacancies.
+- **Cleanup gate:** Mail/Newsletter may mark/archive/checkpoint a source message only after the Jobs result proves complete accounting for that source and proves authoritative read-back for every canonical mutation or existing canonical record required by the reconciliation. The Jobs contract exposes a single cleanup-safe/reconciled signal; Mail/Newsletter does not recreate persistence verification itself.
+- **Security/CI boundary:** Codex owns synthetic-fixture enforcement, leak/secret checks, PR-safe CI, and shared security/performance harnesses. Those harnesses may validate public contracts and budgets but must not contain domain business logic or production/private identifiers.
+
+No trigger file, handoff manifest, event bus, workflow engine, secondary persistence layer, or recovery subsystem is introduced to connect these contracts.
