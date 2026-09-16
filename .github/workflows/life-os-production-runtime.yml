@@ -56,11 +56,18 @@ jobs:
 
           test -n "$slot"
           test -n "$nonce"
+          dry_run="false"
           case "$module" in
             us-remote)
               default_window="24"
               web_lookback_hours="24"
               full_web_sweep="false"
+              ;;
+            us-remote-smoke)
+              default_window="1"
+              web_lookback_hours="1"
+              full_web_sweep="false"
+              dry_run="true"
               ;;
             us-remote-recovery)
               default_window="1440"
@@ -81,6 +88,7 @@ jobs:
           echo "window_hours=$window_hours" >> "$GITHUB_OUTPUT"
           echo "web_lookback_hours=$web_lookback_hours" >> "$GITHUB_OUTPUT"
           echo "full_web_sweep=$full_web_sweep" >> "$GITHUB_OUTPUT"
+          echo "dry_run=$dry_run" >> "$GITHUB_OUTPUT"
           echo "nonce=$nonce" >> "$GITHUB_OUTPUT"
 
       - name: Verify headless browser fallback
@@ -102,6 +110,9 @@ jobs:
           extra=()
           if [ "${{ steps.trigger.outputs.full_web_sweep }}" = "true" ]; then
             extra+=(--full-web-sweep)
+          fi
+          if [ "${{ steps.trigger.outputs.dry_run }}" = "true" ]; then
+            extra+=(--dry-run)
           fi
           PYTHONPATH="$GITHUB_WORKSPACE" python3.12 scripts/run_us_remote_production.py \
             --timeout-seconds 300 \
