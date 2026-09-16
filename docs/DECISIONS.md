@@ -22,7 +22,7 @@ Benchmark is 45 seconds. Five minutes is the absolute platform runtime limit. Ti
 
 ## D-005 — Newsletter first vertical slice
 
-The first production-critical vertical slice is full mailbox scan → classification/routing → routed Newsletter ingestion → shared Jobs Engine → canonical private Job Ledger.
+The first production-critical vertical slice is full mailbox scan → classification/routing → routed Newsletter ingestion → shared Career/Jobs Engine → canonical private Job Ledger.
 
 Confirmed automated job alerts are routed before Newsletter ingestion. Human hiring mail remains separate.
 
@@ -44,3 +44,17 @@ Payment card data and sensitive authentication data are prohibited from this rep
 - Current concurrency/ownership: Notion `Development Projects` only.
 
 No implementation diary or duplicate roadmap is created.
+
+## D-009 — Parallel delivery with strict ownership
+
+v2 development uses parallel workstreams with non-overlapping mutation surfaces.
+
+- Tech Lead 1 owns architecture, integration, merge/cutover decisions, and production-boundary acceptance.
+- Tech Lead 2 is the independent reviewer/second pair of eyes and does not implement by default.
+- Product Manager owns requirements decomposition and UAT.
+- Agent 1 owns shared platform core/integrations.
+- Agent 2 owns Mail Intelligence and Newsletter.
+- Claude Code owns heavy multi-file Career/Jobs implementation and sanitized logic harvest.
+- Codex owns public-repo security, CI, synthetic-data protection, and performance/security harnesses.
+
+One implementation owner exists per package. Review is consolidated rather than creating reviewer chains, duplicate agents, or parallel implementations of the same behavior.
