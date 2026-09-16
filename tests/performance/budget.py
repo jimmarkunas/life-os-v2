@@ -10,8 +10,6 @@ from typing import Iterator
 
 NORMAL_FEATURE_SECONDS = 45.0
 ANY_FEATURE_MAX_SECONDS = 300.0
-NEWSLETTER_TARGET_SECONDS = 90.0
-NEWSLETTER_TARGET_CEILING_SECONDS = 180.0
 
 
 @dataclass(frozen=True)
@@ -22,8 +20,6 @@ class RuntimeBudget:
 
 NORMAL_FEATURE_BUDGET = RuntimeBudget("normal-feature", NORMAL_FEATURE_SECONDS)
 ANY_FEATURE_ABSOLUTE_MAX = RuntimeBudget("any-feature-absolute-max", ANY_FEATURE_MAX_SECONDS)
-NEWSLETTER_TARGET_BUDGET = RuntimeBudget("newsletter-target", NEWSLETTER_TARGET_SECONDS)
-NEWSLETTER_TARGET_CEILING = RuntimeBudget("newsletter-target-ceiling", NEWSLETTER_TARGET_CEILING_SECONDS)
 
 
 class PerformanceBudgetExceeded(AssertionError):

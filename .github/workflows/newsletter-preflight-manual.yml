@@ -13,6 +13,7 @@ concurrency:
 jobs:
   preflight:
     name: Read-only Newsletter preflight
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
@@ -27,6 +28,7 @@ jobs:
       - name: Checkout main
         uses: actions/checkout@v4
         with:
+          ref: main
           persist-credentials: false
 
       - name: Set up Python 3.12
