@@ -151,7 +151,7 @@ class HttpClientTests(unittest.TestCase):
             client.request(
                 context,
                 "GET",
-                "https://example.invalid/private?token=synthetic-secret",
+                "https://example.invalid/private/resource",
                 headers={"Authorization": "Bearer synthetic-secret"},
             )
         text = str(caught.exception)
