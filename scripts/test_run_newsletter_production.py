@@ -113,6 +113,7 @@ class SyntheticProductionBackend:
         self.pages: dict[str, dict] = {}
         self._next_page = 1
         self.routed_message_ids: list[str] = []
+        self.processed_message_ids: list[str] = []
 
     def request(self, method, url, *, headers, body, timeout_seconds) -> HttpResponse:
         if url == entry._GOOGLE_TOKEN_URL:
@@ -138,7 +139,18 @@ class SyntheticProductionBackend:
 
     def _gmail(self, method, url, body) -> HttpResponse:
         if method == "GET" and "/labels" in url:
-            return HttpResponse(200, {}, json.dumps({"labels": [{"id": "label-news", "name": "J Newsletters"}]}).encode())
+            return HttpResponse(
+                200,
+                {},
+                json.dumps(
+                    {
+                        "labels": [
+                            {"id": "label-news", "name": "J Newsletters"},
+                            {"id": "label-processed", "name": "J Newsletters/Processed"},
+                        ]
+                    }
+                ).encode(),
+            )
         if method == "GET" and "/messages?" in url and "labelIds=" not in url:
             return HttpResponse(200, {}, json.dumps({"messages": [{"id": "msg-1"}]}).encode())
         if method == "GET" and "/messages?" in url and "labelIds=label-news" in url:
@@ -167,7 +179,12 @@ class SyntheticProductionBackend:
                 ).encode(),
             )
         if method == "POST" and "/messages/msg-1/modify" in url:
-            self.routed_message_ids.append("msg-1")
+            payload = json.loads(body.decode("utf-8")) if body else {}
+            labels = payload.get("addLabelIds") or []
+            if "label-news" in labels:
+                self.routed_message_ids.append("msg-1")
+            if "label-processed" in labels:
+                self.processed_message_ids.append("msg-1")
             return HttpResponse(200, {}, b"{}")
         if method == "GET" and "/messages/msg-1?" in url and "format=full" not in url:
             raise AssertionError("unexpected non-full message fetch")
@@ -226,14 +243,16 @@ class MainEntryPointTests(unittest.TestCase):
     def test_dry_run_never_routes_or_persists(self) -> None:
         exit_code, backend = self._run("--dry-run", "--timeout-seconds", "30")
         self.assertEqual(exit_code, 0)
-        self.assertEqual(backend.routed_message_ids, [])  # no mutation
-        self.assertEqual(backend.pages, {})  # no Job Ledger writes
+        self.assertEqual(backend.routed_message_ids, [])
+        self.assertEqual(backend.processed_message_ids, [])
+        self.assertEqual(backend.pages, {})
 
-    def test_full_composed_run_routes_persists_and_reads_back(self) -> None:
+    def test_full_composed_run_routes_persists_reads_back_and_marks_processed(self) -> None:
         exit_code, backend = self._run("--timeout-seconds", "30")
         self.assertEqual(exit_code, 0)
         self.assertEqual(backend.routed_message_ids, ["msg-1"])
-        self.assertEqual(len(backend.pages), 1)  # exactly one canonical mutation
+        self.assertEqual(backend.processed_message_ids, ["msg-1"])
+        self.assertEqual(len(backend.pages), 1)
 
     def test_missing_required_env_blocks_before_any_network_call(self) -> None:
         backend = SyntheticProductionBackend()
@@ -242,10 +261,11 @@ class MainEntryPointTests(unittest.TestCase):
             exit_code = entry.main(["--timeout-seconds", "30"])
         self.assertEqual(exit_code, 2)
         self.assertEqual(backend.routed_message_ids, [])
+        self.assertEqual(backend.processed_message_ids, [])
         self.assertEqual(backend.pages, {})
 
-    def test_timeout_above_ceiling_is_rejected(self) -> None:
-        exit_code, _backend = self._run("--timeout-seconds", "181")
+    def test_timeout_above_platform_ceiling_is_rejected(self) -> None:
+        exit_code, _backend = self._run("--timeout-seconds", "301")
         self.assertEqual(exit_code, 2)
 
 
