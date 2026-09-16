@@ -37,7 +37,7 @@ Larger work must be decomposed into coherent independently provable mutations, n
 6. **NO QA-ERA ARCHITECTURE.** Do not migrate numbered QA namespaces, trigger-file RPC, handoff manifests, Continuity-style coordination, or recovery frameworks into v2.
 7. **GIT IS THE ARCHIVE.** Do not keep obsolete implementations or one-shot recovery utilities in the live product merely for reference.
 8. **PUBLIC CODE / PRIVATE DATA.** Production secrets, personal identifiers, canonical private records, personal scoring policy, and private runtime IDs never enter Git history, fixtures, logs, or public tests.
-9. **NO PRODUCTION GITHUB-HOSTED ACTIONS.** GitHub-hosted Actions may be used for bounded public CI only. LIFE OS production, recovery, or routine acceptance must not depend on billed Actions minutes, artifacts, or caches.
+9. **GITHUB-HOSTED ACTIONS MAY EXECUTE PRODUCTION, NOT SCHEDULE IT.** Because `life-os-v2` is public, standard GitHub-hosted runners are approved as the stateless production executor for bounded v2 runtime work. `LIFE OS Daily Runs` remains the sole recurring scheduler. Production workflows may not use `schedule`/cron, larger/paid runners, Actions artifacts/caches as canonical state, or a second orchestration layer. Production execution must run approved code from protected `main`, receive secrets only through protected GitHub secrets/environment injection, preserve the 45-second benchmark and five-minute absolute runtime cap, and return bounded result/read-back evidence.
 10. **NO SCHEDULER CREATION.** Do not create or enable a recurring scheduler in v2 without Jim's explicit approval. The previous `LIFE OS Daily Runs` scheduler is currently disabled during rebuild/cutover.
 
 If requested work conflicts with locked architecture, report:
