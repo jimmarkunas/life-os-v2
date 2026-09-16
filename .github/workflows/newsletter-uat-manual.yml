@@ -2,9 +2,6 @@ name: Newsletter Production UAT (Manual)
 
 on:
   workflow_dispatch: {}
-  push:
-    branches:
-      - uat/newsletter-live-once
 
 permissions:
   contents: read
