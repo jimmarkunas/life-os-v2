@@ -4,13 +4,14 @@ Newsletter owns source extraction. Jobs owns terminal employer/ATS resolution,
 Posting Date interpretation, canonical Job construction, LIFE OS Fit, and
 qualification.
 
-A structurally valid supported Newsletter vacancy is never degraded merely
-because terminal employer/ATS evidence cannot be acquired. This preserves the
-proven v1 production behavior: keep the source observation, leave terminal URL
-and Posting Date unresolved, score from the evidence that is actually present,
-and let Jobs qualification route unresolved freshness/work-mode evidence to
-Passed / Review. Source-side parse ambiguity still fails closed via
-`unresolved_reason` and becomes REVIEW_DEGRADED.
+For the supported Wave 1 Newsletter providers (Lensa, Jobright, LinkedIn
+Jobs), a structurally valid source vacancy is not degraded merely because
+terminal employer/ATS evidence cannot be acquired. This preserves the proven
+v1 production behavior: retain the source observation, leave terminal URL and
+Posting Date unresolved, score from the trustworthy evidence that exists, and
+let Jobs qualification route unresolved freshness/work-mode evidence to
+Passed / Review. Source-side parse ambiguity and unsupported-provider terminal
+failures still fail closed via `unresolved_reason`.
 """
 from __future__ import annotations
 
@@ -27,6 +28,7 @@ from lifeos.jobs.terminal_evidence import Fetcher, FetchResponse, acquire_termin
 from lifeos.newsletter.models import SourceVacancyObservation
 
 _COMPENSATION_NUMBER = re.compile(r"\$?\s*([\d][\d,]*)(\s*[kK])?")
+_SUPPORTED_FALLBACK_PROVIDERS = frozenset({"Lensa", "Jobright", "LinkedIn Jobs"})
 
 
 class HttpClientFetcher:
@@ -97,8 +99,6 @@ class NewsletterJobsAdapter:
         role = (observation.role or "").strip()
         location = observation.location_text
 
-        # Source ambiguity is a genuine ingestion failure. Do not invent or
-        # normalize through an observation the source parser itself could not prove.
         if observation.issues:
             return NormalizedCandidate(
                 job=Job(
@@ -123,16 +123,15 @@ class NewsletterJobsAdapter:
         apply_url: str | None = None
         description_text: str | None = None
         posting_date: date | None = None
+        terminal_evidence_resolved = False
 
-        # Proven v1 behavior: terminal evidence enriches a valid source card,
-        # but inability to acquire it does not invalidate the source vacancy.
-        # Keep canonical URL/date unresolved and continue to qualification.
         if observation.source_apply_url:
             try:
                 evidence = acquire_terminal_vacancy_evidence(observation.source_apply_url, fetcher=cfg.fetcher)
             except Exception:
                 evidence = None
             if evidence is not None:
+                terminal_evidence_resolved = True
                 apply_url = evidence.canonical_url
                 description_text = evidence.description_text
                 posting_iso = parse_posting_date(
@@ -140,6 +139,28 @@ class NewsletterJobsAdapter:
                     reference_time=observation.source_received_at,
                 )
                 posting_date = date.fromisoformat(posting_iso) if posting_iso else None
+
+        if not terminal_evidence_resolved and observation.source_provider not in _SUPPORTED_FALLBACK_PROVIDERS:
+            return NormalizedCandidate(
+                job=Job(
+                    company=Company(name=company),
+                    role=role,
+                    location=location,
+                    work_mode=_infer_work_mode(location),
+                    compensation_text=observation.compensation_text,
+                    compensation_minimum=_parse_compensation_minimum(observation.compensation_text),
+                    posting_date=None,
+                    apply_url=None,
+                    source_lane=cfg.source_lane,
+                    provider_job_id=observation.provider_job_id,
+                    provider_score=observation.provider_score,
+                ),
+                fit=None,
+                market=cfg.market,
+                freshness_status=FreshnessStatus.UNRESOLVED,
+                evidence_ref=observation.evidence_ref,
+                unresolved_reason="final employer/ATS evidence could not be resolved",
+            )
 
         job = Job(
             company=Company(name=company),
@@ -156,10 +177,6 @@ class NewsletterJobsAdapter:
             provider_score=observation.provider_score,
         )
 
-        # Fit is deterministic over whatever trustworthy evidence exists. When
-        # the full employer JD is unavailable, role/location source evidence is
-        # still valid input; freshness remains UNRESOLVED and qualification owns
-        # the Passed / Review decision.
         fit = score_fit(
             FitEvidence(
                 role=role,
