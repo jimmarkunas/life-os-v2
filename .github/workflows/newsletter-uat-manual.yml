@@ -27,20 +27,21 @@ jobs:
       - name: Checkout main
         uses: actions/checkout@v4
         with:
+          ref: main
           persist-credentials: false
 
       - name: Newsletter production run
-        run: >
-          NEWSLETTER_PRIVATE_POLICY_PATH="$HOME/.config/life-os/newsletter-policy.json"
-          PYTHONPATH="$GITHUB_WORKSPACE" /opt/homebrew/bin/python3.12
-          scripts/run_newsletter_production.py
-          --timeout-seconds 90
-          --window-hours 24
+        run: |
+          NEWSLETTER_PRIVATE_POLICY_PATH="$HOME/.config/life-os/newsletter-policy.json" \
+          PYTHONPATH="$GITHUB_WORKSPACE" /opt/homebrew/bin/python3.12 \
+            scripts/run_newsletter_production.py \
+            --timeout-seconds 90 \
+            --window-hours 24
 
       - name: Newsletter production replay (idempotency proof)
-        run: >
-          NEWSLETTER_PRIVATE_POLICY_PATH="$HOME/.config/life-os/newsletter-policy.json"
-          PYTHONPATH="$GITHUB_WORKSPACE" /opt/homebrew/bin/python3.12
-          scripts/run_newsletter_production.py
-          --timeout-seconds 90
-          --window-hours 24
+        run: |
+          NEWSLETTER_PRIVATE_POLICY_PATH="$HOME/.config/life-os/newsletter-policy.json" \
+          PYTHONPATH="$GITHUB_WORKSPACE" /opt/homebrew/bin/python3.12 \
+            scripts/run_newsletter_production.py \
+            --timeout-seconds 90 \
+            --window-hours 24
