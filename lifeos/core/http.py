@@ -143,13 +143,16 @@ class HttpClient:
                 raise HttpError(HttpErrorKind.DEADLINE, attempts=attempt) from exc
 
             try:
-                response = self._backend.request(
-                    method,
-                    url,
-                    headers=request_headers,
-                    body=request_body,
-                    timeout_seconds=per_attempt_timeout,
-                )
+                with context.http_permit():
+                    response = self._backend.request(
+                        method,
+                        url,
+                        headers=request_headers,
+                        body=request_body,
+                        timeout_seconds=per_attempt_timeout,
+                    )
+            except DeadlineExceeded as exc:
+                raise HttpError(HttpErrorKind.DEADLINE, attempts=attempt) from exc
             except (TimeoutError, socket.timeout) as exc:
                 last_error = HttpError(HttpErrorKind.TIMEOUT, attempts=attempt)
                 if attempt >= retry.max_attempts:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 import unittest
 from datetime import datetime, timezone
 
@@ -46,6 +48,65 @@ class RunContextTests(unittest.TestCase):
         context = RunContext.start(timeout_seconds=10, monotonic_clock=clock)
         clock.value += 7
         self.assertAlmostEqual(context.bounded_timeout(8), 3.0)
+
+    def test_http_concurrency_defaults_to_eight_and_is_configurable(self) -> None:
+        default_context = RunContext.start(timeout_seconds=10)
+        self.assertEqual(default_context._http_permits._value, 8)
+        custom_context = RunContext.start(timeout_seconds=10, http_concurrency=3)
+        self.assertEqual(custom_context._http_permits._value, 3)
+        with self.assertRaises(ValueError):
+            RunContext.start(timeout_seconds=10, http_concurrency=0)
+
+    def test_http_permit_is_released_after_use(self) -> None:
+        context = RunContext.start(timeout_seconds=10, http_concurrency=1)
+        with context.http_permit():
+            pass
+        # Released: a second acquire (non-blocking) must succeed immediately.
+        acquired = context._http_permits.acquire(timeout=0)
+        self.assertTrue(acquired)
+        context._http_permits.release()
+
+    def test_http_permit_is_released_even_when_body_raises(self) -> None:
+        context = RunContext.start(timeout_seconds=10, http_concurrency=1)
+        with self.assertRaises(RuntimeError):
+            with context.http_permit():
+                raise RuntimeError("synthetic backend failure")
+        acquired = context._http_permits.acquire(timeout=0)
+        self.assertTrue(acquired)
+        context._http_permits.release()
+
+    def test_http_permit_wait_cannot_outlive_the_deadline(self) -> None:
+        context = RunContext.start(timeout_seconds=0.05, http_concurrency=1)
+        held = context._http_permits.acquire(timeout=0)
+        self.assertTrue(held)
+        try:
+            with self.assertRaises(DeadlineExceeded):
+                with context.http_permit():
+                    pass
+        finally:
+            context._http_permits.release()
+
+    def test_http_permit_caps_concurrently_active_callers(self) -> None:
+        context = RunContext.start(timeout_seconds=10, http_concurrency=2)
+        lock = threading.Lock()
+        state = {"active": 0, "max_active": 0}
+
+        def worker() -> None:
+            with context.http_permit():
+                with lock:
+                    state["active"] += 1
+                    state["max_active"] = max(state["max_active"], state["active"])
+                time.sleep(0.05)
+                with lock:
+                    state["active"] -= 1
+
+        threads = [threading.Thread(target=worker) for _ in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+        self.assertLessEqual(state["max_active"], 2)
+        self.assertGreater(state["max_active"], 1)  # proves genuine overlap was attempted
 
     def test_terminal_result_shape_is_small_and_structured(self) -> None:
         passed = ExecutionResult.passed(7, count=2)
@@ -166,3 +227,47 @@ class HttpClientTests(unittest.TestCase):
         with self.assertRaises(HttpError) as caught:
             client.request_json(context, "GET", "https://example.invalid")
         self.assertEqual(caught.exception.kind, HttpErrorKind.INVALID_RESPONSE)
+
+    def test_http_client_releases_permit_after_success(self) -> None:
+        context = RunContext.start(timeout_seconds=30, http_concurrency=1)
+        client = HttpClient(QueueBackend([HttpResponse(200, {}, b"{}")]))
+        client.request(context, "GET", "https://example.invalid")
+        acquired = context._http_permits.acquire(timeout=0)
+        self.assertTrue(acquired)
+        context._http_permits.release()
+
+    def test_http_client_releases_permit_after_backend_failure(self) -> None:
+        context = RunContext.start(timeout_seconds=30, http_concurrency=1)
+        client = HttpClient(QueueBackend([socket.timeout("synthetic")]))
+        with self.assertRaises(HttpError):
+            client.request(context, "GET", "https://example.invalid")
+        acquired = context._http_permits.acquire(timeout=0)
+        self.assertTrue(acquired)
+        context._http_permits.release()
+
+    def test_http_client_caps_concurrently_active_backend_requests(self) -> None:
+        context = RunContext.start(timeout_seconds=30, http_concurrency=2)
+        lock = threading.Lock()
+        state = {"active": 0, "max_active": 0}
+
+        class SlowBackend:
+            def request(self, method, url, *, headers, body, timeout_seconds):
+                with lock:
+                    state["active"] += 1
+                    state["max_active"] = max(state["max_active"], state["active"])
+                time.sleep(0.05)
+                with lock:
+                    state["active"] -= 1
+                return HttpResponse(200, {}, b"{}")
+
+        client = HttpClient(SlowBackend())
+        threads = [
+            threading.Thread(target=lambda: client.request(context, "GET", "https://example.invalid"))
+            for _ in range(6)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+        self.assertLessEqual(state["max_active"], 2)
+        self.assertGreater(state["max_active"], 1)
