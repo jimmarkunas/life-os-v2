@@ -95,6 +95,7 @@ def reconcile(
             admission_status=_best_admission(group),
             source_lanes=source_lanes,
             aliases=aliases,
+            fit=best_fit,
         )
         reconciled.append(
             ReconciledOpportunity(

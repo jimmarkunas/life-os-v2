@@ -117,6 +117,10 @@ class Opportunity:
     """Provider-native identity strings (see identity.provider_alias) seen
     across every observation that converged onto this canonical Job.
     Provenance only -- never used to re-derive stable_job_key."""
+    fit: int | None = None
+    """Authoritative LIFE OS Fit for this canonical Job (see
+    fit_scoring.py). Never a provider-supplied score -- see
+    Job.provider_score for that, kept strictly separate."""
 
 
 @dataclass(frozen=True)
