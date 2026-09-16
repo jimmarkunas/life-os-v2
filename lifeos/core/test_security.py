@@ -16,7 +16,7 @@ class RedactionTests(unittest.TestCase):
             "body_text": "private synthetic body",
             "nested": {
                 "access_token": "synthetic-token",
-                "detail": "contact person@example.com at https://example.invalid/path?token=abc",
+                "detail": "contact person@example.com at https://example.invalid/path?x=abc",
             },
         }
 
