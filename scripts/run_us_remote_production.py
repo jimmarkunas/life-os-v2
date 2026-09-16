@@ -12,26 +12,29 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Semaphore
+from time import perf_counter
 
 from lifeos.core.http import HttpClient, HttpError
 from lifeos.core.runtime import DeadlineExceeded, RunContext
 from lifeos.integrations.gmail import GmailMailboxTransport
 from lifeos.integrations.notion import NotionTransport, NotionTransportError
+from lifeos.jobs.fit_scoring import FitProfile
 from lifeos.jobs.newsletter_adapter import HttpClientFetcher, NewsletterAdapterConfig, NewsletterJobsAdapter
 from lifeos.jobs.newsletter_contract import Disposition, IngestResult, ingest
 from lifeos.jobs.newsletter_feature import _adapt_all
 from lifeos.jobs.notion_repository import NotionCareerRepository, NotionCareerRepositoryConfig
+from lifeos.jobs.qualification import LaneConfig
 from lifeos.jobs.terminal_evidence import FetchResponse, Fetcher
-from lifeos.jobs.us_remote_acquisition import USRemoteAcquirer
 from lifeos.mail.models import MailMessage
 from lifeos.mail.router import MailRouter
-from lifeos.newsletter.models import ParseState
+from lifeos.newsletter.models import ParseState, SourceVacancyObservation
 from lifeos.newsletter.processor import NewsletterExecutionState, NewsletterProcessor
 
 from scripts.run_newsletter_production import (
@@ -47,6 +50,7 @@ DEFAULT_TIMEOUT_SECONDS = 45.0
 MAX_TIMEOUT_SECONDS = 300.0
 DEFAULT_WINDOW_HOURS = 24.0
 DEFAULT_WEB_LOOKBACK_HOURS = 24.0
+MAX_INBOX_STAGING_HOURS = 24.0
 _SOURCE_REGISTRY = Path(__file__).resolve().parents[1] / "contracts" / "us_remote_sources.json"
 
 
@@ -209,6 +213,81 @@ def _accepted_newsletter_message_ids(process_result, results: list[IngestResult]
     return accepted
 
 
+def _role_base(role: str, profile: FitProfile) -> int:
+    padded = f" {role.casefold()} "
+    for family in profile.role_families:
+        if any(re.search(pattern, padded, re.I) for pattern in family.patterns):
+            return family.base_score
+    return profile.default_role_base
+
+
+def _fit_ceiling(observation: SourceVacancyObservation, profile: FitProfile) -> int | None:
+    role = (observation.role or "").strip()
+    if not role:
+        return None
+    return min(100, _role_base(role, profile) + sum(category.cap for category in profile.scope_categories))
+
+
+def _preexclude(
+    observation: SourceVacancyObservation,
+    *,
+    lane: LaneConfig,
+    fit_profile: FitProfile,
+) -> IngestResult | None:
+    """Return only exclusions that remain true under all possible enrichment.
+
+    Terminal URL/description resolution is expensive. We may skip it only when
+    source facts already prove the candidate can never enter the lane or review
+    band. Ambiguous evidence still proceeds to canonical resolution.
+    """
+    location = (observation.location_text or "").casefold()
+    if lane.work_mode_policy == "remote_only" and any(
+        marker in location for marker in ("hybrid", "on-site", "onsite", "on site")
+    ):
+        return IngestResult(
+            observation.evidence_ref,
+            Disposition.EXCLUDED,
+            None,
+            "source location explicitly conflicts with remote-only lane",
+        )
+
+    ceiling = _fit_ceiling(observation, fit_profile)
+    review_floor = (
+        lane.target_review_floor
+        if lane.is_target_bucket and lane.target_review_floor is not None
+        else lane.fit_floor
+    )
+    if ceiling is not None and ceiling < review_floor:
+        return IngestResult(
+            observation.evidence_ref,
+            Disposition.EXCLUDED,
+            None,
+            f"maximum possible fit {ceiling} is below configured review floor {review_floor}",
+        )
+    return None
+
+
+def _partition_observations(
+    observations: tuple[SourceVacancyObservation, ...],
+    *,
+    lane: LaneConfig,
+    fit_profile: FitProfile,
+) -> tuple[list[SourceVacancyObservation], list[IngestResult]]:
+    resolve: list[SourceVacancyObservation] = []
+    excluded: list[IngestResult] = []
+    for observation in observations:
+        disposition = _preexclude(observation, lane=lane, fit_profile=fit_profile)
+        if disposition is None:
+            resolve.append(observation)
+        else:
+            excluded.append(disposition)
+    return resolve, excluded
+
+
+def _error_codes(items) -> list[str]:
+    return [f"{item.operation}:{item.detail}" for item in items[:10]]
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _args(sys.argv[1:] if argv is None else argv)
     if not (0 < args.timeout_seconds <= MAX_TIMEOUT_SECONDS):
@@ -259,18 +338,27 @@ def main(argv: list[str] | None = None) -> int:
     )
     end = datetime.now(timezone.utc)
     start = end - timedelta(hours=args.window_hours)
+    inbox_start = max(start, end - timedelta(hours=MAX_INBOX_STAGING_HOURS))
     web_since = end - timedelta(hours=args.web_lookback_hours)
     fallback_fetcher = _fallback_fetcher(context, browser_evidence)
+    timings: dict[str, float] = {}
 
     try:
+        stage_started = perf_counter()
         mail_result = (
-            MailRouter(newsletter_boundary=NEWSLETTER_BOUNDARY).route_window([gmail], start, end)
+            MailRouter(newsletter_boundary=NEWSLETTER_BOUNDARY).route_window([gmail], inbox_start, end)
             if not args.dry_run
             else None
         )
+        timings["mail_stage"] = round(perf_counter() - stage_started, 3)
+
+        stage_started = perf_counter()
         newsletter_result = NewsletterProcessor(boundary_name=NEWSLETTER_BOUNDARY).process_window(
             [gmail], start, end
         )
+        timings["newsletter_fetch_parse"] = round(perf_counter() - stage_started, 3)
+
+        stage_started = perf_counter()
         web_result = USRemoteAcquirer(
             context=context,
             http=http,
@@ -282,6 +370,7 @@ def main(argv: list[str] | None = None) -> int:
             full_sweep=args.full_web_sweep,
             now=end,
         )
+        timings["web_acquire"] = round(perf_counter() - stage_started, 3)
 
         if args.dry_run:
             print(
@@ -298,11 +387,25 @@ def main(argv: list[str] | None = None) -> int:
                         "web_sources_not_due": sum(item.state == "NOT_DUE" for item in web_result.sources),
                         "web_sources_total": len(web_result.sources),
                         "browser_fallback_available": fallback_fetcher is not None,
+                        "timings": timings,
                     },
                     sort_keys=True,
                 )
             )
             return 0
+
+        stage_started = perf_counter()
+        newsletter_to_resolve, newsletter_preexcluded = _partition_observations(
+            newsletter_result.observations,
+            lane=lane,
+            fit_profile=fit_profile,
+        )
+        web_to_resolve, web_preexcluded = _partition_observations(
+            web_result.observations,
+            lane=lane,
+            fit_profile=fit_profile,
+        )
+        timings["cheap_prefilter"] = round(perf_counter() - stage_started, 3)
 
         repository = NotionCareerRepository(
             transport=notion,
@@ -329,46 +432,54 @@ def main(argv: list[str] | None = None) -> int:
                 source_lane="US Web",
             )
         )
+
+        stage_started = perf_counter()
         newsletter_candidates = _adapt_all(
-            newsletter_result.observations,
+            tuple(newsletter_to_resolve),
             adapter=newsletter_adapter,
             context=context,
             max_workers=8,
         )
         web_candidates = _adapt_all(
-            web_result.observations,
+            tuple(web_to_resolve),
             adapter=web_adapter,
             context=context,
             max_workers=8,
         )
-        candidates = newsletter_candidates + web_candidates
-        results = ingest(
-            candidates,
+        timings["terminal_resolution"] = round(perf_counter() - stage_started, 3)
+
+        stage_started = perf_counter()
+        ingest_results = ingest(
+            newsletter_candidates + web_candidates,
             lane=lane,
             lane_priority=lane_priority,
             repository=repository,
             run_date=end.date(),
             context=context,
         )
+        timings["reconcile_persist"] = round(perf_counter() - stage_started, 3)
 
-        fully_accounted = len(results) == len(candidates)
+        newsletter_ingest_count = len(newsletter_candidates)
+        newsletter_results = list(newsletter_preexcluded) + ingest_results[:newsletter_ingest_count]
+        web_results = list(web_preexcluded) + ingest_results[newsletter_ingest_count:]
+        results = newsletter_results + web_results
+
+        fully_accounted = len(results) == len(newsletter_result.observations) + len(web_result.observations)
         unresolved = any(item.disposition is Disposition.REVIEW_DEGRADED for item in results)
         newsletter_ok = newsletter_result.state is NewsletterExecutionState.PASS
         staging_ok = bool(mail_result and mail_result.checkpoint_safe)
 
-        newsletter_result_count = len(newsletter_candidates)
-        newsletter_ingest_results = results[:newsletter_result_count]
         processed_errors: list[str] = []
         processed_count = 0
-        for message_id in _accepted_newsletter_message_ids(
-            newsletter_result, newsletter_ingest_results
-        ):
+        stage_started = perf_counter()
+        for message_id in _accepted_newsletter_message_ids(newsletter_result, newsletter_results):
             try:
                 gmail.mark_newsletter_processed(message_id, NEWSLETTER_BOUNDARY)
             except Exception as exc:
                 processed_errors.append(type(exc).__name__)
             else:
                 processed_count += 1
+        timings["newsletter_mark_processed"] = round(perf_counter() - stage_started, 3)
 
         mail_ok = staging_ok and not processed_errors
         pass_run = (
@@ -382,18 +493,26 @@ def main(argv: list[str] | None = None) -> int:
             "status": "PASS" if pass_run else "DEGRADED",
             "elapsed_seconds": round(context.elapsed_seconds(), 3),
             "mail": {
+                "scan_window_hours": round((end - inbox_start).total_seconds() / 3600.0, 3),
                 "scanned": mail_result.scanned_count if mail_result else 0,
                 "staged": sum(1 for row in mail_result.records if row.routed) if mail_result else 0,
                 "staging_safe": staging_ok,
                 "processed": processed_count,
                 "processed_errors": len(processed_errors),
+                "error_codes": _error_codes(mail_result.errors) if mail_result else [],
             },
             "newsletter": {
+                "messages": len(newsletter_result.messages),
                 "observations": len(newsletter_result.observations),
+                "preexcluded": len(newsletter_preexcluded),
+                "terminal_resolution_required": len(newsletter_to_resolve),
                 "state": newsletter_result.state.value,
+                "error_codes": _error_codes(newsletter_result.errors),
             },
             "web": {
                 "observations": len(web_result.observations),
+                "preexcluded": len(web_preexcluded),
+                "terminal_resolution_required": len(web_to_resolve),
                 "complete_sources": sum(item.state == "COMPLETE" for item in web_result.sources),
                 "not_due_sources": sum(item.state == "NOT_DUE" for item in web_result.sources),
                 "sources": len(web_result.sources),
@@ -403,10 +522,11 @@ def main(argv: list[str] | None = None) -> int:
                 "full_sweep": args.full_web_sweep,
             },
             "jobs": {
-                "observations": len(candidates),
+                "observations": len(newsletter_result.observations) + len(web_result.observations),
                 "fully_accounted": fully_accounted,
                 "dispositions": _counts(results),
             },
+            "timings": timings,
             "browser_fallback_available": fallback_fetcher is not None,
             "within_45s_benchmark": context.elapsed_seconds() <= 45.0,
         }
@@ -419,6 +539,7 @@ def main(argv: list[str] | None = None) -> int:
                     "status": "DEGRADED",
                     "reason": "execution-deadline-exhausted",
                     "elapsed_seconds": round(context.elapsed_seconds(), 3),
+                    "timings": timings,
                 },
                 sort_keys=True,
             )
