@@ -65,7 +65,7 @@ jobs:
               ;;
             us-remote-smoke)
               default_window="1"
-              web_lookback_hours="1"
+              web_lookback_hours="24"
               full_web_sweep="false"
               dry_run="true"
               ;;
@@ -107,18 +107,25 @@ jobs:
         run: |
           set -euo pipefail
           started="$(date +%s)"
-          extra=()
-          if [ "${{ steps.trigger.outputs.full_web_sweep }}" = "true" ]; then
-            extra+=(--full-web-sweep)
+          if [ "${{ steps.trigger.outputs.module }}" = "us-remote-smoke" ]; then
+            PYTHONPATH="$GITHUB_WORKSPACE" python3.12 scripts/smoke_us_remote_batch.py \
+              --newsletter-messages 10 \
+              --web-candidates 10 \
+              --timeout-seconds 45
+          else
+            extra=()
+            if [ "${{ steps.trigger.outputs.full_web_sweep }}" = "true" ]; then
+              extra+=(--full-web-sweep)
+            fi
+            if [ "${{ steps.trigger.outputs.dry_run }}" = "true" ]; then
+              extra+=(--dry-run)
+            fi
+            PYTHONPATH="$GITHUB_WORKSPACE" python3.12 scripts/run_us_remote_production.py \
+              --timeout-seconds 300 \
+              --window-hours "${{ steps.trigger.outputs.window_hours }}" \
+              --web-lookback-hours "${{ steps.trigger.outputs.web_lookback_hours }}" \
+              "${extra[@]}"
           fi
-          if [ "${{ steps.trigger.outputs.dry_run }}" = "true" ]; then
-            extra+=(--dry-run)
-          fi
-          PYTHONPATH="$GITHUB_WORKSPACE" python3.12 scripts/run_us_remote_production.py \
-            --timeout-seconds 300 \
-            --window-hours "${{ steps.trigger.outputs.window_hours }}" \
-            --web-lookback-hours "${{ steps.trigger.outputs.web_lookback_hours }}" \
-            "${extra[@]}"
           finished="$(date +%s)"
           elapsed="$((finished-started))"
           echo "LIFE OS runtime complete: module=${{ steps.trigger.outputs.module }} slot=${SCHEDULED_SLOT} elapsed_seconds=${elapsed}"
