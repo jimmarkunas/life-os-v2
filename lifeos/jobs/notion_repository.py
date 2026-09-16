@@ -19,17 +19,33 @@ CareerRepository Protocol.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 from lifeos.integrations.notion import NotionIdentityQuery, NotionTransport
 from lifeos.jobs.lifecycle import LifecycleRecord, LifecycleStatus
-from lifeos.jobs.models import AdmissionStatus, Company, FreshnessStatus, Job, Opportunity, WorkMode
+from lifeos.jobs.models import AdmissionStatus, Company, Job, Opportunity, WorkMode
 from lifeos.jobs.repository import ReadBackMismatch
 
 STABLE_KEY_PROPERTY = "Stable Job Key"
-_LIST_SEPARATOR = "|"
 MAX_IDENTITY_VALUES_PER_QUERY = 50  # matches NotionIdentityQuery's own cap
+
+# Canonical Notion option labels -- the live Job Ledger schema uses these
+# exact strings, never the internal lowercase enum wire values.
+_WORK_MODE_TO_CANONICAL = {
+    WorkMode.REMOTE: "Remote",
+    WorkMode.HYBRID: "Hybrid",
+    WorkMode.ONSITE: "Onsite",
+    WorkMode.UNKNOWN: "Unknown",
+}
+_WORK_MODE_FROM_CANONICAL = {v: k for k, v in _WORK_MODE_TO_CANONICAL.items()}
+
+_ADMISSION_TO_CANONICAL = {
+    AdmissionStatus.ADMITTED: "Admitted",
+    AdmissionStatus.PASSED_REVIEW: "Passed / Review",
+    AdmissionStatus.EXCLUDED: "Excluded",
+}
+_ADMISSION_FROM_CANONICAL = {v: k for k, v in _ADMISSION_TO_CANONICAL.items()}
 
 
 def _chunk(values: list[str], size: int) -> list[list[str]]:
@@ -105,12 +121,14 @@ def _extract_checkbox(prop: Any) -> bool:
 
 
 def _record_to_properties(record: LifecycleRecord) -> dict[str, Any]:
-    """Canonical v1 production Job Ledger property names/types (see
-    jimmarkunas/life-os-automation jobs/notion_repository.py), reused
-    rather than invented. "Job" is the title property (company + role),
-    never bare "Role". Fields with no v1 canonical equivalent (this
-    domain's new lifecycle-state shape) keep descriptive v2-only names,
-    clearly additive rather than colliding with/renaming a canonical field."""
+    """Emit only properties that exist in the live canonical Job Ledger
+    schema, using their real types and canonical option labels -- never an
+    invented property name, and never an internal lowercase enum wire
+    value. "Job" is the title property (company + role), never bare
+    "Role". Internal v2-only fields with no canonical Wave 1 equivalent
+    (compensation_minimum, source_lane, provider_job_id, description_text,
+    source_lanes, aliases, lifecycle status/live/review_ready_on) stay in
+    memory only -- they are never persisted under a fabricated property."""
     job = record.opportunity.job
     fit = record.opportunity.fit
     return {
@@ -119,79 +137,97 @@ def _record_to_properties(record: LifecycleRecord) -> dict[str, Any]:
         "Company": _rich_text(job.company.name),
         "Role": _rich_text(job.role),
         "Location / Work Mode": _rich_text(job.location or ""),
-        "Work Mode": _select(job.work_mode.value),
+        "Work Mode": _select(_WORK_MODE_TO_CANONICAL[job.work_mode]),
         "Compensation": _rich_text(job.compensation_text or ""),
-        "Compensation Minimum": _number(job.compensation_minimum),
         "Apply URL": _url(job.apply_url),
         "Posting Date": _date(job.posting_date),
         "LIFE OS Fit": _number(fit),
         "Fit Authority": _select("Authoritative" if fit is not None else "Non-Authoritative"),
         "Provider Score": _number(job.provider_score),
-        "Source Lane": _rich_text(job.source_lane),
-        "Provider Job ID": _rich_text(job.provider_job_id or ""),
-        "Description": _rich_text((job.description_text or "")[:2000]),
-        "Admission Status": _select(record.opportunity.admission_status.value),
-        "Source Lanes": _rich_text(_LIST_SEPARATOR.join(record.opportunity.source_lanes)),
-        "Aliases": _rich_text(_LIST_SEPARATOR.join(record.opportunity.aliases)),
-        "Lifecycle Status": _select(record.status.value),
+        "Admission Status": _select(_ADMISSION_TO_CANONICAL[record.opportunity.admission_status]),
         "Applied": _checkbox(record.applied),
         "Applied On": _date(record.applied_on),
         "First Surfaced": _date(record.first_surfaced),
-        "Review Ready On": _date(record.review_ready_on),
         "Last Seen": _date(record.last_seen),
-        "Live": _checkbox(record.live),
     }
 
 
+def _canonical_view(record: LifecycleRecord) -> tuple[Any, ...]:
+    """The subset of a LifecycleRecord this repository actually persists.
+    upsert()'s authoritative read-back compares this view, not full
+    dataclass equality, since fields with no canonical Wave 1 property
+    (see _record_to_properties) are intentionally never round-tripped."""
+    job = record.opportunity.job
+    return (
+        record.opportunity.stable_job_key,
+        job.company.name,
+        job.role,
+        job.location,
+        job.work_mode,
+        job.compensation_text,
+        job.apply_url,
+        job.posting_date,
+        record.opportunity.fit,
+        job.provider_score,
+        record.opportunity.admission_status,
+        record.applied,
+        record.applied_on,
+        record.first_surfaced,
+        record.last_seen,
+    )
+
+
 def _page_to_record(page: dict[str, Any]) -> LifecycleRecord:
+    """Decode the canonical properties this repository owns. Fields with no
+    canonical Wave 1 property (compensation_minimum, source_lane,
+    provider_job_id, description_text, source_lanes, aliases) are not
+    persisted, so they decode to their in-memory-only defaults here -- see
+    _canonical_view, which is what upsert()'s read-back actually verifies."""
     props = page.get("properties") or {}
     stable_job_key = _plain_text(props.get(STABLE_KEY_PROPERTY))
     if not stable_job_key:
         raise ReadBackMismatch(f"persisted page {page.get('id')} is missing {STABLE_KEY_PROPERTY!r}")
 
-    work_mode_value = _extract_select(props.get("Work Mode")) or WorkMode.UNKNOWN.value
+    work_mode_canonical = _extract_select(props.get("Work Mode"))
+    work_mode = _WORK_MODE_FROM_CANONICAL.get(work_mode_canonical, WorkMode.UNKNOWN)
     job = Job(
         company=Company(name=_plain_text(props.get("Company"))),
         role=_plain_text(props.get("Role")),
         location=_plain_text(props.get("Location / Work Mode")) or None,
-        work_mode=WorkMode(work_mode_value),
+        work_mode=work_mode,
         compensation_text=_plain_text(props.get("Compensation")) or None,
-        compensation_minimum=_extract_number(props.get("Compensation Minimum")),
+        compensation_minimum=None,
         posting_date=_extract_date(props.get("Posting Date")),
         apply_url=_extract_url(props.get("Apply URL")),
-        source_lane=_plain_text(props.get("Source Lane")),
-        provider_job_id=_plain_text(props.get("Provider Job ID")) or None,
-        description_text=_plain_text(props.get("Description")) or None,
+        source_lane="",
         provider_score=_extract_number(props.get("Provider Score")),
     )
-    admission_value = _extract_select(props.get("Admission Status")) or AdmissionStatus.PASSED_REVIEW.value
-    source_lanes_raw = _plain_text(props.get("Source Lanes"))
-    aliases_raw = _plain_text(props.get("Aliases"))
+    admission_canonical = _extract_select(props.get("Admission Status"))
+    admission_status = _ADMISSION_FROM_CANONICAL.get(admission_canonical, AdmissionStatus.PASSED_REVIEW)
     opportunity = Opportunity(
         stable_job_key=stable_job_key,
         job=job,
-        admission_status=AdmissionStatus(admission_value),
-        source_lanes=tuple(x for x in source_lanes_raw.split(_LIST_SEPARATOR) if x),
-        aliases=tuple(x for x in aliases_raw.split(_LIST_SEPARATOR) if x),
+        admission_status=admission_status,
         fit=_extract_number(props.get("LIFE OS Fit")),
     )
 
-    status_value = _extract_select(props.get("Lifecycle Status")) or LifecycleStatus.NEW.value
     first_surfaced = _extract_date(props.get("First Surfaced"))
-    review_ready_on = _extract_date(props.get("Review Ready On"))
     last_seen = _extract_date(props.get("Last Seen"))
-    if first_surfaced is None or review_ready_on is None or last_seen is None:
+    if first_surfaced is None or last_seen is None:
         raise ReadBackMismatch(f"persisted page {page.get('id')} is missing required lifecycle dates")
+
+    live = admission_status != AdmissionStatus.EXCLUDED
+    status = LifecycleStatus.NEW if live else LifecycleStatus.HISTORICAL
 
     return LifecycleRecord(
         opportunity=opportunity,
-        status=LifecycleStatus(status_value),
+        status=status,
         applied=_extract_checkbox(props.get("Applied")),
         applied_on=_extract_date(props.get("Applied On")),
         first_surfaced=first_surfaced,
-        review_ready_on=review_ready_on,
+        review_ready_on=first_surfaced + timedelta(days=1),
         last_seen=last_seen,
-        live=_extract_checkbox(props.get("Live")),
+        live=live,
     )
 
 
@@ -257,6 +293,6 @@ class NotionCareerRepository:
 
         read_back_page = self._transport.get_page(page_id)
         persisted = _page_to_record(read_back_page)
-        if persisted != record:
+        if _canonical_view(persisted) != _canonical_view(record):
             raise ReadBackMismatch(f"read-back mismatch for {key}")
         return persisted

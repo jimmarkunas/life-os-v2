@@ -273,26 +273,31 @@ def resolve_final_vacancy_url(url: str, *, fetcher: Fetcher) -> ResolutionResult
     direct = canonical_url(url)
     if direct and not requires_downstream:
         score, _ = _downstream_score(direct)
-        if score >= 0:
-            # Already a recognizable ATS/job-path destination -- no fetch needed.
+        if score >= 3:
+            # Genuinely trusted ATS/employer host -- no fetch needed.
             if direct != url:
                 chain.append(direct)
             return ResolutionResult(direct, tuple(chain))
-        # Canonicalizable but not yet a proven trusted destination (e.g. a
-        # generic tracking-redirect host not on the known intermediary
-        # list): one bounded verification fetch using the actual
-        # post-redirect URL, never the originally requested tracking URL.
+        # Unknown/untrusted host -- even one whose path merely *looks*
+        # job-like (score 2, e.g. "/apply?id=...") must never become
+        # canonical on path shape alone (D-010). One bounded verification
+        # fetch using the actual post-redirect URL, never the originally
+        # requested tracking URL; the verified terminal destination must
+        # itself be a trusted ATS/job-path host or resolution fails closed.
         try:
             response = fetcher.get(direct)
         except Exception:
             return ResolutionResult(None, tuple(chain))
         final_candidate = canonical_url(response.final_url)
-        if final_candidate and final_candidate != direct and final_candidate not in chain:
-            chain.append(final_candidate)
-            return ResolutionResult(final_candidate, tuple(chain))
-        if direct != url:
-            chain.append(direct)
-        return ResolutionResult(direct, tuple(chain))
+        final_score, trusted_final = _downstream_score(final_candidate) if final_candidate else (-1, None)
+        if final_candidate and trusted_final and final_score >= 0 and final_candidate != direct:
+            if trusted_final not in chain:
+                chain.append(trusted_final)
+            return ResolutionResult(trusted_final, tuple(chain))
+        # No verified, trustworthy terminal destination distinct from the
+        # unproven tracking URL itself -- fail closed rather than accept an
+        # unresolved host merely because its path looked job-like.
+        return ResolutionResult(None, tuple(chain))
 
     if not requires_downstream:
         # Non-intermediary but uncanonicalizable directly (e.g. malformed):
