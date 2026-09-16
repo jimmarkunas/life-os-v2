@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import date
 from enum import Enum
 
+from lifeos.core.runtime import RunContext
 from lifeos.jobs.dedupe import LaneObservation, reconcile
 from lifeos.jobs.identity import stable_job_key
 from lifeos.jobs.lifecycle import apply_observation, new_record
@@ -42,6 +43,7 @@ def ingest(
     lane_priority: dict[str, int],
     repository: CareerRepository,
     run_date: date,
+    context: RunContext | None = None,
 ) -> list[IngestResult]:
     """Resolve identity, qualify, converge duplicates, and idempotently
     persist. Returns exactly one IngestResult per input candidate, in input
@@ -56,6 +58,14 @@ def ingest(
     most one canonical mutation is written per stable_job_key; every other
     same-key observation is reported DUPLICATE but its evidence was not
     discarded -- it already shaped the persisted canonical Opportunity.
+
+    Canonical mutations (repository.upsert()) remain strictly serialized --
+    this loop never parallelizes them. When `context` is supplied, this
+    function also checks it has time remaining before beginning EACH
+    canonical mutation. Once the deadline is exhausted, no further upsert()
+    begins: every still-unprocessed same-key group becomes REVIEW_DEGRADED,
+    already-verified writes from earlier in the loop are left untouched,
+    and every input still receives exactly one terminal disposition.
     """
     results: list[IngestResult | None] = [None] * len(candidates)
     observations: list[LaneObservation] = []
@@ -121,6 +131,21 @@ def ingest(
         same_key_indices = [i for i, (_, k) in live_by_index.items() if k == key]
         primary_index = primary_index_for_key[key]
         primary_candidate = live_by_index[primary_index][0]
+
+        if context is not None and context.expired():
+            # Execution deadline exhausted -- do not begin another canonical
+            # mutation. Already-verified writes from earlier in this loop
+            # are untouched; every still-unprocessed same-key observation
+            # becomes REVIEW_DEGRADED rather than a silent drop.
+            for i in same_key_indices:
+                cand, _ = live_by_index[i]
+                results[i] = IngestResult(
+                    evidence_ref=cand.evidence_ref,
+                    disposition=Disposition.REVIEW_DEGRADED,
+                    stable_job_key=key,
+                    detail="execution deadline exhausted before canonical mutation",
+                )
+            continue
 
         existing = existing_records.get(key)
         try:

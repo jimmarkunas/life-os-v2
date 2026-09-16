@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import threading
+
+from lifeos.core.runtime import RunContext
 from lifeos.jobs.models import WorkMode
 from lifeos.jobs.newsletter_contract import Disposition, ingest
 from lifeos.jobs.repository import InMemoryCareerRepository
@@ -177,3 +180,136 @@ def test_idempotent_rerun_of_identical_batch_does_not_duplicate_opportunity():
     assert second[0].disposition == Disposition.UPDATED
     assert first[0].stable_job_key == second[0].stable_job_key
     assert len(repo.get_many([first[0].stable_job_key])) == 1
+
+
+# --- PACKAGE C: serial persistence deadline guard ---------------------------
+
+
+class NonOverlappingUpsertRepository(InMemoryCareerRepository):
+    """Regression guard: asserts upsert() is never re-entered while another
+    upsert() call for this same repository instance is still in progress.
+    A future accidental parallelization of canonical writes would trip the
+    assertion inside upsert() itself, failing the test."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._lock = threading.Lock()
+        self._active = 0
+        self.max_active = 0
+        self.upsert_calls = 0
+
+    def upsert(self, record):
+        with self._lock:
+            self._active += 1
+            self.max_active = max(self.max_active, self._active)
+            assert self._active <= 1, "canonical upsert() calls overlapped"
+        self.upsert_calls += 1
+        try:
+            return super().upsert(record)
+        finally:
+            with self._lock:
+                self._active -= 1
+
+
+def _distinct_candidates(n: int) -> list:
+    return [
+        make_candidate(
+            job=make_job(apply_url=f"https://boards.example/synthetic-{i}"),
+            evidence_ref=f"ev:{i}",
+        )
+        for i in range(n)
+    ]
+
+
+def test_canonical_upserts_never_overlap():
+    repo = NonOverlappingUpsertRepository()
+    candidates = _distinct_candidates(25)
+    results = ingest(candidates, lane=REMOTE_LANE, lane_priority=LANE_PRIORITY, repository=repo, run_date=RUN_DATE)
+    assert all(r.disposition == Disposition.CREATED for r in results)
+    assert repo.upsert_calls == 25
+    assert repo.max_active == 1
+
+
+class ClockAdvancingRepository(InMemoryCareerRepository):
+    """Every upsert() call consumes a fixed amount of the shared fake clock,
+    simulating persistence that takes real time against RunContext's own
+    deadline -- deterministic, no sleeping, no real time dependency."""
+
+    def __init__(self, clock, seconds_per_upsert: float) -> None:
+        super().__init__()
+        self._clock = clock
+        self._seconds_per_upsert = seconds_per_upsert
+        self._lock = threading.Lock()
+        self._active = 0
+        self.max_active = 0
+        self.upsert_calls = 0
+
+    def upsert(self, record):
+        with self._lock:
+            self._active += 1
+            self.max_active = max(self.max_active, self._active)
+            assert self._active <= 1, "canonical upsert() calls overlapped"
+        self.upsert_calls += 1
+        self._clock.value += self._seconds_per_upsert
+        try:
+            return super().upsert(record)
+        finally:
+            with self._lock:
+                self._active -= 1
+
+
+class _FakeClock:
+    def __init__(self) -> None:
+        self.value = 0.0
+
+    def __call__(self) -> float:
+        return self.value
+
+
+def test_deadline_exhaustion_stops_further_canonical_mutations_mid_batch():
+    clock = _FakeClock()
+    # 10 seconds of budget, each upsert "costs" 3 seconds of clock time --
+    # only the first 3 or 4 upserts fit before the deadline is exhausted.
+    context = RunContext.start(timeout_seconds=10.0, monotonic_clock=clock)
+    repo = ClockAdvancingRepository(clock, seconds_per_upsert=3.0)
+    candidates = _distinct_candidates(10)
+
+    results = ingest(
+        candidates,
+        lane=REMOTE_LANE,
+        lane_priority=LANE_PRIORITY,
+        repository=repo,
+        run_date=RUN_DATE,
+        context=context,
+    )
+
+    # Every original input still receives exactly one terminal disposition.
+    assert len(results) == len(candidates)
+    assert all(r is not None for r in results)
+
+    created = [r for r in results if r.disposition == Disposition.CREATED]
+    degraded = [r for r in results if r.disposition == Disposition.REVIEW_DEGRADED]
+
+    # The first allowed mutations executed...
+    assert len(created) == repo.upsert_calls
+    assert repo.upsert_calls >= 1
+    # ...and once the deadline was exhausted, no further upsert() began.
+    assert repo.upsert_calls < len(candidates)
+    # Every still-unprocessed observation is REVIEW_DEGRADED, not dropped.
+    assert len(created) + len(degraded) == len(candidates)
+    assert all("deadline" in (r.detail or "") for r in degraded)
+    # Canonical mutation concurrency never exceeded 1.
+    assert repo.max_active == 1
+    # Already-verified writes are preserved (readable back from the repo).
+    for r in created:
+        assert repo.get_many([r.stable_job_key])
+
+
+def test_ingest_without_context_is_unaffected_by_deadline_guard():
+    """Backward compatibility: omitting context preserves prior behavior --
+    no deadline check is performed."""
+    repo = InMemoryCareerRepository()
+    results = ingest(
+        _distinct_candidates(5), lane=REMOTE_LANE, lane_priority=LANE_PRIORITY, repository=repo, run_date=RUN_DATE
+    )
+    assert all(r.disposition == Disposition.CREATED for r in results)
