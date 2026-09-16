@@ -22,7 +22,7 @@ from lifeos.jobs.notion_repository import (
 )
 from lifeos.jobs.qualification import LaneConfig
 from lifeos.jobs.repository import InMemoryCareerRepository, ReadBackMismatch
-from lifeos.jobs.terminal_evidence import Fetcher, FetchResponse
+from lifeos.jobs.terminal_evidence import Fetcher, FetchResponse, resolve_final_vacancy_url
 from lifeos.newsletter.models import SourceVacancyObservation
 
 RUN_DATE = date(2026, 1, 15)
@@ -85,18 +85,30 @@ CANONICAL_LEDGER_PROPERTY_TYPES = {
     "Stable Job Key": "rich_text",
     "Company": "rich_text",
     "Role": "rich_text",
+    "Location / Work Mode": "rich_text",
+    "Work Mode": "select",
+    "Compensation": "rich_text",
+    "Apply URL": "url",
+    "Posting Date": "date",
     "LIFE OS Fit": "number",
     "Fit Authority": "select",
     "Provider Score": "number",
-    "Apply URL": "url",
+    "Admission Status": "select",
     "Applied": "checkbox",
     "Applied On": "date",
+    "First Surfaced": "date",
+    "Last Seen": "date",
 }
+
+CANONICAL_ADMISSION_LABELS = {"Admitted", "Passed / Review", "Excluded"}
+CANONICAL_WORK_MODE_LABELS = {"Remote", "Hybrid", "Onsite", "Unknown"}
 
 
 class StrictSchemaNotionHttp:
     """Rejects any create/update payload containing a property name not in
-    the canonical schema -- proves the repository never invents fields."""
+    the canonical schema, a wrong Notion property type, or an internal
+    (non-canonical) enum option label -- proves the repository never
+    invents fields and never leaks internal wire enum values."""
 
     def __init__(self) -> None:
         self.pages: dict[str, dict] = {}
@@ -127,11 +139,16 @@ class StrictSchemaNotionHttp:
 
     def _validate(self, properties):
         for name, value in properties.items():
-            if name not in CANONICAL_LEDGER_PROPERTY_TYPES:
-                continue  # additive v2-only fields (Lifecycle Status, etc.) are allowed, not invented replacements
+            assert name in CANONICAL_LEDGER_PROPERTY_TYPES, f"invented property name: {name!r}"
             expected_type = CANONICAL_LEDGER_PROPERTY_TYPES[name]
             actual_type = next(iter(value.keys()))
             assert actual_type == expected_type, f"{name}: expected {expected_type}, got {actual_type}"
+            if name == "Admission Status":
+                label = value["select"]["name"]
+                assert label in CANONICAL_ADMISSION_LABELS, f"non-canonical Admission Status label: {label!r}"
+            if name == "Work Mode":
+                label = value["select"]["name"]
+                assert label in CANONICAL_WORK_MODE_LABELS, f"non-canonical Work Mode label: {label!r}"
 
     @staticmethod
     def _key(page):
@@ -164,6 +181,54 @@ def test_strict_schema_fixture_rejects_invented_property_types():
     opportunity = Opportunity(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED, fit=80)
     persisted = repo.upsert(new_record(opportunity, run_date=RUN_DATE))
     assert persisted.opportunity.fit == 80
+
+
+def test_no_emitted_property_is_outside_canonical_schema():
+    record = new_record(Opportunity(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED, fit=80), run_date=RUN_DATE)
+    props = _record_to_properties(record)
+    assert set(props) <= set(CANONICAL_LEDGER_PROPERTY_TYPES)
+    # Blocker 1's originally-invented properties must never appear.
+    for invented in ("Compensation Minimum", "Source Lane", "Provider Job ID", "Description",
+                      "Source Lanes", "Aliases", "Lifecycle Status", "Review Ready On", "Live"):
+        assert invented not in props
+
+
+def test_invented_property_name_fails_strict_schema_fixture():
+    http = StrictSchemaNotionHttp()
+    with pytest.raises(AssertionError):
+        http._validate({"Source Lane": {"rich_text": []}})
+
+
+def test_internal_enum_wire_values_fail_strict_schema_fixture():
+    http = StrictSchemaNotionHttp()
+    with pytest.raises(AssertionError):
+        http._validate({"Admission Status": {"select": {"name": "admitted"}}})
+    with pytest.raises(AssertionError):
+        http._validate({"Work Mode": {"select": {"name": "remote"}}})
+
+
+def test_admission_status_and_work_mode_use_canonical_labels():
+    record = new_record(
+        Opportunity(stable_job_key="k1", job=_job(work_mode=WorkMode.REMOTE), admission_status=AdmissionStatus.ADMITTED, fit=80),
+        run_date=RUN_DATE,
+    )
+    props = _record_to_properties(record)
+    assert props["Admission Status"]["select"]["name"] == "Admitted"
+    assert props["Work Mode"]["select"]["name"] == "Remote"
+
+
+def test_applied_state_survives_upsert_read_back():
+    from lifeos.jobs.lifecycle import mark_applied
+
+    context = RunContext.start(timeout_seconds=45.0, now=datetime.now(timezone.utc))
+    http = StrictSchemaNotionHttp()
+    transport = NotionTransport(context=context, http=http, access_token="synthetic-token")
+    repo = NotionCareerRepository(transport=transport, config=NotionCareerRepositoryConfig(data_source_id="synthetic-ds"))
+    opportunity = Opportunity(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED, fit=80)
+    record = mark_applied(new_record(opportunity, run_date=RUN_DATE), run_date=RUN_DATE)
+    persisted = repo.upsert(record)
+    assert persisted.applied is True
+    assert persisted.applied_on == RUN_DATE
 
 
 # --- BLOCKER 2: >50 keys chunked, no full scan -------------------------------
@@ -289,3 +354,62 @@ def test_two_tracking_urls_redirecting_to_same_employer_url_converge():
     results = ingest([candidate_a, candidate_b], lane=LANE, lane_priority=LANE_PRIORITY, repository=repo, run_date=RUN_DATE)
     assert {r.disposition for r in results} == {Disposition.CREATED, Disposition.DUPLICATE}
     assert len({r.stable_job_key for r in results}) == 1
+
+
+# --- BLOCKER 2 (Tech Lead 2 re-review): job-looking tracking URLs on an ----
+# --- unknown host must not fork one vacancy --------------------------------
+
+
+def test_two_job_looking_tracking_urls_on_unknown_host_converge_via_verified_redirect():
+    """Both https://track.example/apply?id=aaa and .../apply?id=bbb have a
+    path that matches JOB_PATH_HINTS ("/apply") on a host that is neither a
+    known discovery intermediary nor a trusted ATS host. Neither may become
+    canonical on path shape alone -- both must be verified via a single
+    bounded fetch and converge on the actual HTTP-redirected ATS URL."""
+
+    class TrackingRedirectFetcher:
+        def __init__(self):
+            self.calls: list[str] = []
+
+        def get(self, url: str) -> FetchResponse:
+            self.calls.append(url)
+            return FetchResponse(final_url="https://greenhouse.io/acme/jobs/99", body=JOBPOSTING_HTML)
+
+    fetcher = TrackingRedirectFetcher()
+    adapter = _adapter(fetcher)
+    candidate_a = adapter.to_jobs_candidate(_observation(evidence_ref="ev:a", source_apply_url="https://track.example/apply?id=aaa"))
+    candidate_b = adapter.to_jobs_candidate(_observation(evidence_ref="ev:b", source_apply_url="https://track.example/apply?id=bbb"))
+
+    assert candidate_a.unresolved_reason is None
+    assert candidate_b.unresolved_reason is None
+    # Neither tracking URL itself became canonical identity.
+    assert candidate_a.job.apply_url == "https://greenhouse.io/acme/jobs/99"
+    assert candidate_b.job.apply_url == "https://greenhouse.io/acme/jobs/99"
+    assert candidate_a.job.apply_url == candidate_b.job.apply_url
+    # A verification fetch was actually performed for each tracking URL.
+    assert "https://track.example/apply?id=aaa" in fetcher.calls
+    assert "https://track.example/apply?id=bbb" in fetcher.calls
+
+    repo = InMemoryCareerRepository()
+    results = ingest([candidate_a, candidate_b], lane=LANE, lane_priority=LANE_PRIORITY, repository=repo, run_date=RUN_DATE)
+    assert {r.disposition for r in results} == {Disposition.CREATED, Disposition.DUPLICATE}
+    assert len({r.stable_job_key for r in results}) == 1  # exactly one canonical mutation
+
+
+def test_job_looking_path_on_unknown_host_fails_closed_without_verified_redirect():
+    """An unknown host whose path merely looks job-like must never resolve
+    to itself as canonical merely because no distinct, trusted terminal
+    destination was verified."""
+
+    class SameHostFetcher:
+        def get(self, url: str) -> FetchResponse:
+            return FetchResponse(final_url=url, body="<html></html>")
+
+    result = resolve_final_vacancy_url("https://track.example/apply?id=aaa", fetcher=SameHostFetcher())
+    assert result.final_url is None
+
+
+def test_genuine_trusted_ats_url_still_skips_verification_fetch():
+    fetcher = FakeFetcher({})
+    result = resolve_final_vacancy_url("https://greenhouse.io/acme/jobs/1?utm_source=x", fetcher=fetcher)
+    assert result.final_url == "https://greenhouse.io/acme/jobs/1"
