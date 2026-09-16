@@ -12,7 +12,7 @@ class RedactionTests(unittest.TestCase):
             "count": 3,
             "authorization": "Bearer synthetic-auth-token",
             "sender_email": "person@example.com",
-            "message_id": "synthetic-message-123",
+            "message_id": "msg-123",
             "body_text": "private synthetic body",
             "nested": {
                 "access_token": "synthetic-token",
@@ -33,7 +33,7 @@ class RedactionTests(unittest.TestCase):
         self.assertNotIn("person@example.com", serialized)
         self.assertNotIn("example.invalid", serialized)
         self.assertNotIn("synthetic-auth-token", serialized)
-        self.assertNotIn("synthetic-message-123", serialized)
+        self.assertNotIn("msg-123", serialized)
         self.assertNotIn("private synthetic body", serialized)
 
     def test_explicit_runtime_secret_is_removed_from_otherwise_safe_text(self) -> None:
