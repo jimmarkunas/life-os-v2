@@ -41,6 +41,8 @@ class NewsletterProcessResult:
         return tuple(obs for result in self.messages for obs in result.observations)
     @property
     def cleanup_safe(self) -> bool:
+        # Parsing success alone can never authorize source cleanup. Jobs-owned
+        # reconciliation/read-back proof must be supplied by the integration layer.
         return False
 
 class NewsletterProcessor:
@@ -50,6 +52,8 @@ class NewsletterProcessor:
         if start.tzinfo is None or end.tzinfo is None: raise ValueError("newsletter window timestamps must be timezone-aware")
         if end <= start: raise ValueError("newsletter window end must be after start")
         total_started = perf_counter(); fetch_started = perf_counter(); messages: list[RoutedNewsletterMessage] = []; errors: list[NewsletterError] = []
+        if not sources:
+            errors.append(NewsletterError("<config>", "fetch", "no-newsletter-sources"))
         if sources:
             with ThreadPoolExecutor(max_workers=min(self._max_workers, len(sources))) as pool:
                 futures = {pool.submit(lambda source=s: tuple(source.fetch_unprocessed(start,end,self._boundary_name))): s for s in sources}
