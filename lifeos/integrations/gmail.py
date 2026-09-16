@@ -8,6 +8,7 @@ from threading import Lock
 from typing import Any, Generic, Mapping, TypeVar
 from urllib.parse import quote, urlencode
 
+from lifeos.core.config import RuntimeConfig
 from lifeos.core.http import HttpClient, RetryPolicy
 from lifeos.core.runtime import RunContext
 from lifeos.newsletter.models import RoutedNewsletterMessage
@@ -19,6 +20,9 @@ _GMAIL_API = "https://gmail.googleapis.com/gmail/v1"
 _READ_RETRY = RetryPolicy(max_attempts=2, backoff_seconds=0.1, max_backoff_seconds=1.0)
 _NO_RETRY = RetryPolicy(max_attempts=1)
 MAX_MESSAGE_DETAIL_WORKERS = 8
+DEFAULT_MAX_LIST_PAGES = 10
+MAX_LIST_PAGES = 20
+GMAIL_ACCESS_TOKEN_FIELD = "GMAIL_API_TOKEN"
 UNPROCESSED_LOOKBACK_DAYS = 60
 PROCESSED_LABEL_SUFFIX = "Processed"
 
@@ -35,17 +39,46 @@ class GmailMailboxTransport(Generic[T]):
         message_factory: MailMessageFactory[T],
         user_id: str = "me",
         max_workers: int = 8,
+        max_list_pages: int = DEFAULT_MAX_LIST_PAGES,
     ) -> None:
         if not access_token:
             raise ValueError("Gmail access token is required")
+        pages = int(max_list_pages)
+        if pages < 1 or pages > MAX_LIST_PAGES:
+            raise ValueError(f"max_list_pages must be between 1 and {MAX_LIST_PAGES}")
         self._context = context
         self._http = http
         self._token = access_token
         self._factory = message_factory
         self._user_id = user_id
         self._max_workers = max(1, min(int(max_workers), MAX_MESSAGE_DETAIL_WORKERS))
+        self._max_list_pages = pages
         self._label_ids: dict[str, str] = {}
         self._label_lock = Lock()
+
+    @classmethod
+    def from_config(
+        cls,
+        *,
+        context: RunContext,
+        http: HttpClient,
+        config: RuntimeConfig,
+        message_factory: MailMessageFactory[T],
+        access_token_field: str = GMAIL_ACCESS_TOKEN_FIELD,
+        user_id: str = "me",
+        max_workers: int = 8,
+        max_list_pages: int = DEFAULT_MAX_LIST_PAGES,
+    ) -> "GmailMailboxTransport[T]":
+        """Construct from already-validated runtime configuration."""
+        return cls(
+            context=context,
+            http=http,
+            access_token=config.require(access_token_field),
+            message_factory=message_factory,
+            user_id=user_id,
+            max_workers=max_workers,
+            max_list_pages=max_list_pages,
+        )
 
     @property
     def mailbox(self) -> str:
@@ -170,12 +203,16 @@ class GmailMailboxTransport(Generic[T]):
             query_parts.append(f'-label:"{safe_label}"')
         query = " ".join(query_parts)
         page_token: str | None = None
+        seen_page_tokens: set[str] = set()
         ids: list[str] = []
-        while True:
+        for _page_number in range(1, self._max_list_pages + 1):
             params = {"q": query, "maxResults": "500"}
             if label_id:
                 params["labelIds"] = label_id
             if page_token:
+                if page_token in seen_page_tokens:
+                    raise MailboxTransportError("Gmail pagination token repeated")
+                seen_page_tokens.add(page_token)
                 params["pageToken"] = page_token
             url = f"{_GMAIL_API}/users/{quote(self._user_id, safe='')}/messages?{urlencode(params)}"
             payload = self._http.request_json(
@@ -193,9 +230,9 @@ class GmailMailboxTransport(Generic[T]):
                     ids.append(str(item["id"]))
             token = payload.get("nextPageToken")
             if not token:
-                break
+                return tuple(ids)
             page_token = str(token)
-        return tuple(ids)
+        raise MailboxTransportError("Gmail message listing exceeded pagination limit")
 
     def _fetch_message(self, message_id: str) -> T:
         fields = self._fetch_message_fields(message_id)
@@ -273,7 +310,7 @@ class GmailMailboxTransport(Generic[T]):
                     label_id = str(created["id"])
                     self._label_ids[name] = label_id
                     return label_id
-        raise MailboxTransportError(f"Gmail label not found: {name}")
+        raise MailboxTransportError("Gmail label not found")
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._token}", "Accept": "application/json"}
