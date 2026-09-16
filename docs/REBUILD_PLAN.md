@@ -29,7 +29,7 @@ This is a ground-up rebuild of the platform architecture, not a lift-and-shift o
 | **Product Manager — ChatGPT** | Requirements decomposition, user-visible acceptance criteria, UAT design/execution, Notion domain requirements | Newsletter/Career UAT first | Product requirements live in owning Notion domain pages; no duplicate requirements repo |
 | **Agent 1 — ChatGPT** | Shared platform kernel and reusable platform mechanics | `agent/platform-core` → `lifeos/core/**`, `lifeos/integrations/**` | No Career policy, Newsletter parsing, or CI/security ownership |
 | **Agent 2 — ChatGPT** | Mail Intelligence and Newsletter product flow | `agent/mail-newsletter` → `lifeos/mail/**`, `lifeos/newsletter/**` | Consumes shared Career/Jobs interfaces; does not implement duplicate qualification/persistence |
-| **Claude Code** | Heavy multi-file Career implementation and selective v1 logic harvest | `agent/jobs-engine` → `lifeos/career/**` | No v1 orchestration migration; sanitize everything before crossing into public repo |
+| **Claude Code** | Heavy multi-file Career implementation and selective v1 logic harvest | `agent/jobs-engine` → `lifeos/jobs/**` | No v1 orchestration migration; sanitize everything before crossing into public repo |
 | **Codex** | Public-repo security, CI, synthetic fixtures policy, leak prevention, performance harness | `agent/security-ci` → `.github/**`, security tooling/tests | No production data or product-domain business logic |
 
 ### Review and merge flow
@@ -46,10 +46,24 @@ These four streams start in parallel because their mutation surfaces are intenti
 |---|---|---|---|---|
 | Platform Core | `agent/platform-core` | Agent 1 | `lifeos/core/**`, `lifeos/integrations/**`, base runtime/config interfaces | Mail parsing, Career policy, CI/security policy |
 | Mail + Newsletter | `agent/mail-newsletter` | Agent 2 | `lifeos/mail/**`, `lifeos/newsletter/**`, mail fixtures/tests | Career qualification/persistence internals |
-| Career / Jobs Engine | `agent/jobs-engine` | Claude Code | `lifeos/career/**`, Career fixtures/tests, sanitized reusable v1 Career logic | Mailbox routing, GitHub workflow/security configuration |
+| Career / Jobs Engine | `agent/jobs-engine` | Claude Code | `lifeos/jobs/**`, Career fixtures/tests, sanitized reusable v1 Career logic | Mailbox routing, GitHub workflow/security configuration |
 | Security + CI | `agent/security-ci` | Codex | `.github/**`, `SECURITY.md`, leak guards, synthetic-data policy, performance/security harness | Product-domain behavior |
 
 Integration rule: one PR per coherent package; no agent may edit another workstream's owned surface without Tech Lead 1 approval.
+
+## Delivery completion contract
+
+Every implementation prompt must include commit, push, and remote verification as part of the assignment.
+
+A package is **not LANDED** when work exists only in a local working tree or local commit. The implementing owner must:
+
+1. run the required targeted tests/checks;
+2. commit only the intended bounded changes to the assigned branch;
+3. push the branch to `origin`;
+4. verify the remote branch resolves to the pushed commit;
+5. report the remote branch name and commit SHA.
+
+If an executor cannot push, it must report **BLOCKED — NOT LANDED** rather than claiming completion. Tech Lead 1 may push changes directly when those changes are available through the connected GitHub execution surface; Tech Lead 1 cannot recover invisible uncommitted files from another executor's local machine.
 
 ## First integration milestone — Newsletter
 
