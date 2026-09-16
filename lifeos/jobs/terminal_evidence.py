@@ -239,7 +239,8 @@ def resolve_final_vacancy_url(url: str, *, fetcher: Fetcher) -> ResolutionResult
 
     Employer-owned job pages are accepted when the fetched page itself proves
     complete vacancy evidence; they no longer need to be on a hard-coded ATS
-    hostname or redirect elsewhere first.
+    hostname or redirect elsewhere first. Intermediary URLs are fetched exactly
+    as supplied so provider routing URLs are not altered before resolution.
     """
     chain: list[str] = [url]
     if is_source_message_url(url):
@@ -256,11 +257,12 @@ def resolve_final_vacancy_url(url: str, *, fetcher: Fetcher) -> ResolutionResult
         final_candidate = canonical_url(response.final_url)
         if final_candidate and not is_provider_intermediary_source(final_candidate):
             final_score, trusted = _downstream_score(final_candidate)
-            if trusted and (final_score >= 0 or _has_complete_vacancy_evidence(response.body)):
+            if final_candidate != direct and trusted and final_score >= 0:
                 if trusted not in chain: chain.append(trusted)
                 return ResolutionResult(trusted, tuple(chain), response.body)
-            if final_candidate == direct and _has_complete_vacancy_evidence(response.body):
-                return ResolutionResult(direct, tuple(chain), response.body)
+            if _has_complete_vacancy_evidence(response.body):
+                if final_candidate not in chain: chain.append(final_candidate)
+                return ResolutionResult(final_candidate, tuple(chain), response.body)
         candidates = _downstream_candidates(response.body, response.final_url)
         if candidates:
             if candidates[0] not in chain: chain.append(candidates[0])
@@ -270,7 +272,7 @@ def resolve_final_vacancy_url(url: str, *, fetcher: Fetcher) -> ResolutionResult
     if not direct:
         return ResolutionResult(None, tuple(chain))
 
-    visited: set[str] = set(); current_url = direct
+    visited: set[str] = set(); current_url = url
     for _ in range(MAX_INTERMEDIARY_HOPS):
         if current_url in visited:
             return ResolutionResult(None, tuple(chain))
@@ -282,9 +284,9 @@ def resolve_final_vacancy_url(url: str, *, fetcher: Fetcher) -> ResolutionResult
         final_candidate = canonical_url(response.final_url)
         if final_candidate and not is_provider_intermediary_source(final_candidate):
             score, trusted = _downstream_score(final_candidate)
-            if trusted and (score >= 0 or _has_complete_vacancy_evidence(response.body)):
+            if trusted and score >= 0:
                 if trusted not in chain: chain.append(trusted)
-                return ResolutionResult(trusted, tuple(chain), response.body)
+                return ResolutionResult(trusted, tuple(chain), response.body if _has_complete_vacancy_evidence(response.body) else None)
             if _has_complete_vacancy_evidence(response.body):
                 if final_candidate not in chain: chain.append(final_candidate)
                 return ResolutionResult(final_candidate, tuple(chain), response.body)
