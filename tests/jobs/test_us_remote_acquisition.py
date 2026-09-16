@@ -64,7 +64,7 @@ def test_acquisition_accounts_for_deterministic_and_browser_recovered_sources():
         "discovery_helpers": [],
     }
     browser = {"sources": [{"source_id": "browser-only", "state": "RECOVERED", "candidates": [{"title": "Technical Program Manager", "company": "Browser Co", "location": "Remote - US", "url": "https://careers.browser.test/jobs/7"}]}]}
-    result = USRemoteAcquirer(context=_context(), http=FakeHttp()).acquire(registry, browser_evidence=browser)
+    result = USRemoteAcquirer(context=_context(), http=FakeHttp()).acquire(registry, browser_evidence=browser, full_sweep=True)
     assert result.complete is True
     assert len(result.sources) == 2
     assert {row.source_id for row in result.sources} == {"acme", "browser-only"}

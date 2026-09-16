@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from threading import Lock
 from typing import Any, Generic, Mapping, TypeVar
 from urllib.parse import quote, urlencode
@@ -19,6 +19,8 @@ _GMAIL_API = "https://gmail.googleapis.com/gmail/v1"
 _READ_RETRY = RetryPolicy(max_attempts=2, backoff_seconds=0.1, max_backoff_seconds=1.0)
 _NO_RETRY = RetryPolicy(max_attempts=1)
 MAX_MESSAGE_DETAIL_WORKERS = 8
+UNPROCESSED_LOOKBACK_DAYS = 60
+PROCESSED_LABEL_SUFFIX = "Processed"
 
 
 class GmailMailboxTransport(Generic[T]):
@@ -74,9 +76,29 @@ class GmailMailboxTransport(Generic[T]):
     def fetch_unprocessed(
         self, start: datetime, end: datetime, boundary_name: str
     ) -> tuple[RoutedNewsletterMessage, ...]:
+        """Fetch staged Newsletter messages that have not been accepted yet.
+
+        Staging into ``boundary_name`` is intentionally independent from accepted
+        processing. A second Gmail label records accepted processing, so a failed
+        run leaves the message visible in ``J Newsletters`` and eligible for retry
+        without putting it back in Inbox. The queue lookback is bounded to the
+        60-day retention window rather than the current scan window, preventing a
+        failed message from aging out of normal hourly processing.
+        """
         _validate_window(start, end)
         label_id = self._resolve_label_id(boundary_name)
-        ids = self._list_message_ids(start, end, label_id=label_id)
+        processed_label = _processed_label_name(boundary_name)
+        try:
+            self._resolve_label_id(processed_label)
+        except MailboxTransportError:
+            processed_label = ""
+        queue_start = end - timedelta(days=UNPROCESSED_LOOKBACK_DAYS)
+        ids = self._list_message_ids(
+            queue_start,
+            end,
+            label_id=label_id,
+            exclude_label_name=processed_label or None,
+        )
         if not ids:
             return ()
 
@@ -97,6 +119,7 @@ class GmailMailboxTransport(Generic[T]):
         return tuple(messages)
 
     def route_to_newsletters(self, message_id: str, boundary_name: str) -> None:
+        """Stage confirmed automated job mail out of Inbox immediately."""
         if not message_id:
             raise ValueError("message_id is required")
         if not boundary_name:
@@ -113,10 +136,39 @@ class GmailMailboxTransport(Generic[T]):
             retry=_NO_RETRY,
         )
 
+    def mark_newsletter_processed(self, message_id: str, boundary_name: str) -> None:
+        """Mark one staged Newsletter message accepted after canonical read-back."""
+        if not message_id:
+            raise ValueError("message_id is required")
+        if not boundary_name:
+            raise ValueError("boundary_name is required")
+        processed_id = self._resolve_label_id(
+            _processed_label_name(boundary_name), create_if_missing=True
+        )
+        path = f"{_GMAIL_API}/users/{quote(self._user_id, safe='')}/messages/{quote(message_id, safe='')}/modify"
+        self._http.request_json(
+            self._context,
+            "POST",
+            path,
+            headers=self._headers(),
+            json_body={"addLabelIds": [processed_id], "removeLabelIds": ["UNREAD"]},
+            timeout_seconds=10.0,
+            retry=_NO_RETRY,
+        )
+
     def _list_message_ids(
-        self, start: datetime, end: datetime, *, label_id: str | None = None
+        self,
+        start: datetime,
+        end: datetime,
+        *,
+        label_id: str | None = None,
+        exclude_label_name: str | None = None,
     ) -> tuple[str, ...]:
-        query = f"after:{int(start.timestamp())} before:{int(end.timestamp())}"
+        query_parts = [f"after:{int(start.timestamp())}", f"before:{int(end.timestamp())}"]
+        if exclude_label_name:
+            safe_label = exclude_label_name.replace('"', "")
+            query_parts.append(f'-label:"{safe_label}"')
+        query = " ".join(query_parts)
         page_token: str | None = None
         ids: list[str] = []
         while True:
@@ -182,7 +234,7 @@ class GmailMailboxTransport(Generic[T]):
             "headers": headers,
         }
 
-    def _resolve_label_id(self, name: str) -> str:
+    def _resolve_label_id(self, name: str, *, create_if_missing: bool = False) -> str:
         with self._label_lock:
             cached = self._label_ids.get(name)
             if cached:
@@ -203,10 +255,32 @@ class GmailMailboxTransport(Generic[T]):
                     label_id = str(label["id"])
                     self._label_ids[name] = label_id
                     return label_id
-        raise MailboxTransportError("Gmail newsletter label not found")
+            if create_if_missing:
+                created = self._http.request_json(
+                    self._context,
+                    "POST",
+                    url,
+                    headers=self._headers(),
+                    json_body={
+                        "name": name,
+                        "labelListVisibility": "labelShow",
+                        "messageListVisibility": "show",
+                    },
+                    timeout_seconds=10.0,
+                    retry=_NO_RETRY,
+                )
+                if isinstance(created, dict) and created.get("id"):
+                    label_id = str(created["id"])
+                    self._label_ids[name] = label_id
+                    return label_id
+        raise MailboxTransportError(f"Gmail label not found: {name}")
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._token}", "Accept": "application/json"}
+
+
+def _processed_label_name(boundary_name: str) -> str:
+    return f"{boundary_name}/{PROCESSED_LABEL_SUFFIX}"
 
 
 def _validate_window(start: datetime, end: datetime) -> None:

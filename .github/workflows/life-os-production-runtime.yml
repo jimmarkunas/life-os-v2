@@ -57,8 +57,16 @@ jobs:
           test -n "$slot"
           test -n "$nonce"
           case "$module" in
-            us-remote) default_window="24" ;;
-            us-remote-recovery) default_window="1440" ;;
+            us-remote)
+              default_window="24"
+              web_lookback_hours="24"
+              full_web_sweep="false"
+              ;;
+            us-remote-recovery)
+              default_window="1440"
+              web_lookback_hours="24"
+              full_web_sweep="true"
+              ;;
             *) echo "Unsupported module" >&2; exit 2 ;;
           esac
           if [ -z "$window_hours" ]; then window_hours="$default_window"; fi
@@ -71,7 +79,18 @@ jobs:
           echo "slot=$slot" >> "$GITHUB_OUTPUT"
           echo "module=$module" >> "$GITHUB_OUTPUT"
           echo "window_hours=$window_hours" >> "$GITHUB_OUTPUT"
+          echo "web_lookback_hours=$web_lookback_hours" >> "$GITHUB_OUTPUT"
+          echo "full_web_sweep=$full_web_sweep" >> "$GITHUB_OUTPUT"
           echo "nonce=$nonce" >> "$GITHUB_OUTPUT"
+
+      - name: Verify headless browser fallback
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v google-chrome >/dev/null || \
+          command -v google-chrome-stable >/dev/null || \
+          command -v chromium >/dev/null || \
+          command -v chromium-browser >/dev/null
 
       - name: Execute US Remote runtime
         env:
@@ -80,9 +99,15 @@ jobs:
         run: |
           set -euo pipefail
           started="$(date +%s)"
+          extra=()
+          if [ "${{ steps.trigger.outputs.full_web_sweep }}" = "true" ]; then
+            extra+=(--full-web-sweep)
+          fi
           PYTHONPATH="$GITHUB_WORKSPACE" python3.12 scripts/run_us_remote_production.py \
             --timeout-seconds 300 \
-            --window-hours "${{ steps.trigger.outputs.window_hours }}"
+            --window-hours "${{ steps.trigger.outputs.window_hours }}" \
+            --web-lookback-hours "${{ steps.trigger.outputs.web_lookback_hours }}" \
+            "${extra[@]}"
           finished="$(date +%s)"
           elapsed="$((finished-started))"
           echo "LIFE OS runtime complete: module=${{ steps.trigger.outputs.module }} slot=${SCHEDULED_SLOT} elapsed_seconds=${elapsed}"
