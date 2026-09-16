@@ -72,3 +72,22 @@ The minimum cross-owner contracts for the Newsletter vertical slice are fixed be
 - **Security/CI boundary:** Codex owns synthetic-fixture enforcement, leak/secret checks, PR-safe CI, and shared security/performance harnesses. Those harnesses may validate public contracts and budgets but must not contain domain business logic or production/private identifiers.
 
 No trigger file, handoff manifest, event bus, workflow engine, secondary persistence layer, or recovery subsystem is introduced to connect these contracts.
+
+## D-011 — Bespoke policy stays private; public code stays generic
+
+LIFE OS v2 remains bespoke without publishing Jim-specific production policy. User-specific scoring criteria, thresholds, account/workspace identifiers, market/visa preferences, compensation rules, and other private personalization are supplied at trusted runtime through validated private configuration or canonical private sources.
+
+Public code may contain generic policy schemas and deterministic evaluators, but it must not hard-code a personal career profile or other private personalization. For Career, provider scores remain source evidence only and never substitute for authoritative LIFE OS Fit. The Jobs domain may evaluate an injected private Fit/policy profile against normalized employer/ATS vacancy evidence, while the resulting canonical Job state remains private in the Job Ledger.
+
+## D-012 — Public GitHub Actions is the approved stateless production executor
+
+Jim explicitly approved standard GitHub-hosted Actions in the public `life-os-v2` repository as production compute on 2026-09-16.
+
+- `LIFE OS Daily Runs` remains the sole recurring scheduler and determines the exact scheduled slot/module.
+- GitHub Actions is an executor only. Production workflows may not contain `schedule`/cron or create a second recurring scheduler.
+- Only standard GitHub-hosted runners that are free for public repositories are authorized. Larger/paid runners require a new explicit approval.
+- Approved production code executes from protected `main`; pull-request/fork code never receives production secrets.
+- GitHub Actions artifacts/caches are never canonical state or required production handoff storage, and production/private payloads must not be persisted there.
+- One requested feature/run maps to one bounded job. Do not split domain stages into workflow chains or rebuild v1 trigger/recovery architecture.
+- Runtime retains the 45-second normal benchmark and five-minute absolute application limit; timeout/failure is DEGRADED.
+- A minimal transport event may wake the executor, but that event is not a datastore, scheduler, workflow engine, or canonical state. Runtime truth comes from source mutation plus authoritative read-back.

@@ -1,0 +1,45 @@
+{
+  "Job": {"type": "title"},
+  "Stable Job Key": {"type": "rich_text"},
+  "Company": {"type": "rich_text"},
+  "Role": {"type": "rich_text"},
+  "Apply URL": {"type": "url"},
+  "Visible Lane": {"type": "select"},
+  "Source Provider": {"type": "rich_text"},
+  "Source Types": {"type": "multi_select"},
+  "Market": {"type": "select"},
+  "Work Mode": {
+    "type": "select",
+    "allowed_values": ["Remote", "Hybrid", "Onsite", "Unknown"]
+  },
+  "Location / Work Mode": {"type": "rich_text"},
+  "LIFE OS Fit": {"type": "number"},
+  "Fit Authority": {
+    "type": "select",
+    "allowed_values": ["Authoritative", "Non-Authoritative"]
+  },
+  "Provider Score": {"type": "number"},
+  "Compensation": {"type": "rich_text"},
+  "Posting Date": {"type": "date"},
+  "First Surfaced": {"type": "date"},
+  "Last Seen": {"type": "date"},
+  "Freshness Status": {"type": "select"},
+  "Visa Route": {"type": "multi_select"},
+  "Admission Status": {
+    "type": "select",
+    "allowed_values": ["Admitted", "Passed / Review", "Excluded"]
+  },
+  "Review Reason": {"type": "rich_text"},
+  "Why It Fits": {"type": "rich_text"},
+  "Tailored Sentence": {"type": "rich_text"},
+  "Saturn Ready": {"type": "date"},
+  "Saturn Decision": {"type": "select"},
+  "Decision On": {"type": "date"},
+  "Applied": {"type": "checkbox"},
+  "Applied On": {"type": "date"},
+  "Lifecycle": {"type": "select"},
+  "Liveness": {"type": "select"},
+  "Today/>2 Days": {"type": "select"},
+  "Cold Lead": {"type": "checkbox"},
+  "Target Company": {"type": "checkbox"}
+}

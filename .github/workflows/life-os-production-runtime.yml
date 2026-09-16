@@ -1,0 +1,116 @@
+name: LIFE OS Production Runtime
+
+on:
+  issue_comment:
+    types: [edited]
+
+permissions:
+  contents: read
+  issues: read
+
+concurrency:
+  group: life-os-production-runtime
+  cancel-in-progress: false
+
+jobs:
+  execute:
+    name: Execute bounded LIFE OS runtime
+    if: >-
+      github.event.issue.number == 12 &&
+      github.event.comment.id == 5703188416 &&
+      startsWith(github.event.comment.body, 'LIFE_OS_RUNTIME_TRIGGER v1')
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      GMAIL_OAUTH_CLIENT_ID: ${{ secrets.GMAIL_OAUTH_CLIENT_ID }}
+      GMAIL_OAUTH_CLIENT_SECRET: ${{ secrets.GMAIL_OAUTH_CLIENT_SECRET }}
+      GMAIL_OAUTH_REFRESH_TOKEN: ${{ secrets.GMAIL_OAUTH_REFRESH_TOKEN }}
+      NOTION_API_TOKEN: ${{ secrets.NOTION_API_TOKEN }}
+      NOTION_JOB_LEDGER_DATA_SOURCE_ID: ${{ secrets.NOTION_JOB_LEDGER_DATA_SOURCE_ID }}
+    steps:
+      - name: Checkout protected main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate trigger
+        id: trigger
+        shell: bash
+        env:
+          TRIGGER_BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          slot="$(printf '%s\n' "$TRIGGER_BODY" | sed -n 's/^slot=//p' | head -n1)"
+          module="$(printf '%s\n' "$TRIGGER_BODY" | sed -n 's/^module=//p' | head -n1)"
+          window_hours="$(printf '%s\n' "$TRIGGER_BODY" | sed -n 's/^window_hours=//p' | head -n1)"
+          nonce="$(printf '%s\n' "$TRIGGER_BODY" | sed -n 's/^nonce=//p' | head -n1)"
+
+          test -n "$slot"
+          test -n "$nonce"
+          case "$module" in
+            us-remote)
+              default_window="24"
+              web_lookback_hours="24"
+              full_web_sweep="false"
+              ;;
+            us-remote-recovery)
+              default_window="1440"
+              web_lookback_hours="24"
+              full_web_sweep="true"
+              ;;
+            *) echo "Unsupported module" >&2; exit 2 ;;
+          esac
+          if [ -z "$window_hours" ]; then window_hours="$default_window"; fi
+          python - "$window_hours" <<'PY'
+          import sys
+          value = float(sys.argv[1])
+          if not (0 < value <= 1440):
+              raise SystemExit("window_hours must be in (0, 1440]")
+          PY
+          echo "slot=$slot" >> "$GITHUB_OUTPUT"
+          echo "module=$module" >> "$GITHUB_OUTPUT"
+          echo "window_hours=$window_hours" >> "$GITHUB_OUTPUT"
+          echo "web_lookback_hours=$web_lookback_hours" >> "$GITHUB_OUTPUT"
+          echo "full_web_sweep=$full_web_sweep" >> "$GITHUB_OUTPUT"
+          echo "nonce=$nonce" >> "$GITHUB_OUTPUT"
+
+      - name: Verify headless browser fallback
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v google-chrome >/dev/null || \
+          command -v google-chrome-stable >/dev/null || \
+          command -v chromium >/dev/null || \
+          command -v chromium-browser >/dev/null
+
+      - name: Execute US Remote runtime
+        env:
+          SCHEDULED_SLOT: ${{ steps.trigger.outputs.slot }}
+          TRIGGER_NONCE: ${{ steps.trigger.outputs.nonce }}
+        run: |
+          set -euo pipefail
+          started="$(date +%s)"
+          extra=()
+          if [ "${{ steps.trigger.outputs.full_web_sweep }}" = "true" ]; then
+            extra+=(--full-web-sweep)
+          fi
+          PYTHONPATH="$GITHUB_WORKSPACE" python3.12 scripts/run_us_remote_production.py \
+            --timeout-seconds 300 \
+            --window-hours "${{ steps.trigger.outputs.window_hours }}" \
+            --web-lookback-hours "${{ steps.trigger.outputs.web_lookback_hours }}" \
+            "${extra[@]}"
+          finished="$(date +%s)"
+          elapsed="$((finished-started))"
+          echo "LIFE OS runtime complete: module=${{ steps.trigger.outputs.module }} slot=${SCHEDULED_SLOT} elapsed_seconds=${elapsed}"
+          if [ "$elapsed" -gt 45 ]; then
+            echo "::warning::Runtime exceeded 45-second benchmark: ${elapsed}s"
+          fi

@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "tier1_employers": [
+    {"id":"stripe","company":"Stripe","kind":"greenhouse","slug":"stripe","enabled":true},
+    {"id":"shopify","company":"Shopify","kind":"html","url":"https://www.shopify.com/careers","enabled":true},
+    {"id":"adobe","company":"Adobe","kind":"workday_adobe","url":"https://adobe.wd5.myworkdayjobs.com/wday/cxs/adobe/external_experienced/jobs","browser_url":"https://careers.adobe.com/us/en","enabled":true},
+    {"id":"klaviyo","company":"Klaviyo","kind":"greenhouse","slug":"klaviyo","enabled":true},
+    {"id":"databricks","company":"Databricks","kind":"greenhouse","slug":"databricks","enabled":true},
+    {"id":"samsara","company":"Samsara","kind":"greenhouse","slug":"samsara","enabled":true},
+    {"id":"acryl-data","company":"Acryl Data","kind":"greenhouse","slug":"acryldata","enabled":true},
+    {"id":"airtable","company":"Airtable","kind":"greenhouse","slug":"airtable","enabled":true},
+    {"id":"postman","company":"Postman","kind":"greenhouse","slug":"postman","browser_url":"https://www.postman.com/company/careers/","enabled":true},
+    {"id":"webflow","company":"Webflow","kind":"greenhouse","slug":"webflow","enabled":true},
+    {"id":"confluent","company":"Confluent","kind":"ashby","slug":"confluent","enabled":true},
+    {"id":"ramp","company":"Ramp","kind":"ashby","slug":"ramp","enabled":true},
+    {"id":"vanta","company":"Vanta","kind":"ashby","slug":"vanta","enabled":true},
+    {"id":"affirm","company":"Affirm","kind":"greenhouse","slug":"affirm","enabled":true},
+    {"id":"braze","company":"Braze","kind":"greenhouse","slug":"braze","enabled":true},
+    {"id":"twilio","company":"Twilio","kind":"greenhouse","slug":"twilio","enabled":true},
+    {"id":"datadog","company":"Datadog","kind":"greenhouse","slug":"datadog","enabled":true},
+    {"id":"mongodb","company":"MongoDB","kind":"greenhouse","slug":"mongodb","enabled":true},
+    {"id":"okta","company":"Okta","kind":"greenhouse","slug":"okta","enabled":true},
+    {"id":"atlassian","company":"Atlassian","kind":"html","url":"https://www.atlassian.com/company/careers/all-jobs","enabled":true},
+    {"id":"cloudflare","company":"Cloudflare","kind":"greenhouse","slug":"cloudflare","enabled":true},
+    {"id":"github","company":"GitHub","kind":"html","url":"https://www.github.careers/careers-home/jobs","enabled":true},
+    {"id":"gitlab","company":"GitLab","kind":"greenhouse","slug":"gitlab","enabled":true},
+    {"id":"pagerduty","company":"PagerDuty","kind":"greenhouse","slug":"pagerduty","enabled":true},
+    {"id":"notion","company":"Notion","kind":"ashby","slug":"notion","enabled":true},
+    {"id":"figma","company":"Figma","kind":"greenhouse","slug":"figma","enabled":true},
+    {"id":"servicenow","company":"ServiceNow","kind":"smartrecruiters","slug":"ServiceNow","enabled":true},
+    {"id":"workato","company":"Workato","kind":"greenhouse","slug":"workato","enabled":true},
+    {"id":"commercetools","company":"commercetools","kind":"greenhouse","slug":"commercetools","enabled":true},
+    {"id":"contentful","company":"Contentful","kind":"greenhouse","slug":"contentful","enabled":true}
+  ],
+  "staffing_agencies": [
+    {"id":"insight-global","company":"Insight Global","kind":"html","url":"https://insightglobal.com/job-index/","enabled":true},
+    {"id":"teksystems","company":"TEKsystems","kind":"html","url":"https://careers.teksystems.com/us/en/c/project-manager-jobs","enabled":true},
+    {"id":"motion-recruitment","company":"Motion Recruitment","kind":"html","url":"https://motionrecruitment.com/tech-jobs","enabled":true},
+    {"id":"randstad-usa","company":"Randstad USA","kind":"html","url":"https://www.randstadusa.com/jobs/","enabled":true},
+    {"id":"akkodis","company":"Akkodis","kind":"html","url":"https://www.akkodis.com/en-us/careers/jobs","enabled":true},
+    {"id":"apex-systems","company":"Apex Systems","kind":"html","url":"https://www.apexsystems.com/jobs","enabled":true},
+    {"id":"kforce","company":"Kforce","kind":"html","url":"https://myhiring.kforce.com/careersection/ex/moresearch.ftl","enabled":true},
+    {"id":"robert-half","company":"Robert Half","kind":"html","url":"https://www.roberthalf.com/us/en/jobs","enabled":true},
+    {"id":"experis","company":"Experis","kind":"html","url":"https://www.experis.com/en/search","enabled":true},
+    {"id":"dexian","company":"Dexian","kind":"html","url":"https://dexian.com/jobs/","enabled":true}
+  ],
+  "discovery_helpers": [
+    {"id":"linkedin-jobs","company":"LinkedIn Jobs","kind":"html","url":"https://www.linkedin.com/jobs/search/","enabled":true},
+    {"id":"built-in","company":"Built In","kind":"html","url":"https://builtin.com/jobs","enabled":true},
+    {"id":"dice","company":"Dice","kind":"html","url":"https://www.dice.com/jobs","enabled":true}
+  ]
+}

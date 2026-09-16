@@ -64,6 +64,7 @@ class HttpResponse:
     status_code: int
     headers: Mapping[str, str]
     body: bytes
+    final_url: str = ""
 
     def json(self) -> Any:
         try:
@@ -101,6 +102,7 @@ class UrllibHttpBackend:
                     status_code=int(response.status),
                     headers={str(k): str(v) for k, v in response.headers.items()},
                     body=response.read(),
+                    final_url=str(response.geturl() or url),
                 )
         except UrlHTTPError as exc:
             return HttpResponse(
@@ -138,18 +140,17 @@ class HttpClient:
         last_error: HttpError | None = None
         for attempt in range(1, retry.max_attempts + 1):
             try:
-                per_attempt_timeout = context.bounded_timeout(timeout_seconds)
+                with context.http_permit():
+                    per_attempt_timeout = context.bounded_timeout(timeout_seconds)
+                    response = self._backend.request(
+                        method,
+                        url,
+                        headers=request_headers,
+                        body=request_body,
+                        timeout_seconds=per_attempt_timeout,
+                    )
             except DeadlineExceeded as exc:
                 raise HttpError(HttpErrorKind.DEADLINE, attempts=attempt) from exc
-
-            try:
-                response = self._backend.request(
-                    method,
-                    url,
-                    headers=request_headers,
-                    body=request_body,
-                    timeout_seconds=per_attempt_timeout,
-                )
             except (TimeoutError, socket.timeout) as exc:
                 last_error = HttpError(HttpErrorKind.TIMEOUT, attempts=attempt)
                 if attempt >= retry.max_attempts:
