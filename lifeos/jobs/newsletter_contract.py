@@ -67,6 +67,15 @@ def ingest(
     primary_index_for_key: dict[str, int] = {}
 
     for i, candidate in enumerate(candidates):
+        if candidate.unresolved_reason:
+            results[i] = IngestResult(
+                evidence_ref=candidate.evidence_ref,
+                disposition=Disposition.REVIEW_DEGRADED,
+                stable_job_key=None,
+                detail=candidate.unresolved_reason,
+            )
+            continue
+
         try:
             key = stable_job_key(candidate.job)
         except ValueError as exc:
