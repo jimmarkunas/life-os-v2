@@ -1,17 +1,10 @@
 #!/usr/bin/env python3
-"""One-shot live US Remote proof: one staged Newsletter message + one Web candidate.
-
-Uses real Jobs ingest and canonical Notion read-back. The selected Newsletter
-message is marked Processed only when every vacancy in that message reaches a
-non-degraded terminal disposition. No mailbox staging or broad recovery occurs.
-"""
+"""One-shot live US Remote proof: one staged Newsletter message + one Web candidate."""
 from __future__ import annotations
 
 import json
 import os
-import sys
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
 from time import perf_counter
 
 from lifeos.core.http import HttpClient
@@ -24,7 +17,7 @@ from lifeos.jobs.newsletter_feature import _adapt_all
 from lifeos.jobs.notion_repository import NotionCareerRepository, NotionCareerRepositoryConfig
 from lifeos.mail.models import MailMessage
 from lifeos.newsletter.models import ParseState
-from lifeos.newsletter.processor import NewsletterProcessor
+from lifeos.newsletter.parsers import parse_message
 from scripts import run_us_remote_production as prod
 
 
@@ -44,40 +37,43 @@ def main() -> int:
                 context, http, notion, notion_token=env["NOTION_API_TOKEN"]
             )
         gmail_token = prod._exchange_gmail_access_token(
-            context,
-            http,
+            context, http,
             client_id=env["GMAIL_OAUTH_CLIENT_ID"],
             client_secret=env["GMAIL_OAUTH_CLIENT_SECRET"],
             refresh_token=env["GMAIL_OAUTH_REFRESH_TOKEN"],
         )
-        gmail = GmailMailboxTransport(
-            context=context,
-            http=http,
-            access_token=gmail_token,
-            message_factory=MailMessage,
-        )
+        gmail = GmailMailboxTransport(context=context, http=http, access_token=gmail_token, message_factory=MailMessage)
         end = datetime.now(timezone.utc)
-        fallback_fetcher = prod._fallback_fetcher(context, prod._browser_evidence())
+        browser_evidence = prod._browser_evidence()
+        fallback_fetcher = prod._fallback_fetcher(context, browser_evidence)
 
         started = perf_counter()
-        newsletter_result = NewsletterProcessor(boundary_name=prod.NEWSLETTER_BOUNDARY).process_window(
-            [gmail], end - timedelta(days=60), end
+        label_id = gmail._resolve_label_id(prod.NEWSLETTER_BOUNDARY)
+        processed_name = f"{prod.NEWSLETTER_BOUNDARY}/Processed"
+        try:
+            gmail._resolve_label_id(processed_name)
+        except Exception:
+            processed_name = ""
+        ids = gmail._list_message_ids(
+            end - timedelta(days=60), end,
+            label_id=label_id,
+            exclude_label_name=processed_name or None,
         )
-        selectable = [m for m in newsletter_result.messages if m.state is ParseState.PASS and m.observations]
-        if not selectable:
-            raise RuntimeError("no parseable staged Newsletter message with vacancies")
-        selected_message = selectable[0]
+        selected_message = None
+        for message_id in ids[:10]:
+            parsed = parse_message(gmail._fetch_routed_message(message_id))
+            if parsed.state is ParseState.PASS and parsed.observations:
+                selected_message = parsed
+                break
+        if selected_message is None:
+            raise RuntimeError("no parseable staged Newsletter message with vacancies in bounded selection")
         newsletter_observations = tuple(selected_message.observations)
-        timings["newsletter_fetch_parse"] = round(perf_counter() - started, 3)
+        timings["newsletter_select_parse"] = round(perf_counter() - started, 3)
 
         started = perf_counter()
-        web_result = prod.USRemoteAcquirer(
-            context=context,
-            http=http,
-            fallback_fetcher=fallback_fetcher,
-        ).acquire(
+        web_result = prod.USRemoteAcquirer(context=context, http=http, fallback_fetcher=fallback_fetcher).acquire(
             registry,
-            browser_evidence=prod._browser_evidence(),
+            browser_evidence=browser_evidence,
             since=end - timedelta(hours=24),
             full_sweep=False,
             now=end,
@@ -87,9 +83,7 @@ def main() -> int:
         newsletter_to_resolve, newsletter_preexcluded = prod._partition_observations(
             newsletter_observations, lane=lane, fit_profile=fit_profile
         )
-        web_to_resolve, _web_preexcluded = prod._partition_observations(
-            web_result.observations, lane=lane, fit_profile=fit_profile
-        )
+        web_to_resolve, _ = prod._partition_observations(web_result.observations, lane=lane, fit_profile=fit_profile)
         if not web_to_resolve:
             raise RuntimeError("no eligible Web candidate available for 1x1 proof")
         web_to_resolve = web_to_resolve[:1]
@@ -99,24 +93,14 @@ def main() -> int:
             config=NotionCareerRepositoryConfig(data_source_id=env["NOTION_JOB_LEDGER_DATA_SOURCE_ID"]),
         )
         http_fetcher = HttpClientFetcher(http=http, context=context)
-        newsletter_adapter = NewsletterJobsAdapter(
-            NewsletterAdapterConfig(
-                fetcher=http_fetcher,
-                fallback_fetcher=fallback_fetcher,
-                fit_profile=fit_profile,
-                market=market,
-                source_lane=newsletter_source_lane,
-            )
-        )
-        web_adapter = NewsletterJobsAdapter(
-            NewsletterAdapterConfig(
-                fetcher=http_fetcher,
-                fallback_fetcher=fallback_fetcher,
-                fit_profile=fit_profile,
-                market=market,
-                source_lane="US Web",
-            )
-        )
+        newsletter_adapter = NewsletterJobsAdapter(NewsletterAdapterConfig(
+            fetcher=http_fetcher, fallback_fetcher=fallback_fetcher, fit_profile=fit_profile,
+            market=market, source_lane=newsletter_source_lane,
+        ))
+        web_adapter = NewsletterJobsAdapter(NewsletterAdapterConfig(
+            fetcher=http_fetcher, fallback_fetcher=fallback_fetcher, fit_profile=fit_profile,
+            market=market, source_lane="US Web",
+        ))
 
         started = perf_counter()
         newsletter_candidates = _adapt_all(tuple(newsletter_to_resolve), adapter=newsletter_adapter, context=context, max_workers=8)
@@ -150,10 +134,7 @@ def main() -> int:
             gmail.mark_newsletter_processed(message_id, prod.NEWSLETTER_BOUNDARY)
             processed = True
 
-        durable = sum(
-            r.disposition in {Disposition.CREATED, Disposition.UPDATED}
-            for r in newsletter_results + web_results
-        )
+        durable = sum(r.disposition in {Disposition.CREATED, Disposition.UPDATED} for r in newsletter_results + web_results)
         status = "PASS" if newsletter_accounted and web_accounted and not newsletter_degraded and not web_degraded and processed else "DEGRADED"
         print(json.dumps({
             "status": status,
