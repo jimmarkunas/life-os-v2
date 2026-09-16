@@ -1,8 +1,11 @@
 from __future__ import annotations
+import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 from time import perf_counter
+from unittest.mock import patch
 from lifeos.newsletter import NewsletterExecutionState, NewsletterProcessor, ParseState, RoutedNewsletterMessage, adapt_for_jobs, parse_message
+from lifeos.newsletter import processor as processor_module
 
 def msg(message_id, subject, body, *, sender="alerts@jobright.example.invalid", mailbox="gmail", minute=0, headers=None):
     return RoutedNewsletterMessage(mailbox,message_id,datetime(2026,1,15,12,minute,tzinfo=timezone.utc),sender,subject,body,headers or {})
@@ -52,5 +55,48 @@ class NewsletterTests(unittest.TestCase):
         messages=[msg(f"synthetic-{i}","Jobright jobs",f"[Synthetic Labs\\n90%\\nProgram Manager\\nRemote](https://jobright.ai/jobs/info/synthetic-{i})",minute=i%60) for i in range(500)]
         source=FakeSource("gmail",messages); started=perf_counter(); result=NewsletterProcessor(max_workers=8).process_window([source],self.start,self.end); elapsed=perf_counter()-started
         self.assertEqual(len(result.observations),500); self.assertLess(result.timings.total_seconds,90.0); self.assertLess(elapsed,90.0); self.assertGreaterEqual(result.timings.fetch_seconds,0); self.assertGreaterEqual(result.timings.parse_seconds,0)
+
+    def test_worker_pools_are_clamped_to_supported_ceilings(self):
+        processor = NewsletterProcessor(max_workers=1000)
+        self.assertLessEqual(processor._fetch_workers, 2)
+        self.assertLessEqual(processor._parse_workers, 8)
+
+    def test_1000_messages_use_bounded_in_flight_futures_for_parsing(self):
+        import time as time_module
+
+        lock = threading.Lock()
+        state = {"active": 0, "max_active": 0}
+        original_parse_message = processor_module.parse_message
+
+        def tracking_parse_message(routed_message):
+            with lock:
+                state["active"] += 1
+                state["max_active"] = max(state["max_active"], state["active"])
+            time_module.sleep(0.0005)
+            with lock:
+                state["active"] -= 1
+            return original_parse_message(routed_message)
+
+        messages = [
+            msg(
+                f"synthetic-{i:04d}",
+                "Jobright jobs",
+                f"[Synthetic Labs\n90%\nProgram Manager\nRemote](https://jobright.ai/jobs/info/synthetic-{i:04d})",
+                minute=i % 60,
+            )
+            for i in range(1000)
+        ]
+        source = FakeSource("gmail", messages)
+
+        with patch.object(processor_module, "parse_message", tracking_parse_message):
+            result = NewsletterProcessor(max_workers=8).process_window([source], self.start, self.end)
+
+        self.assertEqual(len(result.observations), 1000)
+        self.assertLessEqual(state["max_active"], 8)
+        self.assertGreater(state["max_active"], 1)
+        self.assertEqual(
+            [r.message_ref for r in result.messages],
+            sorted(r.message_ref for r in result.messages),
+        )
 
 if __name__ == "__main__": unittest.main()

@@ -1,17 +1,4 @@
-"""Thin Newsletter feature integration.
-
-One RunContext, one bounded execution: Newsletter's already-parsed
-observations -> Jobs adapter (parallel terminal-evidence resolution,
-bounded by the same RunContext deadline every other stage respects) ->
-newsletter_contract.ingest() (qualify/dedupe/persist) -> a single
-cleanup-safe signal.
-
-No workflow engine, manifest, handoff file, event bus, trigger file,
-Continuity integration, recovery subsystem, or second persistence layer.
-This module is pure composition of already-landed components; it contains
-no parsing, no identity/qualification policy, and no Notion property
-mapping of its own.
-"""
+"""Thin Newsletter feature integration."""
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -28,6 +15,7 @@ from lifeos.newsletter.models import SourceVacancyObservation
 from lifeos.newsletter.processor import NewsletterExecutionState, NewsletterProcessResult
 
 DEFAULT_MAX_WORKERS = 8
+MAX_ADAPT_WORKERS = 8
 
 
 @dataclass(frozen=True)
@@ -35,18 +23,9 @@ class NewsletterFeatureResult:
     execution: ExecutionResult
     ingest_results: tuple[IngestResult, ...]
     cleanup_safe: bool
-    """True only when: every source observation was accounted for with
-    exactly one terminal disposition, none of them is REVIEW_DEGRADED, the
-    parse stage itself reported PASS, and (transitively, via ingest()'s own
-    ReadBackMismatch handling) every required canonical write was read-back
-    verified. Mail/Newsletter must treat this as the sole cleanup-safe
-    signal and never recompute it."""
 
 
 def _unresolved_candidate(observation: SourceVacancyObservation, reason: str) -> NormalizedCandidate:
-    """Safety net only: adapter.to_jobs_candidate is designed to never raise,
-    but a defensive fallback keeps one bad observation from crashing the
-    whole batch and silently dropping every other candidate's result."""
     return NormalizedCandidate(
         job=Job(
             company=Company(name=observation.company or ""),
@@ -77,26 +56,35 @@ def _adapt_all(
 ) -> list[NormalizedCandidate]:
     if not observations:
         return []
+    workers = max(1, min(int(max_workers), MAX_ADAPT_WORKERS))
     results: list[NormalizedCandidate | None] = [None] * len(observations)
 
     def _resolve_one(index: int, observation: SourceVacancyObservation) -> None:
-        context.require_time()  # fail closed rather than start work past the deadline
+        context.require_time()
         try:
             results[index] = adapter.to_jobs_candidate(observation)
-        except Exception as exc:  # never let one observation crash the batch
+        except Exception as exc:
             results[index] = _unresolved_candidate(observation, f"adapter raised {type(exc).__name__}")
 
-    with ThreadPoolExecutor(max_workers=min(max_workers, len(observations))) as pool:
-        futures = {pool.submit(_resolve_one, i, obs): i for i, obs in enumerate(observations)}
-        for future in as_completed(futures):
-            index = futures[future]
-            try:
-                future.result()
-            except DeadlineExceeded:
-                if results[index] is None:
-                    results[index] = _unresolved_candidate(observations[index], "run deadline exhausted")
+    with ThreadPoolExecutor(max_workers=min(workers, len(observations))) as pool:
+        for chunk_start in range(0, len(observations), workers):
+            chunk = observations[chunk_start : chunk_start + workers]
+            futures = {
+                pool.submit(_resolve_one, chunk_start + offset, observation): chunk_start + offset
+                for offset, observation in enumerate(chunk)
+            }
+            for future in as_completed(futures):
+                index = futures[future]
+                try:
+                    future.result()
+                except DeadlineExceeded:
+                    if results[index] is None:
+                        results[index] = _unresolved_candidate(observations[index], "run deadline exhausted")
 
-    return [c if c is not None else _unresolved_candidate(observations[i], "adapter did not complete") for i, c in enumerate(results)]
+    return [
+        candidate if candidate is not None else _unresolved_candidate(observations[i], "adapter did not complete")
+        for i, candidate in enumerate(results)
+    ]
 
 
 def run_newsletter_feature(
@@ -119,23 +107,22 @@ def run_newsletter_feature(
             cleanup_safe=False,
         )
 
-    try:
-        candidates = _adapt_all(observations, adapter=adapter, context=context, max_workers=max_workers)
-    except DeadlineExceeded:
-        return NewsletterFeatureResult(
-            execution=ExecutionResult.degraded(code="deadline-exceeded", observations=len(observations)),
-            ingest_results=(),
-            cleanup_safe=False,
-        )
-
-    results = ingest(candidates, lane=lane, lane_priority=lane_priority, repository=repository, run_date=run_date)
+    candidates = _adapt_all(observations, adapter=adapter, context=context, max_workers=max_workers)
+    results = ingest(
+        candidates,
+        lane=lane,
+        lane_priority=lane_priority,
+        repository=repository,
+        run_date=run_date,
+        context=context,
+    )
 
     fully_accounted = len(results) == len(observations)
-    no_review_degraded = all(r.disposition != Disposition.REVIEW_DEGRADED for r in results)
+    no_review_degraded = all(result.disposition != Disposition.REVIEW_DEGRADED for result in results)
     parser_passed = process_result.state is NewsletterExecutionState.PASS
     cleanup_safe = fully_accounted and no_review_degraded and parser_passed
 
-    counts = {d.value: sum(1 for r in results if r.disposition == d) for d in Disposition}
+    counts = {disposition.value: sum(1 for result in results if result.disposition == disposition) for disposition in Disposition}
     if cleanup_safe:
         execution = ExecutionResult.passed(code="cleanup-safe", observations=len(observations), **counts)
     else:

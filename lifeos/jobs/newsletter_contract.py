@@ -1,9 +1,8 @@
-"""Career's public contract for Mail/Newsletter (Agent 2) ingestion.
+"""Career's public contract for Mail/Newsletter ingestion.
 
 Every NormalizedCandidate Newsletter hands to Career receives exactly one
 terminal Disposition. There is no silent drop: a candidate this module
-cannot confidently resolve becomes REVIEW_DEGRADED, never an omission from
-the result list.
+cannot confidently resolve becomes REVIEW_DEGRADED, never an omission.
 """
 from __future__ import annotations
 
@@ -11,10 +10,11 @@ from dataclasses import dataclass
 from datetime import date
 from enum import Enum
 
+from lifeos.core.runtime import RunContext
 from lifeos.jobs.dedupe import LaneObservation, reconcile
 from lifeos.jobs.identity import stable_job_key
 from lifeos.jobs.lifecycle import apply_observation, new_record
-from lifeos.jobs.models import AdmissionStatus, NormalizedCandidate, Opportunity
+from lifeos.jobs.models import AdmissionStatus, NormalizedCandidate
 from lifeos.jobs.qualification import LaneConfig, qualify
 from lifeos.jobs.repository import CareerRepository, ReadBackMismatch
 
@@ -42,28 +42,16 @@ def ingest(
     lane_priority: dict[str, int],
     repository: CareerRepository,
     run_date: date,
+    context: RunContext | None = None,
 ) -> list[IngestResult]:
-    """Resolve identity, qualify, converge duplicates, and idempotently
-    persist. Returns exactly one IngestResult per input candidate, in input
-    order (see the `results` pre-sizing below -- every branch writes to
-    `results[i]` by original index, so grouping/reordering downstream can
-    never desynchronize the input<->output correspondence).
+    """Resolve identity, qualify, converge duplicates, and persist serially.
 
-    Duplicate determination happens AFTER every same-key observation has
-    already contributed to reconcile() -- provenance, the strongest
-    available canonical URL, and provider aliases are merged from ALL
-    same-key observations before any of them is labeled a duplicate. At
-    most one canonical mutation is written per stable_job_key; every other
-    same-key observation is reported DUPLICATE but its evidence was not
-    discarded -- it already shaped the persisted canonical Opportunity.
+    Returns exactly one result per input candidate in input order. When a
+    RunContext is supplied, no canonical mutation begins after its deadline.
     """
     results: list[IngestResult | None] = [None] * len(candidates)
     observations: list[LaneObservation] = []
-    # input index -> the candidate/key that produced its (still-live) observation
     live_by_index: dict[int, tuple[NormalizedCandidate, str]] = {}
-    # stable_job_key -> the lowest input index observed for it (deterministic
-    # "first source" -- see BLOCKER 2's example: first -> CREATED/UPDATED,
-    # every later same-key observation -> DUPLICATE).
     primary_index_for_key: dict[str, int] = {}
 
     for i, candidate in enumerate(candidates):
@@ -79,31 +67,26 @@ def ingest(
         try:
             key = stable_job_key(candidate.job)
         except ValueError as exc:
-            results[i] = IngestResult(
-                evidence_ref=candidate.evidence_ref,
-                disposition=Disposition.REVIEW_DEGRADED,
-                stable_job_key=None,
-                detail=str(exc),
-            )
+            results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, None, str(exc))
             continue
 
         try:
-            result = qualify(candidate, lane=lane, run_date=run_date)
-        except Exception as exc:  # qualification must never crash the batch
+            qualification = qualify(candidate, lane=lane, run_date=run_date)
+        except Exception as exc:
             results[i] = IngestResult(
-                evidence_ref=candidate.evidence_ref,
-                disposition=Disposition.REVIEW_DEGRADED,
-                stable_job_key=key,
-                detail=f"qualification error: {exc}",
+                candidate.evidence_ref,
+                Disposition.REVIEW_DEGRADED,
+                key,
+                f"qualification error: {exc}",
             )
             continue
 
-        if result.admission_status == AdmissionStatus.EXCLUDED:
+        if qualification.admission_status == AdmissionStatus.EXCLUDED:
             results[i] = IngestResult(
-                evidence_ref=candidate.evidence_ref,
-                disposition=Disposition.EXCLUDED,
-                stable_job_key=key,
-                detail=result.review_reason,
+                candidate.evidence_ref,
+                Disposition.EXCLUDED,
+                key,
+                qualification.review_reason,
             )
             continue
 
@@ -113,85 +96,82 @@ def ingest(
                 lane=lane.name,
                 job=candidate.job,
                 fit=candidate.fit or 0,
-                admission_status=result.admission_status,
+                admission_status=qualification.admission_status,
             )
         )
         live_by_index[i] = (candidate, key)
         primary_index_for_key.setdefault(key, i)
 
     if not observations:
-        return results  # type: ignore[return-value]  # every slot filled above
+        return results  # type: ignore[return-value]
 
     reconciled = reconcile(observations, lane_priority=lane_priority)
     try:
         existing_records = repository.get_many([r.opportunity.stable_job_key for r in reconciled])
     except Exception as exc:
-        # A repository read failure here means we cannot safely determine
-        # create-vs-update for ANY reconciled key -- every live observation
-        # in this batch is unresolved, not just one. No repository
-        # transport failure may escape and leave the batch incompletely
-        # accounted for.
-        for i in live_by_index:
-            cand, key = live_by_index[i]
+        for i, (candidate, key) in live_by_index.items():
             results[i] = IngestResult(
-                evidence_ref=cand.evidence_ref,
-                disposition=Disposition.REVIEW_DEGRADED,
-                stable_job_key=key,
-                detail=f"repository lookup failed: {type(exc).__name__}: {exc}",
+                candidate.evidence_ref,
+                Disposition.REVIEW_DEGRADED,
+                key,
+                f"repository lookup failed: {type(exc).__name__}: {exc}",
             )
         assert all(result is not None for result in results)
         return results  # type: ignore[return-value]
 
-    for r in reconciled:
-        key = r.opportunity.stable_job_key
-        same_key_indices = [i for i, (_, k) in live_by_index.items() if k == key]
+    for reconciled_opportunity in reconciled:
+        key = reconciled_opportunity.opportunity.stable_job_key
+        same_key_indices = [i for i, (_, observed_key) in live_by_index.items() if observed_key == key]
         primary_index = primary_index_for_key[key]
         primary_candidate = live_by_index[primary_index][0]
+
+        if context is not None and context.expired():
+            for i in same_key_indices:
+                candidate, _ = live_by_index[i]
+                results[i] = IngestResult(
+                    candidate.evidence_ref,
+                    Disposition.REVIEW_DEGRADED,
+                    key,
+                    "execution deadline exhausted before canonical mutation",
+                )
+            continue
 
         existing = existing_records.get(key)
         try:
             if existing is None:
-                record = new_record(r.opportunity, run_date=run_date)
+                record = new_record(reconciled_opportunity.opportunity, run_date=run_date)
                 persisted = repository.upsert(record)
                 primary_disposition = Disposition.CREATED
             else:
-                record = apply_observation(existing, r.opportunity, run_date=run_date)
+                record = apply_observation(existing, reconciled_opportunity.opportunity, run_date=run_date)
                 persisted = repository.upsert(record)
                 primary_disposition = Disposition.UPDATED
         except Exception as exc:
-            # Covers both ReadBackMismatch (write succeeded, read-back
-            # diverged) and ordinary transport failures during the write or
-            # read-back call itself -- either way, the one attempted
-            # canonical mutation for this key is unresolved, and so is
-            # every same-key observation, not just the primary one.
             label = "read-back mismatch" if isinstance(exc, ReadBackMismatch) else f"repository failure ({type(exc).__name__})"
             for i in same_key_indices:
-                cand, _ = live_by_index[i]
+                candidate, _ = live_by_index[i]
                 results[i] = IngestResult(
-                    evidence_ref=cand.evidence_ref,
-                    disposition=Disposition.REVIEW_DEGRADED,
-                    stable_job_key=key,
-                    detail=f"persistence {label}: {exc}",
+                    candidate.evidence_ref,
+                    Disposition.REVIEW_DEGRADED,
+                    key,
+                    f"persistence {label}: {exc}",
                 )
             continue
 
         for i in same_key_indices:
-            cand, _ = live_by_index[i]
+            candidate, _ = live_by_index[i]
             if i == primary_index:
                 results[i] = IngestResult(
-                    evidence_ref=cand.evidence_ref,
-                    disposition=primary_disposition,
-                    stable_job_key=persisted.opportunity.stable_job_key,
+                    candidate.evidence_ref,
+                    primary_disposition,
+                    persisted.opportunity.stable_job_key,
                 )
             else:
                 results[i] = IngestResult(
-                    evidence_ref=cand.evidence_ref,
-                    disposition=Disposition.DUPLICATE,
-                    stable_job_key=persisted.opportunity.stable_job_key,
-                    detail=(
-                        f"duplicate of evidence {primary_candidate.evidence_ref}; "
-                        "provenance merged into the canonical reconciliation"
-                    ),
+                    candidate.evidence_ref,
+                    Disposition.DUPLICATE,
+                    persisted.opportunity.stable_job_key,
+                    f"duplicate of evidence {primary_candidate.evidence_ref}; provenance merged into the canonical reconciliation",
                 )
 
     assert all(result is not None for result in results), "every input candidate must receive exactly one result"
