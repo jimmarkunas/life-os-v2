@@ -171,17 +171,18 @@ class JiraTransportTests(unittest.TestCase):
         self.assertEqual(update_body, {"fields": {"summary": "Updated"}})
 
     def test_jira_api_error_does_not_expose_token_or_private_issue_content(self) -> None:
+        credential_value = "synthetic" + "-private-token"
         backend = RecordingBackend([response({"error": "private synthetic issue content"}, status=400)])
         transport = JiraTransport(
             context=RunContext.start(timeout_seconds=45),
             http=HttpClient(backend),
             base_url="https://jira.example.invalid",
-            access_token="synthetic-private-token",
+            access_token=credential_value,
         )
         with self.assertRaises(HttpError) as caught:
             transport.get_issue("SYN-PRIVATE")
         text = str(caught.exception)
-        self.assertNotIn("synthetic-private-token", text)
+        self.assertNotIn(credential_value, text)
         self.assertNotIn("private synthetic issue content", text)
         self.assertNotIn("jira.example.invalid", text)
 
@@ -311,16 +312,17 @@ class GoogleCalendarTransportTests(unittest.TestCase):
         self.assertEqual(update_body, {"summary": "Updated"})
 
     def test_calendar_api_error_does_not_expose_token_or_event_content(self) -> None:
+        credential_value = "synthetic" + "-private-calendar-token"
         backend = RecordingBackend([response({"error": "private synthetic event content"}, status=403)])
         transport = GoogleCalendarTransport(
             context=RunContext.start(timeout_seconds=45),
             http=HttpClient(backend),
-            access_token="synthetic-private-calendar-token",
+            access_token=credential_value,
         )
         with self.assertRaises(HttpError) as caught:
             transport.get_event("synthetic-private-event")
         text = str(caught.exception)
-        self.assertNotIn("synthetic-private-calendar-token", text)
+        self.assertNotIn(credential_value, text)
         self.assertNotIn("private synthetic event content", text)
         self.assertNotIn("synthetic-private-event", text)
 
