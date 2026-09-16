@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 from urllib.parse import quote
 
+from lifeos.core.config import RuntimeConfig
 from lifeos.core.http import HttpClient, RetryPolicy
 from lifeos.core.runtime import RunContext
 
@@ -14,6 +15,9 @@ _READ_RETRY = RetryPolicy(max_attempts=2, backoff_seconds=0.1, max_backoff_secon
 _NO_RETRY = RetryPolicy(max_attempts=1)
 _MAX_IDENTITY_VALUES = 50
 _ALLOWED_PROPERTY_TYPES = frozenset({"title", "rich_text", "url", "select", "email", "phone_number"})
+NOTION_ACCESS_TOKEN_FIELD = "NOTION_API_TOKEN"
+DEFAULT_MAX_QUERY_PAGES = 10
+MAX_QUERY_PAGES = 20
 
 
 class NotionTransportError(RuntimeError):
@@ -54,15 +58,40 @@ class NotionTransport:
         http: HttpClient,
         access_token: str,
         notion_version: str = _DEFAULT_NOTION_VERSION,
+        max_query_pages: int = DEFAULT_MAX_QUERY_PAGES,
     ) -> None:
         if not access_token:
             raise ValueError("Notion access token is required")
         if not notion_version:
             raise ValueError("Notion API version is required")
+        pages = int(max_query_pages)
+        if pages < 1 or pages > MAX_QUERY_PAGES:
+            raise ValueError(f"max_query_pages must be between 1 and {MAX_QUERY_PAGES}")
         self._context = context
         self._http = http
         self._token = access_token
         self._version = notion_version
+        self._max_query_pages = pages
+
+    @classmethod
+    def from_config(
+        cls,
+        *,
+        context: RunContext,
+        http: HttpClient,
+        config: RuntimeConfig,
+        access_token_field: str = NOTION_ACCESS_TOKEN_FIELD,
+        notion_version: str = _DEFAULT_NOTION_VERSION,
+        max_query_pages: int = DEFAULT_MAX_QUERY_PAGES,
+    ) -> "NotionTransport":
+        """Construct from already-validated runtime configuration."""
+        return cls(
+            context=context,
+            http=http,
+            access_token=config.require(access_token_field),
+            notion_version=notion_version,
+            max_query_pages=max_query_pages,
+        )
 
     def query_data_source(
         self,
@@ -78,7 +107,7 @@ class NotionTransport:
         cursor: str | None = None
         seen_cursors: set[str] = set()
         results: list[dict[str, Any]] = []
-        while True:
+        for _page_number in range(1, self._max_query_pages + 1):
             body: dict[str, Any] = {"page_size": size, "filter": identity.filter_payload()}
             if cursor:
                 if cursor in seen_cursors:
@@ -100,12 +129,12 @@ class NotionTransport:
                 if isinstance(result, dict):
                     results.append(result)
             if not payload.get("has_more"):
-                break
+                return tuple(results)
             next_cursor = payload.get("next_cursor")
             if not next_cursor:
                 raise NotionTransportError("Notion pagination missing next cursor")
             cursor = str(next_cursor)
-        return tuple(results)
+        raise NotionTransportError("Notion query exceeded pagination limit")
 
     def create_page(self, data_source_id: str, properties: Mapping[str, Any]) -> dict[str, Any]:
         if not data_source_id:
