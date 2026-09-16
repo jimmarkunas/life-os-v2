@@ -1,80 +1,72 @@
-"""Conservative deterministic classification for the first Mail Router slice.
+"""Evidence-prioritized deterministic Mail classification.
 
-The router only moves mail when both a job-alert signal and an automation signal
-are present. Hiring/interview/application-status evidence has precedence so those
-messages remain outside Newsletter processing.
+Body vocabulary is weak evidence. Automated Newsletter identity/headers and
+transactional/human structure decide classification before arbitrary body words.
 """
-
 from __future__ import annotations
-
 from .models import Classification, MailClass, MailMessage
 
-
 class DeterministicMailClassifier:
-    _JOB_ALERT_TERMS = (
-        "job alert",
-        "jobs for you",
-        "recommended jobs",
-        "recommended roles",
-        "new jobs",
-        "new roles",
-        "daily jobs",
-        "weekly jobs",
-        "open roles",
+    _JOB_ALERT_SUBJECT_TERMS = (
+        "job alert", "jobs for you", "recommended jobs", "recommended roles",
+        "new jobs", "new roles", "daily jobs", "weekly jobs", "open roles",
     )
-    _HIRING_TERMS = (
-        "recruiter",
-        "hiring manager",
-        "interview",
-        "schedule a call",
-        "schedule time",
-        "would like to speak",
-        "next steps",
-        "application received",
-        "application update",
-        "application status",
-        "thank you for applying",
-        "thanks for applying",
+    _TRANSACTIONAL_HIRING_SUBJECT_TERMS = (
+        "application received", "application update", "application status",
+        "thank you for applying", "thanks for applying", "interview scheduling",
+        "interview invitation", "schedule your interview",
     )
-    _AUTOMATED_LOCAL_PARTS = (
-        "no-reply",
-        "noreply",
-        "alerts",
-        "notifications",
-        "jobs",
-        "updates",
+    _HUMAN_HIRING_TERMS = (
+        "recruiter", "hiring manager", "interview", "schedule a call",
+        "schedule time", "would like to speak", "next steps",
     )
+    _AUTOMATED_LOCAL_PARTS = ("no-reply", "noreply", "alerts", "notifications", "jobs", "updates")
+    _SOURCE_ADAPTER_HEADERS = ("x-lifeos-source-adapter", "x-lifeos-job-source")
 
     def classify(self, message: MailMessage) -> Classification:
         subject = message.subject.casefold()
         body = message.body_text.casefold()
-        text = f"{subject}\n{body}"
         sender = message.sender.casefold()
         headers = {str(k).casefold(): str(v).casefold() for k, v in message.headers.items()}
 
-        hiring_hits = tuple(term for term in self._HIRING_TERMS if term in text)
-        if hiring_hits:
+        transactional_hits = tuple(term for term in self._TRANSACTIONAL_HIRING_SUBJECT_TERMS if term in subject)
+        if transactional_hits:
+            return Classification(MailClass.HUMAN_HIRING, tuple(f"transactional:{t}" for t in transactional_hits))
+
+        automation = self._automation_evidence(sender, headers)
+        source_adapter = tuple(
+            f"source-adapter:{headers[name]}" for name in self._SOURCE_ADAPTER_HEADERS
+            if headers.get(name, "").strip() not in {"", "0", "false", "none"}
+        )
+        job_subject_hits = tuple(term for term in self._JOB_ALERT_SUBJECT_TERMS if term in subject)
+
+        if (source_adapter or job_subject_hits) and automation:
             return Classification(
-                mail_class=MailClass.HUMAN_HIRING,
-                reasons=tuple(f"hiring:{term}" for term in hiring_hits),
+                MailClass.AUTOMATED_JOB_SOURCE,
+                tuple([*(f"job-subject:{t}" for t in job_subject_hits), *source_adapter, *(f"automation:{a}" for a in automation)]),
             )
 
-        job_hits = tuple(term for term in self._JOB_ALERT_TERMS if term in text)
-        automation_hits: list[str] = []
+        human_subject_hits = tuple(term for term in self._HUMAN_HIRING_TERMS if term in subject)
+        human_body_hits = tuple(term for term in self._HUMAN_HIRING_TERMS if term in body)
+        if human_subject_hits or (human_body_hits and not automation and not source_adapter):
+            hits = (*human_subject_hits, *human_body_hits)
+            return Classification(MailClass.HUMAN_HIRING, tuple(f"human-hiring:{t}" for t in hits))
+
+        return Classification(MailClass.UNRELATED, ("no-confirmed-route",))
+
+    def _automation_evidence(self, sender: str, headers: dict[str, str]) -> tuple[str, ...]:
+        hits: list[str] = []
         local_part = sender.split("@", 1)[0]
         if any(token in local_part for token in self._AUTOMATED_LOCAL_PARTS):
-            automation_hits.append("sender")
+            hits.append("sender")
         if "list-unsubscribe" in headers:
-            automation_hits.append("list-unsubscribe")
+            hits.append("list-unsubscribe")
+        if "list-id" in headers:
+            hits.append("list-id")
         if headers.get("precedence") in {"bulk", "list"}:
-            automation_hits.append("precedence")
-
-        if job_hits and automation_hits:
-            return Classification(
-                mail_class=MailClass.AUTOMATED_JOB_SOURCE,
-                reasons=tuple(
-                    [*(f"job:{term}" for term in job_hits), *(f"automation:{hit}" for hit in automation_hits)]
-                ),
-            )
-
-        return Classification(mail_class=MailClass.UNRELATED, reasons=("no-confirmed-route",))
+            hits.append("precedence")
+        if headers.get("auto-submitted", "").startswith("auto-"):
+            hits.append("auto-submitted")
+        if any(headers.get(name, "").strip() not in {"", "0", "false", "none"} for name in self._SOURCE_ADAPTER_HEADERS):
+            hits.append("source-adapter")
+        return tuple(dict.fromkeys(hits))
