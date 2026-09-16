@@ -30,10 +30,5 @@ jobs:
           ref: agent/newsletter-integration
           persist-credentials: false
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
       - name: Read-only Newsletter preflight
-        run: PYTHONPATH=. python3.12 scripts/preflight_newsletter.py
+        run: PYTHONPATH="$GITHUB_WORKSPACE" /opt/homebrew/bin/python3.12 scripts/preflight_newsletter.py
