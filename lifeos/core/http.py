@@ -64,6 +64,10 @@ class HttpResponse:
     status_code: int
     headers: Mapping[str, str]
     body: bytes
+    final_url: str = ""
+    """The actual URL after following redirects. Empty when a backend
+    cannot report it (e.g. an error path); callers needing redirect-aware
+    resolution should treat empty as "same as requested"."""
 
     def json(self) -> Any:
         try:
@@ -101,6 +105,7 @@ class UrllibHttpBackend:
                     status_code=int(response.status),
                     headers={str(k): str(v) for k, v in response.headers.items()},
                     body=response.read(),
+                    final_url=str(response.geturl() or url),
                 )
         except UrlHTTPError as exc:
             return HttpResponse(

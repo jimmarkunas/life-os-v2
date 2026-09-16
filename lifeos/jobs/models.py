@@ -71,6 +71,12 @@ class Job:
     knows it (e.g. a prior reconciliation, or an explicit human-confirmed
     merge). When present this is authoritative and skips URL/company-role-
     location derivation entirely."""
+    description_text: str | None = None
+    """Terminal employer/ATS description text, when resolved. Evidence
+    input for Fit scoring; never provider-supplied marketing copy."""
+    provider_score: int | None = None
+    """Provider-supplied match score, if any. Evidence only -- see
+    fit_scoring.py's module docstring -- never contributes to LIFE OS Fit."""
 
 
 @dataclass(frozen=True)
@@ -88,6 +94,12 @@ class NormalizedCandidate:
     """Opaque reference to the extraction evidence (e.g. message id). Career
     never inspects this; it exists for traceability in the terminal
     disposition (see newsletter_contract.py)."""
+    unresolved_reason: str | None = None
+    """Set by a Jobs-owned adapter (e.g. newsletter_adapter.py) when
+    required evidence -- most commonly final employer/ATS resolution --
+    could not be established. When set, ingest() routes this candidate
+    straight to REVIEW_DEGRADED before attempting identity/qualification;
+    it is never silently dropped or force-admitted."""
 
 
 @dataclass(frozen=True)
@@ -105,6 +117,10 @@ class Opportunity:
     """Provider-native identity strings (see identity.provider_alias) seen
     across every observation that converged onto this canonical Job.
     Provenance only -- never used to re-derive stable_job_key."""
+    fit: int | None = None
+    """Authoritative LIFE OS Fit for this canonical Job (see
+    fit_scoring.py). Never a provider-supplied score -- see
+    Job.provider_score for that, kept strictly separate."""
 
 
 @dataclass(frozen=True)

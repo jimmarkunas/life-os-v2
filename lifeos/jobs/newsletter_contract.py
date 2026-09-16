@@ -67,6 +67,15 @@ def ingest(
     primary_index_for_key: dict[str, int] = {}
 
     for i, candidate in enumerate(candidates):
+        if candidate.unresolved_reason:
+            results[i] = IngestResult(
+                evidence_ref=candidate.evidence_ref,
+                disposition=Disposition.REVIEW_DEGRADED,
+                stable_job_key=None,
+                detail=candidate.unresolved_reason,
+            )
+            continue
+
         try:
             key = stable_job_key(candidate.job)
         except ValueError as exc:
@@ -114,7 +123,24 @@ def ingest(
         return results  # type: ignore[return-value]  # every slot filled above
 
     reconciled = reconcile(observations, lane_priority=lane_priority)
-    existing_records = repository.get_many([r.opportunity.stable_job_key for r in reconciled])
+    try:
+        existing_records = repository.get_many([r.opportunity.stable_job_key for r in reconciled])
+    except Exception as exc:
+        # A repository read failure here means we cannot safely determine
+        # create-vs-update for ANY reconciled key -- every live observation
+        # in this batch is unresolved, not just one. No repository
+        # transport failure may escape and leave the batch incompletely
+        # accounted for.
+        for i in live_by_index:
+            cand, key = live_by_index[i]
+            results[i] = IngestResult(
+                evidence_ref=cand.evidence_ref,
+                disposition=Disposition.REVIEW_DEGRADED,
+                stable_job_key=key,
+                detail=f"repository lookup failed: {type(exc).__name__}: {exc}",
+            )
+        assert all(result is not None for result in results)
+        return results  # type: ignore[return-value]
 
     for r in reconciled:
         key = r.opportunity.stable_job_key
@@ -132,17 +158,20 @@ def ingest(
                 record = apply_observation(existing, r.opportunity, run_date=run_date)
                 persisted = repository.upsert(record)
                 primary_disposition = Disposition.UPDATED
-        except ReadBackMismatch as exc:
-            # The one attempted canonical mutation for this key failed its
-            # read-back; every same-key observation is unresolved, not just
-            # the primary one -- report all of them REVIEW_DEGRADED.
+        except Exception as exc:
+            # Covers both ReadBackMismatch (write succeeded, read-back
+            # diverged) and ordinary transport failures during the write or
+            # read-back call itself -- either way, the one attempted
+            # canonical mutation for this key is unresolved, and so is
+            # every same-key observation, not just the primary one.
+            label = "read-back mismatch" if isinstance(exc, ReadBackMismatch) else f"repository failure ({type(exc).__name__})"
             for i in same_key_indices:
                 cand, _ = live_by_index[i]
                 results[i] = IngestResult(
                     evidence_ref=cand.evidence_ref,
                     disposition=Disposition.REVIEW_DEGRADED,
                     stable_job_key=key,
-                    detail=f"persistence read-back mismatch: {exc}",
+                    detail=f"persistence {label}: {exc}",
                 )
             continue
 
