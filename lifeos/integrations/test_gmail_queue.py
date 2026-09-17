@@ -7,6 +7,7 @@ from urllib.parse import unquote
 from lifeos.core.runtime import RunContext
 from lifeos.integrations.gmail import GmailMailboxTransport
 from lifeos.integrations.mailbox import MailboxTransportError
+from lifeos.newsletter.processor import NewsletterExecutionState, NewsletterProcessor
 
 
 class FakeHttp:
@@ -47,6 +48,59 @@ class FakeHttp:
             }
         if method == "POST" and url.endswith("/messages/msg-1/modify"):
             return {"id": "msg-1"}
+        raise AssertionError((method, url, kwargs))
+
+
+class BacklogFakeHttp(FakeHttp):
+    def request_json(self, context, method, url, **kwargs):
+        self.calls.append((method, url, kwargs))
+        if method == "GET" and url.endswith("/labels"):
+            return {
+                "labels": [
+                    {"id": "label-news", "name": "J Newsletters"},
+                    {"id": "label-processed", "name": "J Newsletters/Processed"},
+                ]
+            }
+        if method == "GET" and "/messages?" in url:
+            decoded = unquote(url)
+            assert "labelIds=label-news" in decoded
+            assert "after:" not in decoded
+            assert "before:" not in decoded
+            if '-label:"J+Newsletters/Processed"' in decoded or '-label:"J Newsletters/Processed"' in decoded:
+                return {"messages": [{"id": "msg-old"}, {"id": "msg-recent"}, {"id": "msg-new"}]}
+            return {
+                "messages": [
+                    {"id": "msg-old"},
+                    {"id": "msg-recent"},
+                    {"id": "msg-new"},
+                    {"id": "msg-processed"},
+                ]
+            }
+        for message_id, internal_date in {
+            "msg-old": "1609459200000",
+            "msg-recent": "1789488000000",
+            "msg-new": "1789574400000",
+            "msg-processed": "1789574400000",
+        }.items():
+            if method == "GET" and f"/messages/{message_id}?format=full" in url:
+                body = (
+                    "[Synthetic Labs\n90%\nProgram Manager\nRemote]"
+                    f"(https://jobright.ai/jobs/info/{message_id})\n"
+                    "View More Opportunities"
+                )
+                encoded = base64.urlsafe_b64encode(body.encode("utf-8")).decode("ascii").rstrip("=")
+                return {
+                    "id": message_id,
+                    "internalDate": internal_date,
+                    "payload": {
+                        "mimeType": "text/plain",
+                        "headers": [
+                            {"name": "From", "value": "alerts@jobright.example.invalid"},
+                            {"name": "Subject", "value": "Jobright jobs"},
+                        ],
+                        "body": {"data": encoded},
+                    },
+                }
         raise AssertionError((method, url, kwargs))
 
 
@@ -102,17 +156,30 @@ def test_staging_and_processed_state_are_distinct() -> None:
     assert modify_calls[-1][2]["json_body"] == {"addLabelIds": ["label-processed"], "removeLabelIds": ["UNREAD"]}
 
 
-def test_unprocessed_queue_excludes_processed_and_retries_within_retention_window() -> None:
-    http = FakeHttp()
-    http.created_processed = True
+def test_newsletter_processor_consumes_age_independent_unprocessed_gmail_backlog() -> None:
+    http = BacklogFakeHttp()
     mailbox = _mailbox(http)
     start = datetime(2026, 9, 15, tzinfo=timezone.utc)
     end = datetime(2026, 9, 16, tzinfo=timezone.utc)
-    messages = mailbox.fetch_unprocessed(start, end, "J Newsletters")
-    assert [message.message_id for message in messages] == ["msg-1"]
+
+    result = NewsletterProcessor().process_window([mailbox], start, end)
+
+    assert result.state is NewsletterExecutionState.PASS
+    assert {message.message_ref for message in result.messages} == {
+        "gmail:msg-old",
+        "gmail:msg-recent",
+        "gmail:msg-new",
+    }
+    assert {obs.source_message_id for obs in result.observations} == {
+        "msg-old",
+        "msg-recent",
+        "msg-new",
+    }
+    assert "msg-processed" not in {obs.source_message_id for obs in result.observations}
     list_call = next(call for call in http.calls if call[0] == "GET" and "/messages?" in call[1])
     decoded = unquote(list_call[1])
-    assert f"after:{int(end.timestamp() - 60 * 24 * 3600)}" in decoded
+    assert "after:" not in decoded
+    assert "before:" not in decoded
     assert '-label:"J+Newsletters/Processed"' in decoded or '-label:"J Newsletters/Processed"' in decoded
 
 
