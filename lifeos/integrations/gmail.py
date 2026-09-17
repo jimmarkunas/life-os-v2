@@ -140,16 +140,11 @@ class GmailMailboxTransport(Generic[T]):
 
         messages: list[RoutedNewsletterMessage] = []
         failures: dict[str, Exception] = {}
-        with ThreadPoolExecutor(max_workers=min(self._max_workers, len(ids))) as pool:
-            for chunk_start in range(0, len(ids), self._max_workers):
-                chunk = ids[chunk_start : chunk_start + self._max_workers]
-                futures = {pool.submit(self._fetch_routed_message, message_id): message_id for message_id in chunk}
-                for future in as_completed(futures):
-                    message_id = futures[future]
-                    try:
-                        messages.append(future.result())
-                    except Exception as exc:
-                        failures[message_id] = exc
+        for message_id in ids:
+            try:
+                messages.append(self._fetch_routed_message(message_id))
+            except Exception as exc:
+                failures[message_id] = exc
         if failures:
             retry_failures: dict[str, Exception] = {}
             for message_id in failures:
