@@ -39,6 +39,18 @@ def test_linkedin_job_seeker_guidance_is_terminal_empty_pass() -> None:
     assert result.issues == ()
 
 
+def test_linkedin_alert_disabled_notice_is_terminal_empty_pass() -> None:
+    result = _parse_message_or_known_empty(
+        _message(
+            "We‘ve turned off your job alert for Synthetic Role in Synthetic City",
+            "We've turned off this job alert since you haven't viewed it in over 90 days.",
+        )
+    )
+    assert result.state is ParseState.PASS
+    assert result.observations == ()
+    assert result.issues == ()
+
+
 def test_unrecognized_linkedin_message_still_fails_closed() -> None:
     result = _parse_message_or_known_empty(
         _message("A LinkedIn notification", "There are no vacancy cards in this synthetic message.")
