@@ -1,7 +1,13 @@
 name: Newsletter Production UAT (Manual)
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      replay_idempotency:
+        description: Run the idempotency replay after the production execution
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -44,6 +50,7 @@ jobs:
           --window-hours 24
 
       - name: Newsletter production replay (idempotency proof)
+        if: ${{ inputs.replay_idempotency }}
         run: >
           PYTHONPATH="$GITHUB_WORKSPACE" python3.12
           scripts/run_newsletter_production.py
