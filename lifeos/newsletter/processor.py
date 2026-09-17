@@ -47,18 +47,23 @@ class NewsletterProcessResult:
         return False
 
 def _is_known_non_vacancy_notification(message: RoutedNewsletterMessage) -> bool:
-    """Recognize the proven LinkedIn post-application networking notice.
+    """Recognize proven LinkedIn Jobs notifications that intentionally contain no vacancy cards.
 
-    The stable sender + subject envelope is sufficient; Gmail's normalized
-    body representation is not guaranteed to preserve the explanatory copy.
-    Unknown no-card messages still fail closed.
+    Stable sender + subject envelopes are sufficient; Gmail's normalized body
+    representation is not guaranteed to preserve explanatory copy. Unknown
+    no-card messages still fail closed.
     """
     sender = message.sender.casefold()
     subject = message.subject.casefold().strip()
     return (
         "linkedin.com" in sender
-        and subject.startswith("message people you know at ")
-        and subject.endswith(" to learn more")
+        and (
+            (
+                subject.startswith("message people you know at ")
+                and subject.endswith(" to learn more")
+            )
+            or subject.endswith(", looking for a new job?")
+        )
     )
 
 def _parse_message_or_known_empty(message: RoutedNewsletterMessage) -> MessageParseResult:
