@@ -33,6 +33,7 @@ from lifeos.jobs.qualification import LaneConfig
 from lifeos.mail.classifier import DeterministicMailClassifier
 from lifeos.mail.models import MailClass, MailMessage
 from lifeos.mail.router import MailRouter
+from lifeos.newsletter.models import ParseState
 from lifeos.newsletter.processor import NewsletterProcessor
 
 DEFAULT_TIMEOUT_SECONDS = 45.0
@@ -309,6 +310,17 @@ def _safe_summary(
                 }
                 for error in process_result.errors
             ]
+        degraded_messages = [
+            {
+                "message_ref": result.message_ref,
+                "source_provider": result.source_provider,
+                "issue_codes": [issue.code for issue in result.issues],
+            }
+            for result in process_result.messages
+            if result.state is not ParseState.PASS
+        ]
+        if degraded_messages:
+            summary["newsletter_parse"]["degraded_messages"] = degraded_messages
     if feature_result is not None:
         disposition_counts = {d.value: 0 for d in Disposition}
         for result in feature_result.ingest_results:

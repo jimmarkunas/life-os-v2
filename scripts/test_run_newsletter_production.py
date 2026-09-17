@@ -8,6 +8,7 @@ from unittest.mock import patch
 from urllib.parse import parse_qs
 
 from lifeos.core.http import HttpClient, HttpResponse
+from lifeos.newsletter.models import MessageParseResult, ParseIssue, ParseState
 from lifeos.newsletter.processor import NewsletterError, NewsletterExecutionState, NewsletterProcessResult, NewsletterTimings
 
 from . import run_newsletter_production as entry
@@ -298,6 +299,46 @@ class MainEntryPointTests(unittest.TestCase):
         self.assertEqual(summary["newsletter_parse"]["error_details"][0]["mailbox"], "gmail")
         self.assertEqual(summary["newsletter_parse"]["error_details"][0]["operation"], "fetch")
         self.assertIn("msg-stuck:TimeoutError:synthetic", summary["newsletter_parse"]["error_details"][0]["detail"])
+
+    def test_summary_surfaces_degraded_message_issue_codes(self) -> None:
+        process_result = NewsletterProcessResult(
+            NewsletterExecutionState.DEGRADED,
+            (
+                MessageParseResult(
+                    "gmail:msg-1",
+                    "lensa",
+                    ParseState.DEGRADED,
+                    (),
+                    (ParseIssue("no-vacancy-cards-found", "gmail:msg-1"),),
+                ),
+                MessageParseResult(
+                    "gmail:msg-2",
+                    "bridgeview",
+                    ParseState.PASS,
+                    (),
+                    (),
+                ),
+            ),
+            (),
+            NewsletterTimings(0.1, 0.0, 0.1),
+        )
+
+        summary = entry._safe_summary(
+            dry_run=False,
+            elapsed_seconds=0.1,
+            mail_preview=None,
+            mail_result=None,
+            process_result=process_result,
+            feature_result=None,
+            processed_count=0,
+            processed_errors=0,
+        )
+
+        degraded = summary["newsletter_parse"]["degraded_messages"]
+        self.assertEqual(len(degraded), 1)
+        self.assertEqual(degraded[0]["message_ref"], "gmail:msg-1")
+        self.assertEqual(degraded[0]["source_provider"], "lensa")
+        self.assertEqual(degraded[0]["issue_codes"], ["no-vacancy-cards-found"])
 
 
 if __name__ == "__main__":
