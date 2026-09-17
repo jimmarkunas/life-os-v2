@@ -491,7 +491,11 @@ def _parse_jobright(text: str) -> tuple[list[dict[str, object]], str | None]:
         if role_i >= len(lines):
             out.append({"company": None, "role": None, "location": None, "compensation": None, "apply_url": href})
             continue
-        company_candidates = [x for x in lines[:score_i] if "·" not in x and "public company" not in x.casefold() and "stage" not in x.casefold()]
+        # Company metadata (e.g. "Advertising · Growth Stage") uses the "·"
+        # separator and is excluded structurally by it -- a bare substring
+        # check for "stage" also discarded legitimate company names like
+        # "Stage 4 Solutions", which is not metadata at all.
+        company_candidates = [x for x in lines[:score_i] if "·" not in x and "public company" not in x.casefold()]
         if not company_candidates:
             out.append({"company": None, "role": None, "location": None, "compensation": None, "apply_url": href})
             continue
