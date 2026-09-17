@@ -21,6 +21,18 @@ class NewsletterTests(unittest.TestCase):
         self.assertEqual(len(result.observations),2); self.assertEqual(result.observations[0].company,"Synthetic Labs")
         self.assertEqual(result.observations[0].provider_score,92); self.assertIn("unresolved-card-shape",result.observations[1].issues)
         self.assertEqual(result.state,ParseState.DEGRADED)
+    def test_jobright_company_name_containing_stage_is_not_mistaken_for_metadata(self):
+        body = """[Stage 4 Synthetic Solutions\nAdvertising · Growth Stage\n98%\nProject Manager – Technology\nRemote\n$120K-$150K/yr](https://jobright.ai/jobs/info/synthetic-stage-4)\nView more opportunities"""
+        result = parse_message(msg("synthetic-stage-company", "Jobright daily jobs", body))
+        self.assertEqual(len(result.observations), 1)
+        obs = result.observations[0]
+        self.assertEqual(obs.company, "Stage 4 Synthetic Solutions")
+        self.assertEqual(obs.role, "Project Manager – Technology")
+        self.assertEqual(obs.provider_score, 98)
+        self.assertEqual(obs.source_apply_url, "https://jobright.ai/jobs/info/synthetic-stage-4")
+        self.assertNotIn("unresolved-card-shape", obs.issues)
+        self.assertEqual(result.state, ParseState.PASS)
+
     def test_lensa_source_parses_source_facts_without_resolving_final_url_or_posting_date(self):
         body="[Synthetic Works Senior Project Manager Remote $110K-$130K](https://jobs.lensa.com/synthetic-role)"
         result=parse_message(msg("synthetic-lensa","Lensa job alert",body,sender="alerts@lensa.example.invalid"))
