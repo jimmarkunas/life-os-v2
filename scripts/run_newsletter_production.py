@@ -20,9 +20,10 @@ import sys
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
+from lifeos.core.backlog import consume_bounded_backlog
 from lifeos.core.http import HttpClient, HttpError, RetryPolicy
 from lifeos.core.runtime import DeadlineExceeded, RunContext
-from lifeos.integrations.gmail import GmailMailboxTransport
+from lifeos.integrations.gmail import BACKLOG_BATCH_SIZE, GmailMailboxTransport
 from lifeos.integrations.notion import NotionIdentityQuery, NotionTransport, NotionTransportError
 from lifeos.jobs.fit_scoring import FitProfile, PenaltyRule, RoleFamily, ScopeCategory
 from lifeos.jobs.newsletter_adapter import HttpClientFetcher, NewsletterAdapterConfig, NewsletterJobsAdapter
@@ -428,20 +429,35 @@ def main(argv: list[str] | None = None) -> int:
             )
             if feature_result.execution.status.value != "PASS":
                 execution_status = feature_result.execution.status.value
-            if feature_result.cleanup_safe:
-                for message in process_result.messages:
-                    if ":" not in message.message_ref:
-                        continue
-                    mailbox, message_id = message.message_ref.split(":", 1)
-                    if mailbox != "gmail" or not message_id:
-                        continue
-                    try:
-                        gmail.mark_newsletter_processed(message_id, NEWSLETTER_BOUNDARY)
-                    except Exception:
-                        processed_errors += 1
-                        execution_status = "DEGRADED"
-                    else:
-                        processed_count += 1
+            def _mark_message_processed(message) -> None:
+                nonlocal processed_count, processed_errors, execution_status
+                if ":" not in message.message_ref:
+                    return
+                mailbox, message_id = message.message_ref.split(":", 1)
+                if mailbox != "gmail" or not message_id:
+                    return
+                try:
+                    gmail.mark_newsletter_processed(message_id, NEWSLETTER_BOUNDARY)
+                except Exception:
+                    processed_errors += 1
+                    execution_status = "DEGRADED"
+                else:
+                    processed_count += 1
+
+            # Shared platform mechanic (lifeos.core.backlog): the batch was
+            # already enumerated/bounded/hydrated by
+            # NewsletterProcessor.process_window above (Gmail's own
+            # BACKLOG_BATCH_SIZE bound), so this call's own bound is a
+            # pass-through, never a re-truncation, and an empty batch is a
+            # safe no-op. All domain accounting (cleanup_safe) stays in
+            # Newsletter/Jobs; this call only decides which already-
+            # accounted messages get marked.
+            consume_bounded_backlog(
+                enumerate_backlog=lambda: process_result.messages,
+                batch_size=BACKLOG_BATCH_SIZE,
+                process_batch=lambda batch: {message: feature_result.cleanup_safe for message in batch},
+                mark_complete=_mark_message_processed,
+            )
     except DeadlineExceeded:
         execution_status = "DEGRADED"
         print("BLOCKED: execution deadline exhausted", file=sys.stderr)
