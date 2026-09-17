@@ -121,6 +121,7 @@ def merge_canonical_observation(existing: Opportunity, incoming: Opportunity) ->
         fit=fit,
         fit_authority=fit_authority,
         source_providers=tuple(sorted(set(existing.source_providers) | set(incoming.source_providers))),
+        source_types=tuple(sorted(set(existing.source_types) | set(incoming.source_types))),
     )
 
 

@@ -71,6 +71,7 @@ def make_candidate(
     freshness_status: FreshnessStatus = FreshnessStatus.FRESH,
     evidence_ref: str = "synthetic:evidence:1",
     fit_authority: FitAuthority = FitAuthority.NON_AUTHORITATIVE,
+    source_types: tuple[str, ...] = (),
 ) -> NormalizedCandidate:
     return NormalizedCandidate(
         job=job or make_job(),
@@ -79,4 +80,5 @@ def make_candidate(
         freshness_status=freshness_status,
         evidence_ref=evidence_ref,
         fit_authority=fit_authority,
+        source_types=source_types,
     )

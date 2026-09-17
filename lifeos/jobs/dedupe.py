@@ -30,6 +30,7 @@ class LaneObservation:
     fit: int | None
     admission_status: AdmissionStatus
     fit_authority: FitAuthority = FitAuthority.NON_AUTHORITATIVE
+    source_types: tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -102,6 +103,7 @@ def reconcile(
         # letting convergence silently discard the losing provider's ID.
         aliases = tuple(sorted({alias for o in group if (alias := provider_alias(o.job)) is not None}))
         source_providers = tuple(sorted({o.job.source_provider for o in group if o.job.source_provider}))
+        source_types = tuple(sorted({source_type for o in group for source_type in o.source_types}))
 
         opportunity = Opportunity(
             stable_job_key=key,
@@ -112,6 +114,7 @@ def reconcile(
             fit=best_fit,
             fit_authority=fit_authority,
             source_providers=source_providers,
+            source_types=source_types,
         )
         reconciled.append(
             ReconciledOpportunity(

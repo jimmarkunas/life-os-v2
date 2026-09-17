@@ -111,6 +111,9 @@ class NormalizedCandidate:
     """Whether this candidate's LIFE OS Fit came from authoritative Jobs
     evidence. Provider percentages and weak source snippets are never
     authoritative."""
+    source_types: tuple[str, ...] = field(default_factory=tuple)
+    """Acquisition provenance labels observed for this candidate, such as
+    provider name and mailbox alert type. These are not source-lane names."""
 
 
 @dataclass(frozen=True)
@@ -134,6 +137,7 @@ class Opportunity:
     Job.provider_score for that, kept strictly separate."""
     fit_authority: FitAuthority = FitAuthority.NON_AUTHORITATIVE
     source_providers: tuple[str, ...] = field(default_factory=tuple)
+    source_types: tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)

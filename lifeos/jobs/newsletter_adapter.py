@@ -65,6 +65,21 @@ def _parse_compensation_minimum(text: str | None) -> int | None:
     return value * 1_000 if match.group(2) else value
 
 
+def _newsletter_source_types(*, provider: str, mailbox: str) -> tuple[str, ...]:
+    source_types: list[str] = []
+    provider = provider.strip()
+    if provider:
+        source_types.append(provider)
+
+    mailbox_normalized = mailbox.casefold()
+    if "outlook" in mailbox_normalized:
+        source_types.append("Outlook Alert")
+    else:
+        source_types.append("Gmail Alert")
+
+    return tuple(dict.fromkeys(source_types))
+
+
 @dataclass(frozen=True)
 class NewsletterAdapterConfig:
     fetcher: Fetcher
@@ -83,6 +98,7 @@ class NewsletterJobsAdapter:
         company = (observation.company or "").strip()
         role = (observation.role or "").strip()
         location = observation.location_text
+        source_types = _newsletter_source_types(provider=observation.source_provider, mailbox=observation.source_mailbox)
 
         fatal_issues = fatal_issue_codes(observation.issues)
         if fatal_issues:
@@ -97,6 +113,7 @@ class NewsletterJobsAdapter:
                 fit=None, market=cfg.market, freshness_status=FreshnessStatus.UNRESOLVED,
                 evidence_ref=observation.evidence_ref,
                 unresolved_reason=f"source observation has unresolved issues: {', '.join(fatal_issues)}",
+                source_types=source_types,
             )
 
         # Enrichment failure is not identity failure: a missing source apply
@@ -155,4 +172,5 @@ class NewsletterJobsAdapter:
             evidence_ref=observation.evidence_ref,
             unresolved_reason=None,
             fit_authority=fit_authority,
+            source_types=source_types,
         )
