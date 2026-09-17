@@ -97,26 +97,28 @@ class NewsletterJobsAdapter:
                 unresolved_reason=f"source observation has unresolved issues: {', '.join(observation.issues)}",
             )
 
-        unresolved_reason: str | None = None
+        # Enrichment failure is not identity failure: a missing source apply
+        # URL, an unresolved final employer/ATS destination, or a raised
+        # resolver exception all leave apply_url/description_text/
+        # posting_date unset below, but never set unresolved_reason. Whether
+        # this candidate can still be safely identified is decided later, by
+        # identity.stable_job_key()'s own company+role+location fallback --
+        # not here. unresolved_reason is reserved for observation.issues
+        # above, which signals a parser-level identity problem.
         apply_url: str | None = None
         description_text: str | None = None
         posting_date: date | None = None
 
-        if not observation.source_apply_url:
-            unresolved_reason = "no source apply URL to resolve"
-        else:
+        if observation.source_apply_url:
             try:
                 evidence = acquire_terminal_vacancy_evidence(
                     observation.source_apply_url,
                     fetcher=cfg.fetcher,
                     fallback_fetcher=cfg.fallback_fetcher,
                 )
-            except Exception as exc:
+            except Exception:
                 evidence = None
-                unresolved_reason = f"final employer/ATS resolution raised {type(exc).__name__}"
-            if evidence is None:
-                unresolved_reason = unresolved_reason or "final employer/ATS evidence could not be resolved"
-            else:
+            if evidence is not None:
                 apply_url = evidence.canonical_url
                 description_text = evidence.description_text
                 posting_iso = parse_posting_date(evidence.posting_date_raw, reference_time=observation.source_received_at)
@@ -131,10 +133,15 @@ class NewsletterJobsAdapter:
             provider_score=observation.provider_score,
         )
 
+        # LIFE OS Fit is authoritative evidence only: score it from terminal
+        # employer/ATS description text, never from weak source-card/title
+        # text alone. When enrichment did not resolve, fit stays None and
+        # qualify() routes the candidate to PASSED_REVIEW, never a silent
+        # admission and never a fabricated score.
         fit: int | None = None
-        if not unresolved_reason:
+        if description_text:
             fit = score_fit(
-                FitEvidence(role=role, description_text=description_text or "", location_text=location or ""),
+                FitEvidence(role=role, description_text=description_text, location_text=location or ""),
                 profile=cfg.fit_profile,
             ).score
 
@@ -142,5 +149,5 @@ class NewsletterJobsAdapter:
             job=job, fit=fit, market=cfg.market,
             freshness_status=FreshnessStatus.UNRESOLVED,
             evidence_ref=observation.evidence_ref,
-            unresolved_reason=unresolved_reason,
+            unresolved_reason=None,
         )

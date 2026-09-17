@@ -64,24 +64,48 @@ def test_resolved_observation_produces_populated_candidate():
     assert candidate.job.provider_score == 88
 
 
-def test_missing_source_url_is_unresolved():
+def test_missing_source_url_does_not_block_identifiable_candidate():
     candidate = _adapter(FakeFetcher({})).to_jobs_candidate(_observation(source_apply_url=None))
-    assert candidate.unresolved_reason is not None
+    # Enrichment could not even be attempted, but company/role/location are
+    # still sufficient for identity -- this is not an accounting failure.
+    assert candidate.unresolved_reason is None
     assert candidate.fit is None
     assert candidate.job.apply_url is None
 
 
-def test_failed_resolution_is_unresolved_not_crash():
+def test_failed_resolution_does_not_block_identifiable_candidate():
     fetcher = FakeFetcher({})  # no fixture -> get() raises
     candidate = _adapter(fetcher).to_jobs_candidate(_observation(source_apply_url="https://linkedin.com/jobs/view/1"))
-    assert candidate.unresolved_reason is not None
+    assert candidate.unresolved_reason is None
     assert candidate.fit is None
+    assert candidate.job.apply_url is None
 
 
-def test_intermediary_only_resolution_is_unresolved():
+def test_intermediary_only_resolution_does_not_block_identifiable_candidate():
     fetcher = FakeFetcher({"https://linkedin.com/jobs/view/1": FetchResponse(final_url="https://linkedin.com/jobs/view/1", body="<html>no links here</html>")})
     candidate = _adapter(fetcher).to_jobs_candidate(_observation(source_apply_url="https://linkedin.com/jobs/view/1"))
-    assert candidate.unresolved_reason is not None
+    assert candidate.unresolved_reason is None
+    assert candidate.fit is None
+    assert candidate.job.apply_url is None
+
+
+def test_missing_identity_evidence_is_still_unresolved_via_enrichment_failure():
+    # Enrichment failure alone is never fatal, but if company/role/location
+    # are ALSO insufficient for identity, the candidate is still accounted
+    # for as REVIEW_DEGRADED -- just downstream, by identity.stable_job_key()
+    # raising in newsletter_contract.ingest(), not by this adapter.
+    candidate = _adapter(FakeFetcher({})).to_jobs_candidate(
+        _observation(source_apply_url=None, company="", role="", location_text=None)
+    )
+    assert candidate.unresolved_reason is None
+    assert candidate.fit is None
+    from lifeos.jobs.identity import stable_job_key
+
+    try:
+        stable_job_key(candidate.job)
+        assert False, "expected identity derivation to fail without company/role/location"
+    except ValueError:
+        pass
 
 
 def test_work_mode_inferred_from_location_text():

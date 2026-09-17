@@ -179,19 +179,46 @@ def test_excluded_vacancy_still_cleanup_safe():
     assert result.cleanup_safe is True  # EXCLUDED is a valid terminal disposition, not a blocker
 
 
-# 6. unresolved final employer URL -> REVIEW-DEGRADED / no cleanup -----------
+# 6. unresolved final employer URL, but identifiable -> CREATED / PASSED_REVIEW,
+#    cleanup safe. Enrichment failure is not ingestion failure: company/role/
+#    location are enough to identify the vacancy even though the terminal
+#    URL, JD, and Fit never resolved.
 
 
-def test_unresolved_employer_url_is_review_degraded_and_blocks_cleanup():
+def test_unresolved_employer_url_with_identifiable_vacancy_is_created_and_cleanup_safe():
     fetcher = FakeFetcher({})  # nothing resolves
     repo = InMemoryCareerRepository()
     result = run_newsletter_feature(
         _process_result((_observation(source_apply_url="https://linkedin.com/jobs/view/1"),)),
         adapter=_adapter(fetcher), lane=LANE, lane_priority=LANE_PRIORITY, repository=repo, run_date=RUN_DATE, context=_context(),
     )
+    assert result.ingest_results[0].disposition == Disposition.CREATED
+    assert result.cleanup_safe is True
+    assert result.execution.status != ExecutionStatus.DEGRADED
+    persisted = repo.get_many([result.ingest_results[0].stable_job_key])[result.ingest_results[0].stable_job_key]
+    assert persisted.opportunity.admission_status.value == "passed_review"
+    assert persisted.opportunity.job.apply_url is None
+    # LaneObservation coerces an unresolved candidate.fit (None) to 0 before
+    # reconciliation (see newsletter_contract.ingest()) -- this is pre-existing
+    # representation, not a fabricated score; PASSED_REVIEW above is what
+    # proves qualification correctly treated Fit as unresolved.
+    assert persisted.opportunity.fit == 0
+
+
+# 6b. unresolved final employer URL AND no fallback identity -> REVIEW_DEGRADED,
+#     cleanup blocked. This is the genuine fatal-accounting-failure boundary
+#     that must survive Package A's fix.
+
+
+def test_unresolved_employer_url_without_identity_evidence_is_review_degraded():
+    fetcher = FakeFetcher({})  # nothing resolves
+    repo = InMemoryCareerRepository()
+    result = run_newsletter_feature(
+        _process_result((_observation(source_apply_url="https://linkedin.com/jobs/view/1", company="", role="", location_text=None),)),
+        adapter=_adapter(fetcher), lane=LANE, lane_priority=LANE_PRIORITY, repository=repo, run_date=RUN_DATE, context=_context(),
+    )
     assert result.ingest_results[0].disposition == Disposition.REVIEW_DEGRADED
     assert result.cleanup_safe is False
-    assert result.execution.status == ExecutionStatus.DEGRADED
 
 
 # 7. read-back failure -> REVIEW-DEGRADED / no cleanup ------------------------
