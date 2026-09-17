@@ -49,6 +49,8 @@ def detect_source(message: RoutedNewsletterMessage) -> str | None:
         return "LinkedIn Jobs"
     if "dice" in sender or "dice" in subject:
         return "Dice"
+    if "boostie.jobs" in sender or "bridgeview" in sender:
+        return "Other"
     adapter = str(message.headers.get("X-LifeOS-Source-Adapter") or message.headers.get("x-lifeos-source-adapter") or "").strip()
     return adapter or None
 
@@ -114,8 +116,15 @@ def _observation(
     company = _present(card.get("company"))
     role = _present(card.get("role"))
     source_apply_url = _present(card.get("apply_url"))
-    if not company or not role:
+    if not role:
         issues.append("unresolved-card-shape")
+    elif not company:
+        # A genuinely identifiable vacancy (role/location/compensation/apply
+        # URL) whose source simply never supplies a company name is an
+        # enrichment gap, not a parse failure -- do not fabricate one, and
+        # do not fail the whole card closed; identity.stable_job_key()'s own
+        # company+role+location fallback decides downstream.
+        issues.append("source-company-missing")
     if not source_apply_url:
         issues.append("source-apply-url-missing")
     provider_score = card.get("provider_score")
@@ -636,4 +645,60 @@ def _parse_markdown_generic(text: str) -> tuple[list[dict[str, object]], str | N
                 continue
             compensation = next((line for line in lines if MONEY.search(line)), "Not disclosed")
             cards.append({"company": company, "role": role, "location": location, "compensation": compensation, "apply_url": href})
+    if not cards:
+        cards = _parse_preceding_context_linked_cards(text)
     return cards, "generic-links" if cards else None
+
+
+# Proven by the BridgeView/Boostie production shape: role/location/compensation
+# appear as plain lines immediately before a job-specific CTA link (unlike the
+# other generic shape above, where the card content lives inside the anchor
+# itself). Only this exact CTA text is recognized -- do not broaden beyond
+# this evidence. Never fabricate a company name; the source genuinely does
+# not supply one, and downstream Jobs identity already tolerates that.
+_LINKED_CARD_CTA_LABELS = ("view this job",)
+
+
+def _parse_preceding_context_linked_cards(text: str) -> list[dict[str, object]]:
+    if not re.search(r"<\s*[a-zA-Z]", text):
+        return []
+    parser = _StructuredLinkExtractor()
+    try:
+        parser.feed(text)
+    except Exception:
+        return []
+    job_links = [
+        href
+        for href, parts in parser.links
+        if re.sub(r"\s+", " ", " ".join(parts)).strip().casefold() in _LINKED_CARD_CTA_LABELS
+    ]
+    if not job_links or len(set(job_links)) != len(job_links):
+        return []
+    plain_lines = _lines(_plain(text))
+    marker_indices = [i for i, line in enumerate(plain_lines) if line.strip().casefold() in _LINKED_CARD_CTA_LABELS]
+    if len(marker_indices) != len(job_links):
+        return []
+    cards: list[dict[str, object]] = []
+    prev_marker_end = -1
+    for idx, href in zip(marker_indices, job_links):
+        context = [x for x in plain_lines[max(prev_marker_end + 1, idx - 4) : idx] if not _is_noise(x)]
+        prev_marker_end = idx
+        compensation = None
+        if context and MONEY.search(context[-1]):
+            compensation = context[-1]
+            context = context[:-1]
+        if len(context) < 2:
+            continue
+        location, role = context[-1], _clean_candidate(context[-2])
+        if len(role) < 3 or len(location) < 2:
+            continue
+        cards.append(
+            {
+                "company": None,
+                "role": role,
+                "location": location,
+                "compensation": compensation or "Not disclosed",
+                "apply_url": href,
+            }
+        )
+    return cards
