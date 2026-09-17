@@ -9,6 +9,14 @@ class ParseState(str, Enum):
     PASS = "PASS"
     DEGRADED = "DEGRADED"
 
+ENRICHMENT_ONLY_ISSUES = frozenset({
+    "source-apply-url-missing",
+})
+
+
+def fatal_issue_codes(codes: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(code for code in codes if code not in ENRICHMENT_ONLY_ISSUES)
+
 @dataclass(frozen=True, slots=True)
 class RoutedNewsletterMessage:
     mailbox: str
