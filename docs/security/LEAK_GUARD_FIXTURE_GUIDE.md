@@ -14,7 +14,7 @@ Use:
 
 This preserves parser/classifier evidence such as `linkedin.com` while remaining synthetically non-routable. The leak guard already permits domains ending in `.invalid`.
 
-Do not use live-looking addresses such as `alerts@linkedin.com`, even when the address is publicly documented. The guard intentionally cannot prove whether an arbitrary real-domain address is public, personal, or copied from production evidence.
+Do not use a live-looking address such as `alerts@linkedin[.]com`, even when the address is publicly documented. The guard intentionally cannot prove whether an arbitrary real-domain address is public, personal, or copied from production evidence.
 
 ## Other synthetic identifiers
 
