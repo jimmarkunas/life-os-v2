@@ -48,6 +48,7 @@ jobs:
           scripts/run_newsletter_production.py
           --timeout-seconds 300
           --window-hours 24
+          --skip-mail-router
 
       - name: Newsletter production replay (idempotency proof)
         if: ${{ inputs.replay_idempotency }}
@@ -56,3 +57,4 @@ jobs:
           scripts/run_newsletter_production.py
           --timeout-seconds 300
           --window-hours 24
+          --skip-mail-router
