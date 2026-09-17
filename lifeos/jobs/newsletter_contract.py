@@ -95,7 +95,7 @@ def ingest(
                 stable_job_key=key,
                 lane=lane.name,
                 job=candidate.job,
-                fit=candidate.fit or 0,
+                fit=candidate.fit,
                 admission_status=qualification.admission_status,
             )
         )

@@ -198,11 +198,7 @@ def test_unresolved_employer_url_with_identifiable_vacancy_is_created_and_cleanu
     persisted = repo.get_many([result.ingest_results[0].stable_job_key])[result.ingest_results[0].stable_job_key]
     assert persisted.opportunity.admission_status.value == "passed_review"
     assert persisted.opportunity.job.apply_url is None
-    # LaneObservation coerces an unresolved candidate.fit (None) to 0 before
-    # reconciliation (see newsletter_contract.ingest()) -- this is pre-existing
-    # representation, not a fabricated score; PASSED_REVIEW above is what
-    # proves qualification correctly treated Fit as unresolved.
-    assert persisted.opportunity.fit == 0
+    assert persisted.opportunity.fit is None
 
 
 # 6b. unresolved final employer URL AND no fallback identity -> REVIEW_DEGRADED,
