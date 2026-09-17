@@ -74,6 +74,11 @@ jobs:
               web_lookback_hours="24"
               full_web_sweep="false"
               ;;
+            us-remote-terminal-diagnostic)
+              default_window="1"
+              web_lookback_hours="24"
+              full_web_sweep="false"
+              ;;
             us-remote-recovery)
               default_window="1440"
               web_lookback_hours="24"
@@ -119,6 +124,8 @@ jobs:
               --timeout-seconds 45
           elif [ "${{ steps.trigger.outputs.module }}" = "us-remote-live-1x1" ]; then
             PYTHONPATH="$GITHUB_WORKSPACE" python3.12 scripts/smoke_us_remote_live_1x1.py
+          elif [ "${{ steps.trigger.outputs.module }}" = "us-remote-terminal-diagnostic" ]; then
+            PYTHONPATH="$GITHUB_WORKSPACE" python3.12 scripts/diagnose_terminal_candidate.py
           else
             extra=()
             if [ "${{ steps.trigger.outputs.full_web_sweep }}" = "true" ]; then
