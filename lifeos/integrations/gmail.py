@@ -136,18 +136,30 @@ class GmailMailboxTransport(Generic[T]):
             return ()
 
         messages: list[RoutedNewsletterMessage] = []
-        failures = 0
+        failures: dict[str, Exception] = {}
         with ThreadPoolExecutor(max_workers=min(self._max_workers, len(ids))) as pool:
             for chunk_start in range(0, len(ids), self._max_workers):
                 chunk = ids[chunk_start : chunk_start + self._max_workers]
                 futures = {pool.submit(self._fetch_routed_message, message_id): message_id for message_id in chunk}
                 for future in as_completed(futures):
+                    message_id = futures[future]
                     try:
                         messages.append(future.result())
-                    except Exception:
-                        failures += 1
+                    except Exception as exc:
+                        failures[message_id] = exc
         if failures:
-            raise MailboxTransportError(f"Gmail Newsletter message acquisition incomplete: {failures} failed")
+            retry_failures: dict[str, Exception] = {}
+            for message_id in failures:
+                try:
+                    messages.append(self._fetch_routed_message(message_id))
+                except Exception as exc:
+                    retry_failures[message_id] = exc
+            if retry_failures:
+                raise MailboxTransportError(
+                    "Gmail Newsletter message acquisition incomplete: "
+                    f"mailbox={self.provider} operation=fetch_unprocessed "
+                    f"failed_messages={_format_message_failures(retry_failures)}"
+                )
         messages.sort(key=lambda item: (item.received_at, item.message_id))
         return tuple(messages)
 
@@ -325,6 +337,16 @@ def _validate_window(start: datetime, end: datetime) -> None:
         raise ValueError("mail window timestamps must be timezone-aware")
     if end <= start:
         raise ValueError("mail window end must be after start")
+
+
+def _format_message_failures(failures: Mapping[str, Exception]) -> str:
+    details = []
+    for message_id, exc in failures.items():
+        detail = str(exc).replace("\n", " ").strip()
+        if len(detail) > 160:
+            detail = f"{detail[:157]}..."
+        details.append(f"{message_id}:{exc.__class__.__name__}:{detail}")
+    return "[" + ", ".join(details) + "]"
 
 
 def _gmail_headers(message: Mapping[str, Any]) -> dict[str, str]:

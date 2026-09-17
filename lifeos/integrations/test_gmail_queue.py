@@ -6,6 +6,7 @@ from urllib.parse import unquote
 
 from lifeos.core.runtime import RunContext
 from lifeos.integrations.gmail import GmailMailboxTransport
+from lifeos.integrations.mailbox import MailboxTransportError
 
 
 class FakeHttp:
@@ -49,6 +50,37 @@ class FakeHttp:
         raise AssertionError((method, url, kwargs))
 
 
+class DetailRetryFakeHttp(FakeHttp):
+    def __init__(self, *, fail_message_id: str, permanent: bool = False) -> None:
+        super().__init__()
+        self.fail_message_id = fail_message_id
+        self.permanent = permanent
+        self.detail_attempts: dict[str, int] = {}
+
+    def request_json(self, context, method, url, **kwargs):
+        if method == "GET" and "/messages?" in url:
+            return {"messages": [{"id": "msg-ok"}, {"id": self.fail_message_id}]}
+        for message_id in ("msg-ok", self.fail_message_id):
+            if method == "GET" and f"/messages/{message_id}?format=full" in url:
+                self.detail_attempts[message_id] = self.detail_attempts.get(message_id, 0) + 1
+                if message_id == self.fail_message_id and (self.permanent or self.detail_attempts[message_id] == 1):
+                    raise TimeoutError(f"synthetic detail timeout for {message_id}")
+                body = base64.urlsafe_b64encode(f"body {message_id}".encode("utf-8")).decode("ascii").rstrip("=")
+                return {
+                    "id": message_id,
+                    "internalDate": "1789574400000",
+                    "payload": {
+                        "mimeType": "text/plain",
+                        "headers": [
+                            {"name": "From", "value": "alerts@example.invalid"},
+                            {"name": "Subject", "value": f"Synthetic {message_id}"},
+                        ],
+                        "body": {"data": body},
+                    },
+                }
+        return super().request_json(context, method, url, **kwargs)
+
+
 def _mailbox(http: FakeHttp) -> GmailMailboxTransport:
     return GmailMailboxTransport(
         context=RunContext.start(timeout_seconds=45),
@@ -82,3 +114,37 @@ def test_unprocessed_queue_excludes_processed_and_retries_within_retention_windo
     decoded = unquote(list_call[1])
     assert f"after:{int(end.timestamp() - 60 * 24 * 3600)}" in decoded
     assert '-label:"J+Newsletters/Processed"' in decoded or '-label:"J Newsletters/Processed"' in decoded
+
+
+def test_unprocessed_queue_retries_transient_detail_failure_and_returns_complete_queue() -> None:
+    http = DetailRetryFakeHttp(fail_message_id="msg-flaky")
+    http.created_processed = True
+    mailbox = _mailbox(http)
+    start = datetime(2026, 9, 15, tzinfo=timezone.utc)
+    end = datetime(2026, 9, 16, tzinfo=timezone.utc)
+
+    messages = mailbox.fetch_unprocessed(start, end, "J Newsletters")
+
+    assert [message.message_id for message in messages] == ["msg-flaky", "msg-ok"]
+    assert http.detail_attempts == {"msg-ok": 1, "msg-flaky": 2}
+
+
+def test_unprocessed_queue_fails_closed_with_message_id_after_retry_failure() -> None:
+    http = DetailRetryFakeHttp(fail_message_id="msg-stuck", permanent=True)
+    http.created_processed = True
+    mailbox = _mailbox(http)
+    start = datetime(2026, 9, 15, tzinfo=timezone.utc)
+    end = datetime(2026, 9, 16, tzinfo=timezone.utc)
+
+    try:
+        mailbox.fetch_unprocessed(start, end, "J Newsletters")
+    except MailboxTransportError as exc:
+        detail = str(exc)
+    else:
+        raise AssertionError("expected fetch_unprocessed to fail closed")
+
+    assert "mailbox=gmail" in detail
+    assert "operation=fetch_unprocessed" in detail
+    assert "msg-stuck:TimeoutError:synthetic detail timeout for msg-stuck" in detail
+    assert "msg-ok" not in detail
+    assert http.detail_attempts == {"msg-ok": 1, "msg-stuck": 2}
