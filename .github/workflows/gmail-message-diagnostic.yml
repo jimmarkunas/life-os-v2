@@ -1,0 +1,37 @@
+name: Gmail Message Diagnostic
+
+on:
+  workflow_dispatch:
+    inputs:
+      message_id:
+        description: "Gmail message ID"
+        required: true
+        default: "1a07f4a63a8a9b48"
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      GMAIL_OAUTH_CLIENT_ID: ${{ secrets.GMAIL_OAUTH_CLIENT_ID }}
+      GMAIL_OAUTH_CLIENT_SECRET: ${{ secrets.GMAIL_OAUTH_CLIENT_SECRET }}
+      GMAIL_OAUTH_REFRESH_TOKEN: ${{ secrets.GMAIL_OAUTH_REFRESH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: diagnose/gmail-message-403
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch one Gmail message
+        run: >
+          python3.12 scripts/diagnose_gmail_message.py
+          "${{ inputs.message_id }}"
