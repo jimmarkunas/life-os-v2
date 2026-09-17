@@ -95,6 +95,13 @@ class NewsletterProcessor:
                         parsed.append(future.result())
         parse_seconds = perf_counter() - parse_started
         parsed.sort(key=lambda r: r.message_ref)
+        for result in parsed:
+            if result.state is not ParseState.DEGRADED:
+                continue
+            mailbox = result.message_ref.split(":", 1)[0] if ":" in result.message_ref else "<unknown>"
+            issue_codes = sorted({issue.code for issue in result.issues})
+            detail = f"{result.message_ref}:issues={','.join(issue_codes) if issue_codes else 'message-parse-degraded'}"
+            errors.append(NewsletterError(mailbox, "parse", detail))
         state = (
             NewsletterExecutionState.PASS
             if not errors and all(r.state is ParseState.PASS for r in parsed)
