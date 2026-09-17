@@ -10,7 +10,7 @@ from lifeos.core.runtime import RunContext
 from lifeos.integrations.notion import NotionTransport
 from lifeos.jobs.fit_scoring import FitProfile, RoleFamily
 from lifeos.jobs.lifecycle import new_record
-from lifeos.jobs.models import AdmissionStatus, Company, Job, Opportunity, WorkMode
+from lifeos.jobs.models import AdmissionStatus, Company, FitAuthority, Job, Opportunity, WorkMode
 from lifeos.jobs.newsletter_adapter import HttpClientFetcher, NewsletterAdapterConfig, NewsletterJobsAdapter
 from lifeos.jobs.newsletter_contract import Disposition, ingest
 from lifeos.jobs.notion_repository import (
@@ -94,6 +94,8 @@ CANONICAL_LEDGER_PROPERTY_TYPES = {
     "Fit Authority": "select",
     "Provider Score": "number",
     "Admission Status": "select",
+    "Source Provider": "rich_text",
+    "Source Types": "multi_select",
     "Applied": "checkbox",
     "Applied On": "date",
     "First Surfaced": "date",
@@ -166,7 +168,7 @@ def test_title_property_is_job_not_role():
 
 def test_fit_and_provider_score_persisted_with_canonical_names():
     job = _job(provider_score=91)
-    record = new_record(Opportunity(stable_job_key="k1", job=job, admission_status=AdmissionStatus.ADMITTED, fit=85), run_date=RUN_DATE)
+    record = new_record(Opportunity(stable_job_key="k1", job=job, admission_status=AdmissionStatus.ADMITTED, fit=85, fit_authority=FitAuthority.AUTHORITATIVE), run_date=RUN_DATE)
     props = _record_to_properties(record)
     assert props["LIFE OS Fit"]["number"] == 85
     assert props["Provider Score"]["number"] == 91
@@ -178,13 +180,13 @@ def test_strict_schema_fixture_rejects_invented_property_types():
     http = StrictSchemaNotionHttp()
     transport = NotionTransport(context=context, http=http, access_token="synthetic-token")
     repo = NotionCareerRepository(transport=transport, config=NotionCareerRepositoryConfig(data_source_id="synthetic-ds"))
-    opportunity = Opportunity(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED, fit=80)
+    opportunity = Opportunity(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED, fit=80, fit_authority=FitAuthority.AUTHORITATIVE)
     persisted = repo.upsert(new_record(opportunity, run_date=RUN_DATE))
     assert persisted.opportunity.fit == 80
 
 
 def test_no_emitted_property_is_outside_canonical_schema():
-    record = new_record(Opportunity(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED, fit=80), run_date=RUN_DATE)
+    record = new_record(Opportunity(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED, fit=80, fit_authority=FitAuthority.AUTHORITATIVE), run_date=RUN_DATE)
     props = _record_to_properties(record)
     assert set(props) <= set(CANONICAL_LEDGER_PROPERTY_TYPES)
     # Blocker 1's originally-invented properties must never appear.
@@ -224,7 +226,7 @@ def test_applied_state_survives_upsert_read_back():
     http = StrictSchemaNotionHttp()
     transport = NotionTransport(context=context, http=http, access_token="synthetic-token")
     repo = NotionCareerRepository(transport=transport, config=NotionCareerRepositoryConfig(data_source_id="synthetic-ds"))
-    opportunity = Opportunity(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED, fit=80)
+    opportunity = Opportunity(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED, fit=80, fit_authority=FitAuthority.AUTHORITATIVE)
     record = mark_applied(new_record(opportunity, run_date=RUN_DATE), run_date=RUN_DATE)
     persisted = repo.upsert(record)
     assert persisted.applied is True
@@ -244,7 +246,7 @@ def test_63_vacancies_chunked_correctly():
     for i in range(63):
         key = f"k{i}"
         keys.append(key)
-        opportunity = Opportunity(stable_job_key=key, job=_job(apply_url=f"https://greenhouse.io/acme/jobs/{i}"), admission_status=AdmissionStatus.ADMITTED, fit=80)
+        opportunity = Opportunity(stable_job_key=key, job=_job(apply_url=f"https://greenhouse.io/acme/jobs/{i}"), admission_status=AdmissionStatus.ADMITTED, fit=80, fit_authority=FitAuthority.AUTHORITATIVE)
         repo.upsert(new_record(opportunity, run_date=RUN_DATE))
 
     found = repo.get_many(keys)

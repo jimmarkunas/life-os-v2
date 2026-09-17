@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from lifeos.jobs.identity import provider_alias
-from lifeos.jobs.models import AdmissionStatus, Job, Opportunity
+from lifeos.jobs.models import AdmissionStatus, FitAuthority, Job, Opportunity
 
 
 @dataclass(frozen=True)
@@ -29,6 +29,7 @@ class LaneObservation:
     job: Job
     fit: int | None
     admission_status: AdmissionStatus
+    fit_authority: FitAuthority = FitAuthority.NON_AUTHORITATIVE
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,14 @@ def _best_admission(observations: list[LaneObservation]) -> AdmissionStatus:
     return min((obs.admission_status for obs in observations), key=lambda status: order[status])
 
 
+def _best_fit(observations: list[LaneObservation]) -> tuple[int | None, FitAuthority]:
+    authoritative = [obs.fit for obs in observations if obs.fit is not None and obs.fit_authority == FitAuthority.AUTHORITATIVE]
+    if authoritative:
+        return authoritative[-1], FitAuthority.AUTHORITATIVE
+    fit = max((obs.fit for obs in observations), key=_fit_rank)
+    return fit, FitAuthority.NON_AUTHORITATIVE
+
+
 def reconcile(
     observations: list[LaneObservation], *, lane_priority: dict[str, int]
 ) -> list[ReconciledOpportunity]:
@@ -77,7 +86,7 @@ def reconcile(
     for key, group in grouped.items():
         ordered = sorted(group, key=lambda o: (lane_priority[o.lane], -_fit_rank(o.fit), o.lane))
         visible = ordered[0]
-        best_fit = max((o.fit for o in group), key=_fit_rank)
+        best_fit, fit_authority = _best_fit(ordered)
         source_lanes = tuple(sorted({o.lane for o in group}, key=lambda lane: (lane_priority[lane], lane)))
 
         merged_job = visible.job
@@ -92,6 +101,7 @@ def reconcile(
         # canonical vacancy. Preserve all of them as provenance rather than
         # letting convergence silently discard the losing provider's ID.
         aliases = tuple(sorted({alias for o in group if (alias := provider_alias(o.job)) is not None}))
+        source_providers = tuple(sorted({o.job.source_provider for o in group if o.job.source_provider}))
 
         opportunity = Opportunity(
             stable_job_key=key,
@@ -100,6 +110,8 @@ def reconcile(
             source_lanes=source_lanes,
             aliases=aliases,
             fit=best_fit,
+            fit_authority=fit_authority,
+            source_providers=source_providers,
         )
         reconciled.append(
             ReconciledOpportunity(

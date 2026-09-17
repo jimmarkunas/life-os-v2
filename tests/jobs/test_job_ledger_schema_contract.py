@@ -9,7 +9,7 @@ from datetime import date
 from pathlib import Path
 
 from lifeos.jobs.lifecycle import new_record
-from lifeos.jobs.models import AdmissionStatus, Company, Job, Opportunity, WorkMode
+from lifeos.jobs.models import AdmissionStatus, Company, FitAuthority, Job, Opportunity, WorkMode
 from lifeos.jobs.notion_repository import _record_to_properties
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -38,12 +38,14 @@ def _properties(
     work_mode: WorkMode = WorkMode.REMOTE,
     admission_status: AdmissionStatus = AdmissionStatus.ADMITTED,
     fit: int | None = 82,
+    fit_authority: FitAuthority = FitAuthority.AUTHORITATIVE,
 ):
     opportunity = Opportunity(
         stable_job_key="synthetic-key",
         job=_job(work_mode=work_mode),
         admission_status=admission_status,
         fit=fit,
+        fit_authority=fit_authority,
     )
     return _record_to_properties(new_record(opportunity, run_date=date(2026, 1, 15)))
 
@@ -74,7 +76,7 @@ def test_repository_select_values_match_canonical_contract():
         assert actual in SCHEMA["Admission Status"]["allowed_values"]
 
     authoritative = _properties(fit=82)["Fit Authority"]["select"]["name"]
-    non_authoritative = _properties(fit=None)["Fit Authority"]["select"]["name"]
+    non_authoritative = _properties(fit=None, fit_authority=FitAuthority.NON_AUTHORITATIVE)["Fit Authority"]["select"]["name"]
     assert authoritative == "Authoritative"
     assert non_authoritative == "Non-Authoritative"
     assert {authoritative, non_authoritative} <= set(SCHEMA["Fit Authority"]["allowed_values"])

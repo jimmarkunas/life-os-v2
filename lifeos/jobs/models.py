@@ -36,6 +36,11 @@ class AdmissionStatus(str, Enum):
     EXCLUDED = "excluded"
 
 
+class FitAuthority(str, Enum):
+    AUTHORITATIVE = "authoritative"
+    NON_AUTHORITATIVE = "non_authoritative"
+
+
 @dataclass(frozen=True)
 class Company:
     """A hiring organization. Identity is the normalized display name until a
@@ -77,6 +82,8 @@ class Job:
     provider_score: int | None = None
     """Provider-supplied match score, if any. Evidence only -- see
     fit_scoring.py's module docstring -- never contributes to LIFE OS Fit."""
+    source_provider: str | None = None
+    """Source-provider display name observed for this Job. Provenance only."""
 
 
 @dataclass(frozen=True)
@@ -100,6 +107,10 @@ class NormalizedCandidate:
     could not be established. When set, ingest() routes this candidate
     straight to REVIEW_DEGRADED before attempting identity/qualification;
     it is never silently dropped or force-admitted."""
+    fit_authority: FitAuthority = FitAuthority.NON_AUTHORITATIVE
+    """Whether this candidate's LIFE OS Fit came from authoritative Jobs
+    evidence. Provider percentages and weak source snippets are never
+    authoritative."""
 
 
 @dataclass(frozen=True)
@@ -121,6 +132,8 @@ class Opportunity:
     """Authoritative LIFE OS Fit for this canonical Job (see
     fit_scoring.py). Never a provider-supplied score -- see
     Job.provider_score for that, kept strictly separate."""
+    fit_authority: FitAuthority = FitAuthority.NON_AUTHORITATIVE
+    source_providers: tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)

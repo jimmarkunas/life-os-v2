@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
 from lifeos.core.runtime import RunContext
 from lifeos.integrations.notion import NotionTransport
-from lifeos.jobs.lifecycle import new_record
-from lifeos.jobs.models import AdmissionStatus, Company, Job, Opportunity, WorkMode
+from lifeos.jobs.lifecycle import mark_applied, new_record
+from lifeos.jobs.models import AdmissionStatus, Company, FitAuthority, Job, Opportunity, WorkMode
 from lifeos.jobs.newsletter_contract import Disposition, ingest
 from lifeos.jobs.notion_repository import NotionCareerRepository, NotionCareerRepositoryConfig
 from lifeos.jobs.repository import ReadBackMismatch
@@ -98,6 +98,25 @@ def _repository_with_http(http: FakeNotionHttp):
     transport = NotionTransport(context=context, http=http, access_token="synthetic-token")
     repo = NotionCareerRepository(transport=transport, config=NotionCareerRepositoryConfig(data_source_id=SYNTHETIC_DATA_SOURCE_ID))
     return repo
+
+
+def _fresh_ingest(http: FakeNotionHttp, candidate, *, run_date: date = RUN_DATE):
+    repo = _repository_with_http(http)
+    assert repo._page_ids == {}
+    result = ingest(
+        [candidate],
+        lane=REMOTE_LANE,
+        lane_priority={"Synthetic-Remote": 0},
+        repository=repo,
+        run_date=run_date,
+    )
+    return result, repo
+
+
+def _fresh_record(http: FakeNotionHttp, key: str):
+    repo = _repository_with_http(http)
+    assert repo._page_ids == {}
+    return repo.get_many([key])[key]
 
 
 def test_get_many_returns_empty_for_unknown_keys():
@@ -239,6 +258,197 @@ def test_fallback_key_job_later_url_converges_across_fresh_repository_instances(
     assert third[0].stable_job_key == fallback_key
     assert len(http.pages) == 1
     assert repo_3.get_many(["url:https://greenhouse.io/acme/jobs/123"]) == {}
+
+
+def test_package_c_no_downgrade_merge_survives_fresh_repository_instances():
+    http = FakeNotionHttp()
+    key = "acme synthetic co|technical program manager|remote"
+    first_date = RUN_DATE
+    second_date = RUN_DATE + timedelta(days=1)
+
+    first, _ = _fresh_ingest(
+        http,
+        make_candidate(
+            job=make_job(
+                role="Technical Program Manager",
+                location="Remote",
+                apply_url=None,
+                posting_date=None,
+                source_provider="Source A",
+            ),
+            fit=None,
+            fit_authority=FitAuthority.NON_AUTHORITATIVE,
+            evidence_ref="ev:first",
+        ),
+        run_date=first_date,
+    )
+    assert first[0].disposition == Disposition.CREATED
+    assert first[0].stable_job_key == key
+
+    stronger, _ = _fresh_ingest(
+        http,
+        make_candidate(
+            job=make_job(
+                role="Technical Program Manager",
+                location="Remote",
+                apply_url="https://greenhouse.io/acme/jobs/123",
+                posting_date=date(2026, 1, 10),
+                source_provider="Source A",
+            ),
+            fit=86,
+            fit_authority=FitAuthority.AUTHORITATIVE,
+            evidence_ref="ev:stronger",
+        ),
+        run_date=second_date,
+    )
+    assert stronger[0].disposition == Disposition.UPDATED
+
+    page = next(iter(http.pages.values()))
+    page["properties"]["Saturn Decision"] = {"select": {"name": "Synthetic Hold"}}
+    page["properties"]["Decision On"] = {"date": {"start": "2026-01-12"}}
+    page["properties"]["Saturn Ready"] = {"date": {"start": "2026-01-13"}}
+
+    third_date = RUN_DATE + timedelta(days=2)
+    weak, _ = _fresh_ingest(
+        http,
+        make_candidate(
+            job=make_job(
+                role="Technical Program Manager",
+                location="Remote",
+                apply_url=None,
+                posting_date=None,
+                compensation_text=None,
+                compensation_minimum=None,
+                source_provider="Source B",
+            ),
+            fit=None,
+            fit_authority=FitAuthority.NON_AUTHORITATIVE,
+            evidence_ref="ev:weak",
+        ),
+        run_date=third_date,
+    )
+    assert weak[0].disposition == Disposition.UPDATED
+
+    record = _fresh_record(http, key)
+    assert len(http.pages) == 1
+    assert record.opportunity.job.apply_url == "https://greenhouse.io/acme/jobs/123"
+    assert record.opportunity.job.posting_date == date(2026, 1, 10)
+    assert record.opportunity.job.compensation_text == "$100,000 - $120,000"
+    assert record.opportunity.fit == 86
+    assert record.opportunity.fit_authority == FitAuthority.AUTHORITATIVE
+    assert record.opportunity.source_providers == ("Source A", "Source B")
+    assert set(record.opportunity.source_lanes) == {"Synthetic-Remote"}
+    assert record.first_surfaced == first_date
+    assert record.last_seen == third_date
+    assert record.opportunity.admission_status == AdmissionStatus.ADMITTED
+    assert page["properties"]["Saturn Decision"]["select"]["name"] == "Synthetic Hold"
+    assert page["properties"]["Decision On"]["date"]["start"] == "2026-01-12"
+    assert page["properties"]["Saturn Ready"]["date"]["start"] == "2026-01-13"
+
+
+def test_package_c_authoritative_fit_can_replace_with_lower_rescore():
+    http = FakeNotionHttp()
+    key = "acme synthetic co|technical program manager|remote"
+    first, _ = _fresh_ingest(
+        http,
+        make_candidate(
+            job=make_job(role="Technical Program Manager", location="Remote", apply_url=None, source_provider="Source A"),
+            fit=86,
+            fit_authority=FitAuthority.AUTHORITATIVE,
+            evidence_ref="ev:first",
+        ),
+    )
+    assert first[0].stable_job_key == key
+
+    second, _ = _fresh_ingest(
+        http,
+        make_candidate(
+            job=make_job(role="Technical Program Manager", location="Remote", apply_url=None, source_provider="Source A"),
+            fit=79,
+            fit_authority=FitAuthority.AUTHORITATIVE,
+            evidence_ref="ev:rescore",
+        ),
+        run_date=RUN_DATE + timedelta(days=1),
+    )
+
+    assert second[0].disposition == Disposition.UPDATED
+    record = _fresh_record(http, key)
+    assert record.opportunity.fit == 79
+    assert record.opportunity.fit_authority == FitAuthority.AUTHORITATIVE
+
+
+def test_package_c_human_state_survives_automated_refresh_across_fresh_repository_instances():
+    http = FakeNotionHttp()
+    key = "acme synthetic co|technical program manager|remote"
+    repo_1 = _repository_with_http(http)
+    opportunity = Opportunity(
+        stable_job_key=key,
+        job=make_job(role="Technical Program Manager", location="Remote", apply_url=None, source_provider="Source A"),
+        admission_status=AdmissionStatus.ADMITTED,
+        fit=86,
+        fit_authority=FitAuthority.AUTHORITATIVE,
+        source_lanes=("Synthetic-Remote",),
+        source_providers=("Source A",),
+    )
+    applied = mark_applied(new_record(opportunity, run_date=RUN_DATE), run_date=RUN_DATE + timedelta(days=3))
+    repo_1.upsert(applied)
+
+    refresh, _ = _fresh_ingest(
+        http,
+        make_candidate(
+            job=make_job(role="Technical Program Manager", location="Remote", apply_url=None, source_provider="Source B"),
+            fit=None,
+            fit_authority=FitAuthority.NON_AUTHORITATIVE,
+            evidence_ref="ev:refresh",
+        ),
+        run_date=RUN_DATE + timedelta(days=6),
+    )
+    assert refresh[0].disposition == Disposition.UPDATED
+    record = _fresh_record(http, key)
+    assert record.applied is True
+    assert record.applied_on == RUN_DATE + timedelta(days=3)
+    assert record.first_surfaced == RUN_DATE
+    assert record.status.value == "applied"
+    assert record.opportunity.fit == 86
+
+
+def test_package_c_missing_then_stronger_evidence_fills_canonical_row():
+    http = FakeNotionHttp()
+    key = "acme synthetic co|technical program manager|remote"
+    first, _ = _fresh_ingest(
+        http,
+        make_candidate(
+            job=make_job(role="Technical Program Manager", location="Remote", apply_url=None, posting_date=None, source_provider="Source A"),
+            fit=None,
+            fit_authority=FitAuthority.NON_AUTHORITATIVE,
+            evidence_ref="ev:first",
+        ),
+    )
+    assert first[0].stable_job_key == key
+
+    second, _ = _fresh_ingest(
+        http,
+        make_candidate(
+            job=make_job(
+                role="Technical Program Manager",
+                location="Remote",
+                apply_url="https://greenhouse.io/acme/jobs/123",
+                posting_date=date(2026, 1, 10),
+                source_provider="Source B",
+            ),
+            fit=86,
+            fit_authority=FitAuthority.AUTHORITATIVE,
+            evidence_ref="ev:stronger",
+        ),
+        run_date=RUN_DATE + timedelta(days=1),
+    )
+    assert second[0].disposition == Disposition.UPDATED
+    record = _fresh_record(http, key)
+    assert record.opportunity.job.apply_url == "https://greenhouse.io/acme/jobs/123"
+    assert record.opportunity.job.posting_date == date(2026, 1, 10)
+    assert record.opportunity.fit == 86
+    assert record.opportunity.fit_authority == FitAuthority.AUTHORITATIVE
+    assert record.opportunity.source_providers == ("Source A", "Source B")
 
 
 def test_read_back_mismatch_raised_when_persisted_page_diverges():

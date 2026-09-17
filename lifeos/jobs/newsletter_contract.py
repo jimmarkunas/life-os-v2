@@ -168,6 +168,7 @@ def ingest(
                 lane=lane.name,
                 job=candidate.job,
                 fit=candidate.fit,
+                fit_authority=candidate.fit_authority,
                 admission_status=qualification.admission_status,
             )
         )
