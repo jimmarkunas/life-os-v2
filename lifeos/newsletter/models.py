@@ -11,6 +11,7 @@ class ParseState(str, Enum):
 
 ENRICHMENT_ONLY_ISSUES = frozenset({
     "source-apply-url-missing",
+    "source-company-missing",
 })
 
 
