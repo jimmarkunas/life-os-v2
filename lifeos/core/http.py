@@ -11,6 +11,7 @@ from urllib.error import HTTPError as UrlHTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .runtime import DeadlineExceeded, RunContext
+from .security import redact
 
 MAX_HTTP_ATTEMPTS = 3
 
@@ -34,14 +35,22 @@ class HttpError(RuntimeError):
         status_code: int | None = None,
         attempts: int = 1,
         retry_after_seconds: float | None = None,
+        api_reason: str | None = None,
+        api_message: str | None = None,
     ) -> None:
         self.kind = kind
         self.status_code = status_code
         self.attempts = attempts
         self.retry_after_seconds = retry_after_seconds
+        self.api_reason = _safe_api_detail(api_reason, limit=80)
+        self.api_message = _safe_api_detail(api_message, limit=180)
         parts = [kind.value]
         if status_code is not None:
             parts.append(f"status={status_code}")
+        if self.api_reason:
+            parts.append(f"reason={self.api_reason}")
+        if self.api_message:
+            parts.append(f"message={self.api_message}")
         parts.append(f"attempts={attempts}")
         super().__init__("http failure: " + " ".join(parts))
 
@@ -183,6 +192,7 @@ class HttpClient:
                 status_code=response.status_code,
                 attempts=attempt,
                 retry_after_seconds=retry_after,
+                **_structured_api_error(response),
             )
             retryable = response.status_code in {408, 429} or 500 <= response.status_code <= 599
             if not retryable or attempt >= retry.max_attempts:
@@ -229,3 +239,40 @@ def _retry_after_seconds(headers: Mapping[str, str]) -> float | None:
         return max(0.0, float(value))
     except (TypeError, ValueError):
         return None
+
+
+def _structured_api_error(response: HttpResponse) -> dict[str, str]:
+    try:
+        payload = json.loads(response.body.decode("utf-8")) if response.body else {}
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        return {}
+    reason = ""
+    for item in error.get("errors") or []:
+        if isinstance(item, dict) and item.get("reason"):
+            reason = str(item["reason"])
+            break
+    status = error.get("status")
+    if not reason and status:
+        reason = str(status)
+    message = str(error.get("message") or "")
+    out: dict[str, str] = {}
+    safe_reason = _safe_api_detail(reason, limit=80)
+    safe_message = _safe_api_detail(message, limit=180)
+    if safe_reason:
+        out["api_reason"] = safe_reason
+    if safe_message:
+        out["api_message"] = safe_message
+    return out
+
+
+def _safe_api_detail(value: str | None, *, limit: int) -> str:
+    text = str(redact(str(value or "")))
+    text = " ".join(text.replace("\n", " ").replace("\r", " ").split())
+    if len(text) > limit:
+        text = f"{text[: limit - 3]}..."
+    return text

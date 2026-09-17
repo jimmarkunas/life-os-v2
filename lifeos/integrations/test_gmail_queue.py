@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import base64
+import json
 from datetime import datetime, timezone
 from urllib.parse import unquote
 
+from lifeos.core.http import HttpClient, HttpResponse
 from lifeos.core.runtime import RunContext
 from lifeos.integrations.gmail import GmailMailboxTransport
 from lifeos.integrations.mailbox import MailboxTransportError
@@ -137,7 +139,57 @@ class DetailRetryFakeHttp(FakeHttp):
         return super().request_json(context, method, url, **kwargs)
 
 
+class GoogleErrorBackend:
+    def request(self, method, url, *, headers, body, timeout_seconds):
+        if method == "GET" and url.endswith("/labels"):
+            return HttpResponse(
+                200,
+                {},
+                json.dumps(
+                    {
+                        "labels": [
+                            {"id": "label-news", "name": "J Newsletters"},
+                            {"id": "label-processed", "name": "J Newsletters/Processed"},
+                        ]
+                    }
+                ).encode("utf-8"),
+            )
+        if method == "GET" and "/messages?" in url:
+            return HttpResponse(200, {}, json.dumps({"messages": [{"id": "msg-stuck"}]}).encode("utf-8"))
+        if method == "GET" and "/messages/msg-stuck?format=full" in url:
+            return HttpResponse(
+                403,
+                {},
+                json.dumps(
+                    {
+                        "error": {
+                            "code": 403,
+                            "message": "User rate limit exceeded for https://gmail.googleapis.com Authorization: Bearer synthetic-secret-token",
+                            "errors": [
+                                {
+                                    "domain": "usageLimits",
+                                    "reason": "rateLimitExceeded",
+                                    "message": "User rate limit exceeded",
+                                }
+                            ],
+                            "status": "PERMISSION_DENIED",
+                        }
+                    }
+                ).encode("utf-8"),
+            )
+        raise AssertionError((method, url))
+
+
 def _mailbox(http: FakeHttp) -> GmailMailboxTransport:
+    return GmailMailboxTransport(
+        context=RunContext.start(timeout_seconds=45),
+        http=http,
+        access_token="synthetic-token",
+        message_factory=lambda **kwargs: kwargs,
+    )
+
+
+def _mailbox_with_client(http: HttpClient) -> GmailMailboxTransport:
     return GmailMailboxTransport(
         context=RunContext.start(timeout_seconds=45),
         http=http,
@@ -217,3 +269,25 @@ def test_unprocessed_queue_fails_closed_with_message_id_after_retry_failure() ->
     assert "msg-stuck:TimeoutError:synthetic detail timeout for msg-stuck" in detail
     assert "msg-ok" not in detail
     assert http.detail_attempts == {"msg-ok": 1, "msg-stuck": 2}
+
+
+def test_unprocessed_queue_preserves_safe_google_error_reason() -> None:
+    mailbox = _mailbox_with_client(HttpClient(backend=GoogleErrorBackend()))
+    start = datetime(2026, 9, 15, tzinfo=timezone.utc)
+    end = datetime(2026, 9, 16, tzinfo=timezone.utc)
+
+    try:
+        mailbox.fetch_unprocessed(start, end, "J Newsletters")
+    except MailboxTransportError as exc:
+        detail = str(exc)
+    else:
+        raise AssertionError("expected fetch_unprocessed to fail closed")
+
+    assert "mailbox=gmail" in detail
+    assert "operation=fetch_unprocessed" in detail
+    assert "msg-stuck:HttpError" in detail
+    assert "status=403" in detail
+    assert "reason=rateLimitExceeded" in detail
+    assert "message=User rate limit exceeded for <redacted>" in detail
+    assert "synthetic-secret-token" not in detail
+    assert "https://gmail.googleapis.com" not in detail
