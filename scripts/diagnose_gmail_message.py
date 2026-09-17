@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -44,7 +45,7 @@ def _request_json(request: Request) -> dict:
 
 
 def main(argv: list[str]) -> int:
-    message_id = argv[1] if len(argv) > 1 else "1a07f4a63a8a9b48"
+    message_ids = argv[1:] or ["1a07f4a63a8a9b48"]
     required = ("GMAIL_OAUTH_CLIENT_ID", "GMAIL_OAUTH_CLIENT_SECRET", "GMAIL_OAUTH_REFRESH_TOKEN")
     missing = [name for name in required if not os.getenv(name)]
     if missing:
@@ -64,39 +65,37 @@ def main(argv: list[str]) -> int:
     )
     access_token = str(token_payload["access_token"])
 
-    request = Request(
-        GMAIL_URL.format(message_id=message_id),
-        headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
-        method="GET",
-    )
-    try:
-        payload = _request_json(request)
-    except HTTPError as exc:
-        print(
-            json.dumps(
-                {
-                    "message_id": message_id,
-                    "operation": "gmail.messages.get",
-                    "result": "http-error",
-                    "error": _read_json_error(exc),
-                },
-                sort_keys=True,
-            )
+    def fetch(message_id: str) -> dict:
+        request = Request(
+            GMAIL_URL.format(message_id=message_id),
+            headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+            method="GET",
         )
-        return 1
-    print(
-        json.dumps(
-            {
+        try:
+            payload = _request_json(request)
+        except HTTPError as exc:
+            return {
                 "message_id": message_id,
                 "operation": "gmail.messages.get",
-                "result": "ok",
-                "payload_id_matches": payload.get("id") == message_id,
-                "has_payload": isinstance(payload.get("payload"), dict),
-            },
-            sort_keys=True,
-        )
-    )
-    return 0
+                "result": "http-error",
+                "error": _read_json_error(exc),
+            }
+        return {
+            "message_id": message_id,
+            "operation": "gmail.messages.get",
+            "result": "ok",
+            "payload_id_matches": payload.get("id") == message_id,
+            "has_payload": isinstance(payload.get("payload"), dict),
+        }
+
+    results = []
+    with ThreadPoolExecutor(max_workers=min(8, len(message_ids))) as pool:
+        futures = [pool.submit(fetch, message_id) for message_id in message_ids]
+        for future in as_completed(futures):
+            results.append(future.result())
+    results.sort(key=lambda item: item["message_id"])
+    print(json.dumps({"results": results}, sort_keys=True))
+    return 1 if any(item["result"] != "ok" for item in results) else 0
 
 
 if __name__ == "__main__":

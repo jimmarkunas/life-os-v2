@@ -38,4 +38,5 @@ jobs:
       - name: Fetch one Gmail message
         run: >
           python3.12 scripts/diagnose_gmail_message.py
+          1a07f4a63a8a9b48
           1a0819a64ac8ff77
