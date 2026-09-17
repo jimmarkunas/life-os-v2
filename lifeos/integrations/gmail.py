@@ -32,6 +32,12 @@ GMAIL_ACCESS_TOKEN_FIELD = "GMAIL_API_TOKEN"
 PROCESSED_LABEL_SUFFIX = "Processed"
 BACKLOG_DETAIL_PACING_SECONDS = 0.25
 BACKLOG_BATCH_SIZE = 10
+# scan_window bounds concurrency (max_workers in-flight requests) but that
+# alone does not bound the per-minute call RATE against Gmail's 6,000
+# quota-units/min per-user ceiling: fast responses at even modest concurrency
+# can sustain a rate well past it. Pace between chunks of concurrent calls so
+# the sustained rate stays well under quota regardless of response latency.
+SCAN_CHUNK_PACING_SECONDS = 1.0
 
 
 class GmailMailboxTransport(Generic[T]):
@@ -108,10 +114,16 @@ class GmailMailboxTransport(Generic[T]):
                         messages.append(future.result())
                     except Exception:
                         failures += 1
+                if chunk_start + self._max_workers < len(ids):
+                    self._pace_scan_chunk()
         if failures:
             raise MailboxTransportError(f"Gmail message detail acquisition incomplete: {failures} failed")
         messages.sort(key=lambda item: (getattr(item, "received_at"), getattr(item, "message_id")))
         return tuple(messages)
+
+    def _pace_scan_chunk(self) -> None:
+        self._context.require_time(SCAN_CHUNK_PACING_SECONDS)
+        sleep(SCAN_CHUNK_PACING_SECONDS)
 
     def fetch_unprocessed(
         self, start: datetime, end: datetime, boundary_name: str
