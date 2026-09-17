@@ -23,6 +23,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from lifeos.integrations.notion import NotionIdentityQuery, NotionTransport
+from lifeos.jobs.identity import canonical_url
 from lifeos.jobs.lifecycle import LifecycleRecord, LifecycleStatus
 from lifeos.jobs.models import AdmissionStatus, Company, Job, Opportunity, WorkMode
 from lifeos.jobs.repository import ReadBackMismatch
@@ -272,6 +273,28 @@ class NotionCareerRepository:
                 page_id = page.get("id")
                 if page_id:
                     self._page_ids[key] = str(page_id)
+        return found
+
+    def get_by_apply_urls(self, apply_urls: list[str]) -> dict[str, LifecycleRecord]:
+        canonical_urls = list(dict.fromkeys(url for url in (canonical_url(value) for value in apply_urls) if url))
+        if not canonical_urls:
+            return {}
+        found: dict[str, LifecycleRecord] = {}
+        for chunk in _chunk(canonical_urls, MAX_IDENTITY_VALUES_PER_QUERY):
+            query = NotionIdentityQuery(
+                property_name="Apply URL",
+                property_type="url",
+                values=tuple(chunk),
+            )
+            pages = self._transport.query_data_source(self._config.data_source_id, query)
+            for page in pages:
+                record = _page_to_record(page)
+                url = canonical_url(record.opportunity.job.apply_url)
+                if url:
+                    found[url] = record
+                page_id = page.get("id")
+                if page_id:
+                    self._page_ids[record.opportunity.stable_job_key] = str(page_id)
         return found
 
     def upsert(self, record: LifecycleRecord) -> LifecycleRecord:

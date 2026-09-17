@@ -6,13 +6,13 @@ cannot confidently resolve becomes REVIEW_DEGRADED, never an omission.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from enum import Enum
 
 from lifeos.core.runtime import RunContext
 from lifeos.jobs.dedupe import LaneObservation, reconcile
-from lifeos.jobs.identity import stable_job_key
+from lifeos.jobs.identity import IdentityCollision, derive_identity_evidence, resolve_existing_identity, stable_job_key
 from lifeos.jobs.lifecycle import apply_observation, new_record
 from lifeos.jobs.models import AdmissionStatus, NormalizedCandidate
 from lifeos.jobs.qualification import LaneConfig, qualify
@@ -53,6 +53,9 @@ def ingest(
     observations: list[LaneObservation] = []
     live_by_index: dict[int, tuple[NormalizedCandidate, str]] = {}
     primary_index_for_key: dict[str, int] = {}
+    evidence_by_index = {}
+    candidate_stable_keys: list[str] = []
+    candidate_apply_urls: list[str] = []
 
     for i, candidate in enumerate(candidates):
         if candidate.unresolved_reason:
@@ -64,8 +67,18 @@ def ingest(
             )
             continue
 
+        evidence = derive_identity_evidence(candidate.job)
+        if not evidence.stable_job_keys:
+            results[i] = IngestResult(
+                candidate.evidence_ref,
+                Disposition.REVIEW_DEGRADED,
+                None,
+                "cannot derive stable Job identity without canonical_identity, a canonical apply URL, or company+role+location",
+            )
+            continue
+
         try:
-            key = stable_job_key(candidate.job)
+            tentative_key = stable_job_key(candidate.job)
         except ValueError as exc:
             results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, None, str(exc))
             continue
@@ -76,7 +89,7 @@ def ingest(
             results[i] = IngestResult(
                 candidate.evidence_ref,
                 Disposition.REVIEW_DEGRADED,
-                key,
+                tentative_key,
                 f"qualification error: {exc}",
             )
             continue
@@ -85,10 +98,69 @@ def ingest(
             results[i] = IngestResult(
                 candidate.evidence_ref,
                 Disposition.EXCLUDED,
-                key,
+                tentative_key,
                 qualification.review_reason,
             )
             continue
+
+        evidence_by_index[i] = evidence
+        candidate_stable_keys.extend(evidence.stable_job_keys)
+        candidate_apply_urls.extend(evidence.canonical_apply_urls)
+
+    records_by_stable_key = {}
+    records_by_apply_url = {}
+    if evidence_by_index:
+        lookup_failed = False
+        try:
+            records_by_stable_key = repository.get_many(list(dict.fromkeys(candidate_stable_keys)))
+        except Exception as exc:
+            lookup_failed = True
+            for i in evidence_by_index:
+                candidate = candidates[i]
+                results[i] = IngestResult(
+                    candidate.evidence_ref,
+                    Disposition.REVIEW_DEGRADED,
+                    None,
+                    f"repository stable-key lookup failed: {type(exc).__name__}: {exc}",
+                )
+        if not lookup_failed:
+            try:
+                records_by_apply_url = repository.get_by_apply_urls(list(dict.fromkeys(candidate_apply_urls)))
+            except Exception as exc:
+                for i in evidence_by_index:
+                    candidate = candidates[i]
+                    results[i] = IngestResult(
+                        candidate.evidence_ref,
+                        Disposition.REVIEW_DEGRADED,
+                        None,
+                        f"repository apply-url lookup failed: {type(exc).__name__}: {exc}",
+                    )
+
+    existing_records = dict(records_by_stable_key)
+    for record in records_by_apply_url.values():
+        existing_records[record.opportunity.stable_job_key] = record
+
+    for i, candidate in enumerate(candidates):
+        if results[i] is not None:
+            continue
+
+        evidence = evidence_by_index[i]
+        try:
+            existing_key = resolve_existing_identity(
+                evidence,
+                records_by_stable_key=records_by_stable_key,
+                records_by_apply_url=records_by_apply_url,
+            )
+        except IdentityCollision as exc:
+            results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, None, str(exc))
+            continue
+
+        if existing_key:
+            job = replace(candidate.job, canonical_identity=existing_key)
+            candidate = replace(candidate, job=job)
+
+        key = stable_job_key(candidate.job)
+        qualification = qualify(candidate, lane=lane, run_date=run_date)
 
         observations.append(
             LaneObservation(
@@ -106,18 +178,6 @@ def ingest(
         return results  # type: ignore[return-value]
 
     reconciled = reconcile(observations, lane_priority=lane_priority)
-    try:
-        existing_records = repository.get_many([r.opportunity.stable_job_key for r in reconciled])
-    except Exception as exc:
-        for i, (candidate, key) in live_by_index.items():
-            results[i] = IngestResult(
-                candidate.evidence_ref,
-                Disposition.REVIEW_DEGRADED,
-                key,
-                f"repository lookup failed: {type(exc).__name__}: {exc}",
-            )
-        assert all(result is not None for result in results)
-        return results  # type: ignore[return-value]
 
     for reconciled_opportunity in reconciled:
         key = reconciled_opportunity.opportunity.stable_job_key

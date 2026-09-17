@@ -33,3 +33,18 @@ def test_no_full_scan_required_for_narrow_lookup():
         repo.upsert(new_record(opp, run_date=RUN_DATE))
     found = repo.get_many(["k7"])
     assert set(found) == {"k7"}
+
+
+def test_get_by_apply_urls_returns_records_by_canonical_url():
+    repo = InMemoryCareerRepository()
+    opp = Opportunity(
+        stable_job_key="acme|synthetic engineer|remote",
+        job=make_job(apply_url="https://boards.example/jobs/1?utm_source=stored"),
+        admission_status=AdmissionStatus.ADMITTED,
+    )
+    repo.upsert(new_record(opp, run_date=RUN_DATE))
+
+    found = repo.get_by_apply_urls(["https://boards.example/jobs/1?utm_source=incoming"])
+
+    assert set(found) == {"https://boards.example/jobs/1"}
+    assert found["https://boards.example/jobs/1"].opportunity.stable_job_key == "acme|synthetic engineer|remote"

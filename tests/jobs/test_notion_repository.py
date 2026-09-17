@@ -66,8 +66,13 @@ class FakeNotionHttp:
 
     def _match(self, filter_payload) -> list[dict]:
         filters = filter_payload["or"] if "or" in filter_payload else [filter_payload]
-        wanted = {f["rich_text"]["equals"] for f in filters}
-        return [p for p in self.pages.values() if _plain(p["properties"].get("Stable Job Key")) in wanted]
+        rich_text_wanted = {f["rich_text"]["equals"] for f in filters if "rich_text" in f}
+        url_wanted = {f["url"]["equals"] for f in filters if "url" in f}
+        return [
+            p for p in self.pages.values()
+            if _plain(p["properties"].get("Stable Job Key")) in rich_text_wanted
+            or _url(p["properties"].get("Apply URL")) in url_wanted
+        ]
 
 
 def _plain(prop):
@@ -75,6 +80,10 @@ def _plain(prop):
         return ""
     items = prop.get("rich_text") or []
     return "".join(i.get("text", {}).get("content", "") for i in items)
+
+
+def _url(prop):
+    return prop.get("url") if isinstance(prop, dict) else None
 
 
 def _repository():
@@ -131,6 +140,26 @@ def test_get_many_issues_exactly_one_query_call_never_a_full_scan():
     filter_payload = http.query_calls[0]["filter"]
     queried_values = {f["rich_text"]["equals"] for f in filter_payload["or"]}
     assert queried_values == {"k2", "k4"}
+
+
+def test_get_by_apply_urls_uses_bounded_url_property_query():
+    repo, http = _repository()
+    opportunity = Opportunity(
+        stable_job_key="acme|synthetic engineer|remote",
+        job=_job(apply_url="https://greenhouse.io/acme/jobs/42"),
+        admission_status=AdmissionStatus.ADMITTED,
+    )
+    repo.upsert(new_record(opportunity, run_date=RUN_DATE))
+
+    http.query_calls.clear()
+    found = repo.get_by_apply_urls(["https://greenhouse.io/acme/jobs/42"])
+
+    assert set(found) == {"https://greenhouse.io/acme/jobs/42"}
+    assert found["https://greenhouse.io/acme/jobs/42"].opportunity.stable_job_key == "acme|synthetic engineer|remote"
+    assert len(http.query_calls) == 1
+    filter_payload = http.query_calls[0]["filter"]
+    assert filter_payload["property"] == "Apply URL"
+    assert filter_payload["url"]["equals"] == "https://greenhouse.io/acme/jobs/42"
 
 
 def test_read_back_mismatch_raised_when_persisted_page_diverges():

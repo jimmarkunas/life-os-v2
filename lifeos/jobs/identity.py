@@ -31,6 +31,7 @@ canonicalizable apply_url before stable_job_key() runs.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 import re
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -97,6 +98,76 @@ def stable_job_key(job: Job) -> str:
             "apply URL, or company+role+location"
         )
     return f"{_norm(company)}|{_norm(role)}|{_norm(location)}"
+
+
+@dataclass(frozen=True)
+class IdentityEvidence:
+    """Every primary identity signal derivable for one incoming observation."""
+
+    stable_job_keys: tuple[str, ...]
+    canonical_apply_urls: tuple[str, ...]
+
+
+class IdentityCollision(ValueError):
+    """Raised when one observation points at multiple existing canonical Jobs."""
+
+
+def derive_identity_evidence(job: Job) -> IdentityEvidence:
+    """Return all valid identity evidence for bounded existing-record lookup.
+
+    The final fallback key remains exactly the same company|role|location
+    expression used by stable_job_key(); provider IDs are intentionally
+    excluded because they are provenance only.
+    """
+    keys: list[str] = []
+    urls: list[str] = []
+
+    if job.canonical_identity and job.canonical_identity.strip():
+        keys.append(job.canonical_identity.strip())
+
+    url = canonical_url(job.apply_url)
+    if url:
+        keys.append(f"url:{url}")
+        urls.append(url)
+
+    company = (job.company.name or "").strip()
+    role = job.role or ""
+    location = job.location or ""
+    if company and role and location:
+        keys.append(f"{_norm(company)}|{_norm(role)}|{_norm(location)}")
+
+    return IdentityEvidence(
+        stable_job_keys=tuple(dict.fromkeys(keys)),
+        canonical_apply_urls=tuple(dict.fromkeys(urls)),
+    )
+
+
+def resolve_existing_identity(
+    evidence: IdentityEvidence,
+    *,
+    records_by_stable_key: dict[str, object],
+    records_by_apply_url: dict[str, object],
+) -> str | None:
+    """Resolve which existing canonical Stable Job Key owns this evidence.
+
+    Returns None when no existing record matches. Raises IdentityCollision
+    when different evidence paths point at different existing canonical Jobs.
+    Records are duck-typed to LifecycleRecord to avoid making identity.py
+    depend on lifecycle/repository modules.
+    """
+    matches: set[str] = set()
+    for key in evidence.stable_job_keys:
+        record = records_by_stable_key.get(key)
+        if record is not None:
+            matches.add(record.opportunity.stable_job_key)
+    for url in evidence.canonical_apply_urls:
+        record = records_by_apply_url.get(url)
+        if record is not None:
+            matches.add(record.opportunity.stable_job_key)
+
+    if len(matches) > 1:
+        raise IdentityCollision(f"identity evidence matched multiple existing Jobs: {', '.join(sorted(matches))}")
+    return next(iter(matches), None)
 
 
 def provider_alias(job: Job) -> str | None:
