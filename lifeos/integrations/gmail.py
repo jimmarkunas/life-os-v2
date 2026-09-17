@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from threading import Lock
 from typing import Any, Generic, Mapping, TypeVar
 from urllib.parse import quote, urlencode
@@ -23,7 +23,6 @@ MAX_MESSAGE_DETAIL_WORKERS = 8
 DEFAULT_MAX_LIST_PAGES = 10
 MAX_LIST_PAGES = 20
 GMAIL_ACCESS_TOKEN_FIELD = "GMAIL_API_TOKEN"
-UNPROCESSED_LOOKBACK_DAYS = 60
 PROCESSED_LABEL_SUFFIX = "Processed"
 
 
@@ -114,9 +113,9 @@ class GmailMailboxTransport(Generic[T]):
         Staging into ``boundary_name`` is intentionally independent from accepted
         processing. A second Gmail label records accepted processing, so a failed
         run leaves the message visible in ``J Newsletters`` and eligible for retry
-        without putting it back in Inbox. The queue lookback is bounded to the
-        60-day retention window rather than the current scan window, preventing a
-        failed message from aging out of normal hourly processing.
+        without putting it back in Inbox. Backlog consumption is intentionally
+        age-independent: every message carrying the Newsletter label and not the
+        processed label is eligible for the existing parse and Jobs pipeline.
         """
         _validate_window(start, end)
         label_id = self._resolve_label_id(boundary_name)
@@ -125,10 +124,9 @@ class GmailMailboxTransport(Generic[T]):
             self._resolve_label_id(processed_label)
         except MailboxTransportError:
             processed_label = ""
-        queue_start = end - timedelta(days=UNPROCESSED_LOOKBACK_DAYS)
         ids = self._list_message_ids(
-            queue_start,
-            end,
+            None,
+            None,
             label_id=label_id,
             exclude_label_name=processed_label or None,
         )
@@ -203,13 +201,17 @@ class GmailMailboxTransport(Generic[T]):
 
     def _list_message_ids(
         self,
-        start: datetime,
-        end: datetime,
+        start: datetime | None,
+        end: datetime | None,
         *,
         label_id: str | None = None,
         exclude_label_name: str | None = None,
     ) -> tuple[str, ...]:
-        query_parts = [f"after:{int(start.timestamp())}", f"before:{int(end.timestamp())}"]
+        query_parts: list[str] = []
+        if start is not None:
+            query_parts.append(f"after:{int(start.timestamp())}")
+        if end is not None:
+            query_parts.append(f"before:{int(end.timestamp())}")
         if exclude_label_name:
             safe_label = exclude_label_name.replace('"', "")
             query_parts.append(f'-label:"{safe_label}"')
