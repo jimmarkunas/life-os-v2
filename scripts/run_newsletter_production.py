@@ -392,18 +392,17 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.dry_run:
             mail_preview = _dry_run_preview(gmail, start, end)
-        elif not mail_router_skipped:
-            mail_result = MailRouter(newsletter_boundary=NEWSLETTER_BOUNDARY).route_window(
-                [gmail], start, end
-            )
-            if not mail_result.checkpoint_safe:
-                execution_status = "DEGRADED"
+            process_result = NewsletterProcessor(
+                boundary_name=NEWSLETTER_BOUNDARY
+            ).process_window([gmail], start, end)
+        else:
+            if not mail_router_skipped:
+                mail_result = MailRouter(newsletter_boundary=NEWSLETTER_BOUNDARY).route_window(
+                    [gmail], start, end
+                )
+                if not mail_result.checkpoint_safe:
+                    execution_status = "DEGRADED"
 
-        process_result = NewsletterProcessor(
-            boundary_name=NEWSLETTER_BOUNDARY
-        ).process_window([gmail], start, end)
-
-        if not args.dry_run:
             repository = NotionCareerRepository(
                 transport=notion_transport,
                 config=NotionCareerRepositoryConfig(
@@ -418,24 +417,32 @@ def main(argv: list[str] | None = None) -> int:
                     source_lane=source_lane,
                 )
             )
-            feature_result = run_newsletter_feature(
-                process_result,
-                adapter=adapter,
-                lane=lane,
-                lane_priority=lane_priority,
-                repository=repository,
-                run_date=end.date(),
-                context=context,
-            )
-            if feature_result.execution.status.value != "PASS":
-                execution_status = feature_result.execution.status.value
-            def _mark_message_processed(message) -> None:
+
+            def _process_selected_batch(message_ids):
+                nonlocal process_result, feature_result, execution_status
+                hydrated = gmail.hydrate_messages(message_ids)
+                process_result = NewsletterProcessor(
+                    boundary_name=NEWSLETTER_BOUNDARY
+                ).process_messages(hydrated)
+                feature_result = run_newsletter_feature(
+                    process_result,
+                    adapter=adapter,
+                    lane=lane,
+                    lane_priority=lane_priority,
+                    repository=repository,
+                    run_date=end.date(),
+                    context=context,
+                )
+                if feature_result.execution.status.value != "PASS":
+                    execution_status = feature_result.execution.status.value
+                # Newsletter's existing all-or-nothing batch cleanup policy,
+                # mapped onto the shared primitive's per-item completion
+                # contract: every selected message shares the same
+                # cleanup_safe outcome.
+                return {message_id: feature_result.cleanup_safe for message_id in message_ids}
+
+            def _mark_message_processed(message_id: str) -> None:
                 nonlocal processed_count, processed_errors, execution_status
-                if ":" not in message.message_ref:
-                    return
-                mailbox, message_id = message.message_ref.split(":", 1)
-                if mailbox != "gmail" or not message_id:
-                    return
                 try:
                     gmail.mark_newsletter_processed(message_id, NEWSLETTER_BOUNDARY)
                 except Exception:
@@ -444,18 +451,18 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     processed_count += 1
 
-            # Shared platform mechanic (lifeos.core.backlog): the batch was
-            # already enumerated/bounded/hydrated by
-            # NewsletterProcessor.process_window above (Gmail's own
-            # BACKLOG_BATCH_SIZE bound), so this call's own bound is a
-            # pass-through, never a re-truncation, and an empty batch is a
-            # safe no-op. All domain accounting (cleanup_safe) stays in
-            # Newsletter/Jobs; this call only decides which already-
-            # accounted messages get marked.
+            # The one real production invocation of the shared platform
+            # mechanic (lifeos.core.backlog): complete canonical Gmail
+            # backlog enumeration -> bounded selection -> hydrate only the
+            # selected references -> existing Newsletter parse -> existing
+            # Jobs processing/accounting -> Gmail Processed marking only for
+            # a safely-accounted batch. An empty backlog calls process_batch
+            # zero times, so no Jobs/Gmail mutation happens -- a clean
+            # PASS/no-op with no platform-owned cursor or checkpoint.
             consume_bounded_backlog(
-                enumerate_backlog=lambda: process_result.messages,
+                enumerate_backlog=lambda: gmail.enumerate_unprocessed_ids(NEWSLETTER_BOUNDARY),
                 batch_size=BACKLOG_BATCH_SIZE,
-                process_batch=lambda batch: {message: feature_result.cleanup_safe for message in batch},
+                process_batch=_process_selected_batch,
                 mark_complete=_mark_message_processed,
             )
     except DeadlineExceeded:

@@ -96,9 +96,9 @@ class NewsletterProcessor:
         total_started = perf_counter()
         fetch_started = perf_counter()
         messages: list[RoutedNewsletterMessage] = []
-        errors: list[NewsletterError] = []
+        fetch_errors: list[NewsletterError] = []
         if not sources:
-            errors.append(NewsletterError("<config>", "fetch", "no-newsletter-sources"))
+            fetch_errors.append(NewsletterError("<config>", "fetch", "no-newsletter-sources"))
         if sources:
             with ThreadPoolExecutor(max_workers=min(self._fetch_workers, len(sources))) as pool:
                 futures = {
@@ -110,21 +110,44 @@ class NewsletterProcessor:
                     try:
                         batch = future.result()
                     except Exception as exc:
-                        errors.append(NewsletterError(source.mailbox, "fetch", _safe_error_detail(exc)))
+                        fetch_errors.append(NewsletterError(source.mailbox, "fetch", _safe_error_detail(exc)))
                         continue
                     for message in batch:
                         if message.mailbox != source.mailbox:
-                            errors.append(NewsletterError(source.mailbox, "fetch", "mailbox-mismatch"))
+                            fetch_errors.append(NewsletterError(source.mailbox, "fetch", "mailbox-mismatch"))
                             continue
                         messages.append(message)
         fetch_seconds = perf_counter() - fetch_started
-        messages.sort(key=lambda m: (m.received_at, m.mailbox, m.message_id))
+        result = self.process_messages(messages, fetch_seconds=fetch_seconds, total_started=total_started)
+        if not fetch_errors:
+            return result
+        return NewsletterProcessResult(
+            NewsletterExecutionState.DEGRADED,
+            result.messages,
+            tuple(fetch_errors) + result.errors,
+            result.timings,
+        )
+
+    def process_messages(
+        self,
+        messages: Sequence[RoutedNewsletterMessage],
+        *,
+        fetch_seconds: float = 0.0,
+        total_started: float | None = None,
+    ) -> NewsletterProcessResult:
+        """Parse already-hydrated messages through the exact existing parser
+        path, with no fetch step of its own. Used when a caller (e.g. the
+        shared lifeos.core.backlog primitive's process_batch callback) has
+        already selected and hydrated its own bounded batch of messages."""
+        started = total_started if total_started is not None else perf_counter()
+        ordered = sorted(messages, key=lambda m: (m.received_at, m.mailbox, m.message_id))
+        errors: list[NewsletterError] = []
         parse_started = perf_counter()
         parsed: list[MessageParseResult] = []
-        if messages:
-            with ThreadPoolExecutor(max_workers=min(self._parse_workers, len(messages))) as pool:
-                for chunk_start in range(0, len(messages), self._parse_workers):
-                    chunk = messages[chunk_start : chunk_start + self._parse_workers]
+        if ordered:
+            with ThreadPoolExecutor(max_workers=min(self._parse_workers, len(ordered))) as pool:
+                for chunk_start in range(0, len(ordered), self._parse_workers):
+                    chunk = ordered[chunk_start : chunk_start + self._parse_workers]
                     futures = [pool.submit(_parse_message_or_known_empty, message) for message in chunk]
                     for future in futures:
                         parsed.append(future.result())
@@ -146,7 +169,7 @@ class NewsletterProcessor:
             state,
             tuple(parsed),
             tuple(errors),
-            NewsletterTimings(fetch_seconds, parse_seconds, perf_counter() - total_started),
+            NewsletterTimings(fetch_seconds, parse_seconds, perf_counter() - started),
         )
 
 
