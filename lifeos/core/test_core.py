@@ -83,6 +83,7 @@ class RuntimeConfigTests(unittest.TestCase):
 
 
 import socket
+from unittest.mock import patch
 
 from lifeos.core.http import HttpClient, HttpError, HttpErrorKind, HttpResponse, RetryPolicy
 
@@ -166,3 +167,52 @@ class HttpClientTests(unittest.TestCase):
         with self.assertRaises(HttpError) as caught:
             client.request_json(context, "GET", "https://example.invalid")
         self.assertEqual(caught.exception.kind, HttpErrorKind.INVALID_RESPONSE)
+
+    def test_backoff_without_retry_after_adds_jitter(self) -> None:
+        context = RunContext.start(timeout_seconds=30)
+        backend = QueueBackend([
+            HttpResponse(503, {}, b"unavailable"),
+            HttpResponse(200, {}, b'{"ok":true}'),
+        ])
+        client = HttpClient(backend)
+        with patch("lifeos.core.http.random.random", return_value=1.0), patch("lifeos.core.http.sleep") as sleep_mock:
+            result = client.request_json(
+                context,
+                "GET",
+                "https://example.invalid/resource",
+                retry=RetryPolicy(max_attempts=2, backoff_seconds=1.0, max_backoff_seconds=10.0),
+            )
+        self.assertEqual(result, {"ok": True})
+        sleep_mock.assert_called_once_with(2.0)  # base 1.0 * 2**0 + jitter 1.0 * 1.0
+
+    def test_backoff_jitter_is_capped_by_max_backoff(self) -> None:
+        context = RunContext.start(timeout_seconds=30)
+        backend = QueueBackend([
+            HttpResponse(503, {}, b"unavailable"),
+            HttpResponse(200, {}, b'{"ok":true}'),
+        ])
+        client = HttpClient(backend)
+        with patch("lifeos.core.http.random.random", return_value=1.0), patch("lifeos.core.http.sleep") as sleep_mock:
+            client.request_json(
+                context,
+                "GET",
+                "https://example.invalid/resource",
+                retry=RetryPolicy(max_attempts=2, backoff_seconds=1.0, max_backoff_seconds=1.5),
+            )
+        sleep_mock.assert_called_once_with(1.5)
+
+    def test_retry_after_header_is_not_jittered(self) -> None:
+        context = RunContext.start(timeout_seconds=30)
+        backend = QueueBackend([
+            HttpResponse(429, {"Retry-After": "3"}, b"{}"),
+            HttpResponse(200, {}, b'{"ok":true}'),
+        ])
+        client = HttpClient(backend)
+        with patch("lifeos.core.http.random.random", return_value=1.0), patch("lifeos.core.http.sleep") as sleep_mock:
+            client.request_json(
+                context,
+                "GET",
+                "https://example.invalid/resource",
+                retry=RetryPolicy(max_attempts=2, backoff_seconds=1.0, max_backoff_seconds=10.0),
+            )
+        sleep_mock.assert_called_once_with(3.0)

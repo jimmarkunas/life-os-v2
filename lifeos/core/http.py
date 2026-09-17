@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import random
 import socket
 from dataclasses import dataclass
 from enum import Enum
@@ -228,7 +229,14 @@ class HttpClient:
         *,
         retry_after_seconds: float | None = None,
     ) -> None:
-        requested = retry_after_seconds if retry_after_seconds is not None else retry.backoff_seconds * (2 ** (attempt - 1))
+        if retry_after_seconds is not None:
+            # Server-directed wait: honor it exactly, no jitter added.
+            requested = retry_after_seconds
+        else:
+            # min((2^n) + random_jitter, max_backoff): jitter avoids synchronized
+            # retry waves when multiple runs/workers back off at the same time.
+            requested = retry.backoff_seconds * (2 ** (attempt - 1))
+            requested += random.random() * retry.backoff_seconds
         requested = min(max(0.0, requested), retry.max_backoff_seconds)
         if requested <= 0:
             context.require_time()
