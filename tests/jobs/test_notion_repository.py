@@ -8,8 +8,10 @@ from lifeos.core.runtime import RunContext
 from lifeos.integrations.notion import NotionTransport
 from lifeos.jobs.lifecycle import new_record
 from lifeos.jobs.models import AdmissionStatus, Company, Job, Opportunity, WorkMode
+from lifeos.jobs.newsletter_contract import Disposition, ingest
 from lifeos.jobs.notion_repository import NotionCareerRepository, NotionCareerRepositoryConfig
 from lifeos.jobs.repository import ReadBackMismatch
+from tests.jobs.fixtures import REMOTE_LANE, make_candidate, make_job
 
 RUN_DATE = date(2026, 1, 15)
 SYNTHETIC_DATA_SOURCE_ID = "synthetic-data-source-id"  # never a real production ID
@@ -88,10 +90,14 @@ def _url(prop):
 
 def _repository():
     http = FakeNotionHttp()
+    return _repository_with_http(http), http
+
+
+def _repository_with_http(http: FakeNotionHttp):
     context = RunContext.start(timeout_seconds=45.0, now=datetime.now(timezone.utc))
     transport = NotionTransport(context=context, http=http, access_token="synthetic-token")
     repo = NotionCareerRepository(transport=transport, config=NotionCareerRepositoryConfig(data_source_id=SYNTHETIC_DATA_SOURCE_ID))
-    return repo, http
+    return repo
 
 
 def test_get_many_returns_empty_for_unknown_keys():
@@ -160,6 +166,79 @@ def test_get_by_apply_urls_uses_bounded_url_property_query():
     filter_payload = http.query_calls[0]["filter"]
     assert filter_payload["property"] == "Apply URL"
     assert filter_payload["url"]["equals"] == "https://greenhouse.io/acme/jobs/42"
+
+
+def test_fallback_key_job_later_url_converges_across_fresh_repository_instances():
+    http = FakeNotionHttp()
+    lane_priority = {"Synthetic-Remote": 0}
+    fallback_key = "acme synthetic co|technical program manager|remote"
+
+    repo_1 = _repository_with_http(http)
+    assert repo_1._page_ids == {}
+    first = ingest(
+        [
+            make_candidate(
+                job=make_job(role="Technical Program Manager", location="Remote", apply_url=None),
+                fit=None,
+                evidence_ref="ev:first",
+            )
+        ],
+        lane=REMOTE_LANE,
+        lane_priority=lane_priority,
+        repository=repo_1,
+        run_date=RUN_DATE,
+    )
+    assert first[0].disposition == Disposition.CREATED
+    assert first[0].stable_job_key == fallback_key
+    assert len(http.pages) == 1
+
+    repo_2 = _repository_with_http(http)
+    assert repo_2._page_ids == {}
+    second = ingest(
+        [
+            make_candidate(
+                job=make_job(
+                    role="Technical Program Manager",
+                    location="Remote",
+                    apply_url="https://greenhouse.io/acme/jobs/123",
+                ),
+                evidence_ref="ev:second",
+            )
+        ],
+        lane=REMOTE_LANE,
+        lane_priority=lane_priority,
+        repository=repo_2,
+        run_date=RUN_DATE,
+    )
+    assert second[0].disposition == Disposition.UPDATED
+    assert second[0].stable_job_key == fallback_key
+    assert len(http.pages) == 1
+    persisted = repo_2.get_many([fallback_key])[fallback_key]
+    assert persisted.opportunity.job.apply_url == "https://greenhouse.io/acme/jobs/123"
+
+    repo_3 = _repository_with_http(http)
+    assert repo_3._page_ids == {}
+    third = ingest(
+        [
+            make_candidate(
+                job=make_job(
+                    company_name="Acme Inc",
+                    role="TPM",
+                    location="Remote US",
+                    apply_url="https://greenhouse.io/acme/jobs/123",
+                ),
+                evidence_ref="ev:third",
+            )
+        ],
+        lane=REMOTE_LANE,
+        lane_priority=lane_priority,
+        repository=repo_3,
+        run_date=RUN_DATE,
+    )
+    assert third[0].disposition == Disposition.UPDATED
+    assert third[0].stable_job_key == fallback_key
+    assert len(http.pages) == 1
+    assert repo_3.get_many(["url:https://greenhouse.io/acme/jobs/123"]) == {}
 
 
 def test_read_back_mismatch_raised_when_persisted_page_diverges():
