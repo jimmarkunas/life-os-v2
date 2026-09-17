@@ -73,6 +73,19 @@ def test_missing_source_url_does_not_block_identifiable_candidate():
     assert candidate.job.apply_url is None
 
 
+def test_newsletter_source_types_are_acquisition_provenance_not_lane_names():
+    candidate = _adapter(FakeFetcher({})).to_jobs_candidate(
+        _observation(source_apply_url=None, source_provider="LinkedIn Jobs", source_mailbox="gmail-primary")
+    )
+    assert candidate.source_types == ("LinkedIn Jobs", "Gmail Alert")
+    assert "Newsletter" not in candidate.source_types
+
+    outlook = _adapter(FakeFetcher({})).to_jobs_candidate(
+        _observation(source_apply_url=None, source_provider="Lensa", source_mailbox="Outlook Jobs")
+    )
+    assert outlook.source_types == ("Lensa", "Outlook Alert")
+
+
 def test_failed_resolution_does_not_block_identifiable_candidate():
     fetcher = FakeFetcher({})  # no fixture -> get() raises
     candidate = _adapter(fetcher).to_jobs_candidate(_observation(source_apply_url="https://linkedin.com/jobs/view/1"))

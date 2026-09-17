@@ -6,15 +6,25 @@ import pytest
 
 from lifeos.core.runtime import RunContext
 from lifeos.integrations.notion import NotionTransport
+from lifeos.jobs.fit_scoring import FitProfile, RoleFamily
 from lifeos.jobs.lifecycle import mark_applied, new_record
 from lifeos.jobs.models import AdmissionStatus, Company, FitAuthority, Job, Opportunity, WorkMode
+from lifeos.jobs.newsletter_adapter import NewsletterAdapterConfig, NewsletterJobsAdapter
 from lifeos.jobs.newsletter_contract import Disposition, ingest
 from lifeos.jobs.notion_repository import NotionCareerRepository, NotionCareerRepositoryConfig
+from lifeos.jobs.terminal_evidence import FetchResponse
 from lifeos.jobs.repository import ReadBackMismatch
+from lifeos.newsletter.models import SourceVacancyObservation
 from tests.jobs.fixtures import REMOTE_LANE, make_candidate, make_job
 
 RUN_DATE = date(2026, 1, 15)
 SYNTHETIC_DATA_SOURCE_ID = "synthetic-data-source-id"  # never a real production ID
+FAKE_PROFILE = FitProfile(
+    model_version="test-1",
+    role_families=(RoleFamily(patterns=(r"\btechnical program manager\b",), base_score=86, label="TPM"),),
+    default_role_base=10,
+    default_role_label="weak",
+)
 
 
 def _job(**overrides) -> Job:
@@ -77,6 +87,25 @@ class FakeNotionHttp:
         ]
 
 
+class EmptyFetcher:
+    def get(self, url: str) -> FetchResponse:
+        raise RuntimeError(f"no fixture for {url}")
+
+
+class StaticFetcher:
+    def __init__(self, *, url: str, final_url: str) -> None:
+        self._url = url
+        self._final_url = final_url
+
+    def get(self, url: str) -> FetchResponse:
+        if url != self._url:
+            raise RuntimeError(f"no fixture for {url}")
+        return FetchResponse(
+            final_url=self._final_url,
+            body='<html><script type="application/ld+json">{"@type":"JobPosting","description":"Synthetic terminal text.","datePosted":"2026-01-10"}</script></html>',
+        )
+
+
 def _plain(prop):
     if not isinstance(prop, dict):
         return ""
@@ -86,6 +115,12 @@ def _plain(prop):
 
 def _url(prop):
     return prop.get("url") if isinstance(prop, dict) else None
+
+
+def _multi_select_names(prop):
+    if not isinstance(prop, dict):
+        return ()
+    return tuple(item["name"] for item in prop.get("multi_select", ()))
 
 
 def _repository():
@@ -117,6 +152,35 @@ def _fresh_record(http: FakeNotionHttp, key: str):
     repo = _repository_with_http(http)
     assert repo._page_ids == {}
     return repo.get_many([key])[key]
+
+
+def _newsletter_candidate(*, provider: str, mailbox: str, apply_url: str | None, evidence_ref: str):
+    fetcher = EmptyFetcher() if apply_url is None else StaticFetcher(url=apply_url, final_url=apply_url)
+    adapter = NewsletterJobsAdapter(
+        NewsletterAdapterConfig(
+            fetcher=fetcher,
+            fit_profile=FAKE_PROFILE,
+            market="Synthetic-US",
+            source_lane="Synthetic-Remote",
+        )
+    )
+    return adapter.to_jobs_candidate(
+        SourceVacancyObservation(
+            evidence_ref=evidence_ref,
+            source_provider=provider,
+            source_mailbox=mailbox,
+            source_message_id=evidence_ref,
+            source_subject="Synthetic jobs",
+            company="Acme Synthetic Co",
+            role="Technical Program Manager",
+            location_text="Remote",
+            compensation_text="$100,000 - $120,000",
+            source_apply_url=apply_url,
+            provider_job_id=None,
+            provider_score=None,
+            source_received_at=datetime(2026, 1, 15, tzinfo=timezone.utc),
+        )
+    )
 
 
 def test_get_many_returns_empty_for_unknown_keys():
@@ -260,6 +324,57 @@ def test_fallback_key_job_later_url_converges_across_fresh_repository_instances(
     assert repo_3.get_many(["url:https://greenhouse.io/acme/jobs/123"]) == {}
 
 
+def test_source_types_round_trip_acquisition_provenance_across_fresh_repository_instances():
+    http = FakeNotionHttp()
+    key = "acme synthetic co|technical program manager|remote"
+
+    first, _ = _fresh_ingest(
+        http,
+        _newsletter_candidate(
+            provider="LinkedIn Jobs",
+            mailbox="gmail-primary",
+            apply_url=None,
+            evidence_ref="ev:linkedin",
+        ),
+    )
+    assert first[0].disposition == Disposition.CREATED
+    assert first[0].stable_job_key == key
+
+    first_record = _fresh_record(http, key)
+    assert first_record.opportunity.source_providers == ("LinkedIn Jobs",)
+    assert set(first_record.opportunity.source_types) == {"LinkedIn Jobs", "Gmail Alert"}
+    page = next(iter(http.pages.values()))
+    assert set(_multi_select_names(page["properties"]["Source Types"])) == {"LinkedIn Jobs", "Gmail Alert"}
+    assert "Synthetic-Remote" not in _multi_select_names(page["properties"]["Source Types"])
+    assert "Newsletter" not in _multi_select_names(page["properties"]["Source Types"])
+
+    second, repo_2 = _fresh_ingest(
+        http,
+        _newsletter_candidate(
+            provider="Lensa",
+            mailbox="gmail-primary",
+            apply_url="https://greenhouse.io/acme/jobs/123",
+            evidence_ref="ev:lensa",
+        ),
+        run_date=RUN_DATE + timedelta(days=1),
+    )
+
+    assert second[0].disposition == Disposition.UPDATED
+    assert second[0].stable_job_key == key
+    assert len(http.pages) == 1
+    assert repo_2.get_many(["url:https://greenhouse.io/acme/jobs/123"]) == {}
+
+    record = _fresh_record(http, key)
+    assert record.opportunity.job.apply_url == "https://greenhouse.io/acme/jobs/123"
+    assert record.opportunity.source_providers == ("Lensa", "LinkedIn Jobs")
+    assert set(record.opportunity.source_types) == {"LinkedIn Jobs", "Lensa", "Gmail Alert"}
+    page = next(iter(http.pages.values()))
+    persisted_source_types = set(_multi_select_names(page["properties"]["Source Types"]))
+    assert persisted_source_types == {"LinkedIn Jobs", "Lensa", "Gmail Alert"}
+    assert "Synthetic-Remote" not in persisted_source_types
+    assert "Newsletter" not in persisted_source_types
+
+
 def test_package_c_no_downgrade_merge_survives_fresh_repository_instances():
     http = FakeNotionHttp()
     key = "acme synthetic co|technical program manager|remote"
@@ -337,7 +452,6 @@ def test_package_c_no_downgrade_merge_survives_fresh_repository_instances():
     assert record.opportunity.fit == 86
     assert record.opportunity.fit_authority == FitAuthority.AUTHORITATIVE
     assert record.opportunity.source_providers == ("Source A", "Source B")
-    assert set(record.opportunity.source_lanes) == {"Synthetic-Remote"}
     assert record.first_surfaced == first_date
     assert record.last_seen == third_date
     assert record.opportunity.admission_status == AdmissionStatus.ADMITTED
@@ -375,6 +489,61 @@ def test_package_c_authoritative_fit_can_replace_with_lower_rescore():
     record = _fresh_record(http, key)
     assert record.opportunity.fit == 79
     assert record.opportunity.fit_authority == FitAuthority.AUTHORITATIVE
+
+
+def test_legacy_missing_fit_authority_with_fit_reads_authoritative_and_no_downgrades():
+    http = FakeNotionHttp()
+    key = "acme synthetic co|technical program manager|remote"
+    repo_1 = _repository_with_http(http)
+    legacy_opportunity = Opportunity(
+        stable_job_key=key,
+        job=make_job(role="Technical Program Manager", location="Remote", apply_url=None),
+        admission_status=AdmissionStatus.ADMITTED,
+        fit=84,
+        fit_authority=FitAuthority.AUTHORITATIVE,
+        source_lanes=("Synthetic-Remote",),
+        source_providers=("LinkedIn Jobs",),
+        source_types=("Gmail Alert", "LinkedIn Jobs"),
+    )
+    repo_1.upsert(new_record(legacy_opportunity, run_date=RUN_DATE))
+    page = next(iter(http.pages.values()))
+    del page["properties"]["Fit Authority"]
+
+    legacy_read = _fresh_record(http, key)
+    assert legacy_read.opportunity.fit == 84
+    assert legacy_read.opportunity.fit_authority == FitAuthority.AUTHORITATIVE
+
+    weak, _ = _fresh_ingest(
+        http,
+        make_candidate(
+            job=make_job(role="Technical Program Manager", location="Remote", apply_url=None, source_provider="Lensa"),
+            fit=None,
+            fit_authority=FitAuthority.NON_AUTHORITATIVE,
+            source_types=("Gmail Alert", "Lensa"),
+            evidence_ref="ev:weak",
+        ),
+        run_date=RUN_DATE + timedelta(days=1),
+    )
+    assert weak[0].disposition == Disposition.UPDATED
+    after_weak = _fresh_record(http, key)
+    assert after_weak.opportunity.fit == 84
+    assert after_weak.opportunity.fit_authority == FitAuthority.AUTHORITATIVE
+
+    rescore, _ = _fresh_ingest(
+        http,
+        make_candidate(
+            job=make_job(role="Technical Program Manager", location="Remote", apply_url=None, source_provider="Lensa"),
+            fit=79,
+            fit_authority=FitAuthority.AUTHORITATIVE,
+            source_types=("Gmail Alert", "Lensa"),
+            evidence_ref="ev:rescore",
+        ),
+        run_date=RUN_DATE + timedelta(days=2),
+    )
+    assert rescore[0].disposition == Disposition.UPDATED
+    after_rescore = _fresh_record(http, key)
+    assert after_rescore.opportunity.fit == 79
+    assert after_rescore.opportunity.fit_authority == FitAuthority.AUTHORITATIVE
 
 
 def test_package_c_human_state_survives_automated_refresh_across_fresh_repository_instances():

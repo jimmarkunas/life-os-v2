@@ -169,6 +169,7 @@ def ingest(
                 job=candidate.job,
                 fit=candidate.fit,
                 fit_authority=candidate.fit_authority,
+                source_types=candidate.source_types,
                 admission_status=qualification.admission_status,
             )
         )

@@ -39,13 +39,17 @@ def _properties(
     admission_status: AdmissionStatus = AdmissionStatus.ADMITTED,
     fit: int | None = 82,
     fit_authority: FitAuthority = FitAuthority.AUTHORITATIVE,
+    source_lanes: tuple[str, ...] = (),
+    source_types: tuple[str, ...] = (),
 ):
     opportunity = Opportunity(
         stable_job_key="synthetic-key",
         job=_job(work_mode=work_mode),
         admission_status=admission_status,
+        source_lanes=source_lanes,
         fit=fit,
         fit_authority=fit_authority,
+        source_types=source_types,
     )
     return _record_to_properties(new_record(opportunity, run_date=date(2026, 1, 15)))
 
@@ -100,3 +104,14 @@ def test_required_identity_and_fit_properties_are_always_present():
         "Provider Score",
     }
     assert required <= set(properties)
+
+
+def test_source_types_persist_acquisition_provenance_not_internal_lanes():
+    properties = _properties(
+        source_lanes=("Synthetic-Remote", "Newsletter"),
+        source_types=("LinkedIn Jobs", "Gmail Alert"),
+    )
+    names = {item["name"] for item in properties["Source Types"]["multi_select"]}
+    assert names == {"LinkedIn Jobs", "Gmail Alert"}
+    assert "Synthetic-Remote" not in names
+    assert "Newsletter" not in names

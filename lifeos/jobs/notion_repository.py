@@ -163,7 +163,7 @@ def _record_to_properties(record: LifecycleRecord) -> dict[str, Any]:
         "Provider Score": _number(job.provider_score),
         "Admission Status": _select(_ADMISSION_TO_CANONICAL[record.opportunity.admission_status]),
         "Source Provider": _rich_text(", ".join(record.opportunity.source_providers)),
-        "Source Types": _multi_select(record.opportunity.source_lanes),
+        "Source Types": _multi_select(record.opportunity.source_types),
         "Applied": _checkbox(record.applied),
         "Applied On": _date(record.applied_on),
         "First Surfaced": _date(record.first_surfaced),
@@ -189,7 +189,7 @@ def _canonical_view(record: LifecycleRecord) -> tuple[Any, ...]:
         record.opportunity.fit,
         record.opportunity.fit_authority,
         record.opportunity.source_providers,
-        record.opportunity.source_lanes,
+        record.opportunity.source_types,
         job.provider_score,
         record.opportunity.admission_status,
         record.applied,
@@ -227,18 +227,24 @@ def _page_to_record(page: dict[str, Any]) -> LifecycleRecord:
     )
     admission_canonical = _extract_select(props.get("Admission Status"))
     admission_status = _ADMISSION_FROM_CANONICAL.get(admission_canonical, AdmissionStatus.PASSED_REVIEW)
+    fit = _extract_number(props.get("LIFE OS Fit"))
     fit_authority_canonical = _extract_select(props.get("Fit Authority"))
-    fit_authority = _FIT_AUTHORITY_FROM_CANONICAL.get(fit_authority_canonical, FitAuthority.NON_AUTHORITATIVE)
+    if fit_authority_canonical in _FIT_AUTHORITY_FROM_CANONICAL:
+        fit_authority = _FIT_AUTHORITY_FROM_CANONICAL[fit_authority_canonical]
+    elif fit is not None:
+        fit_authority = FitAuthority.AUTHORITATIVE
+    else:
+        fit_authority = FitAuthority.NON_AUTHORITATIVE
     source_provider_text = _plain_text(props.get("Source Provider"))
     source_providers = tuple(part.strip() for part in source_provider_text.split(",") if part.strip())
     opportunity = Opportunity(
         stable_job_key=stable_job_key,
         job=job,
         admission_status=admission_status,
-        fit=_extract_number(props.get("LIFE OS Fit")),
+        fit=fit,
         fit_authority=fit_authority,
-        source_lanes=_extract_multi_select(props.get("Source Types")),
         source_providers=source_providers,
+        source_types=_extract_multi_select(props.get("Source Types")),
     )
 
     first_surfaced = _extract_date(props.get("First Surfaced"))
