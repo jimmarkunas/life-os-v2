@@ -38,6 +38,19 @@ def test_best_fit_tracked_even_when_not_visible_lane():
     assert result[0].best_fit == 95
 
 
+def test_unresolved_fit_does_not_outrank_real_score():
+    observations = [_obs("k1", "Lane-A", None), _obs("k1", "Lane-B", 95)]
+    result = reconcile(observations, lane_priority=LANE_PRIORITY)
+    assert result[0].best_fit == 95
+    assert result[0].opportunity.fit == 95
+
+
+def test_unresolved_fit_stays_unresolved_when_no_score_exists():
+    result = reconcile([_obs("k1", "Lane-A", None)], lane_priority=LANE_PRIORITY)
+    assert result[0].best_fit is None
+    assert result[0].opportunity.fit is None
+
+
 def test_observation_count_reflects_all_sources():
     observations = [_obs("k1", "Lane-A", 80), _obs("k1", "Lane-B", 85), _obs("k1", "Lane-C", 90)]
     result = reconcile(observations, lane_priority=LANE_PRIORITY)

@@ -27,7 +27,7 @@ class LaneObservation:
     stable_job_key: str
     lane: str
     job: Job
-    fit: int
+    fit: int | None
     admission_status: AdmissionStatus
 
 
@@ -36,7 +36,11 @@ class ReconciledOpportunity:
     opportunity: Opportunity
     source_lanes: tuple[str, ...]
     observation_count: int
-    best_fit: int
+    best_fit: int | None
+
+
+def _fit_rank(fit: int | None) -> int:
+    return fit if fit is not None else -1
 
 
 def _strongest_url(observations: list[LaneObservation]) -> str | None:
@@ -71,9 +75,9 @@ def reconcile(
 
     reconciled: list[ReconciledOpportunity] = []
     for key, group in grouped.items():
-        ordered = sorted(group, key=lambda o: (lane_priority[o.lane], -o.fit, o.lane))
+        ordered = sorted(group, key=lambda o: (lane_priority[o.lane], -_fit_rank(o.fit), o.lane))
         visible = ordered[0]
-        best_fit = max(o.fit for o in group)
+        best_fit = max((o.fit for o in group), key=_fit_rank)
         source_lanes = tuple(sorted({o.lane for o in group}, key=lambda lane: (lane_priority[lane], lane)))
 
         merged_job = visible.job
@@ -108,5 +112,5 @@ def reconcile(
 
     return sorted(
         reconciled,
-        key=lambda r: (lane_priority[r.source_lanes[0]], -r.best_fit, r.opportunity.stable_job_key),
+        key=lambda r: (lane_priority[r.source_lanes[0]], -_fit_rank(r.best_fit), r.opportunity.stable_job_key),
     )
