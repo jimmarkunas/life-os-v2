@@ -300,5 +300,204 @@ class MainEntryPointTests(unittest.TestCase):
         self.assertIn("msg-stuck:TimeoutError:synthetic", summary["newsletter_parse"]["error_details"][0]["detail"])
 
 
+def _jobright_body(vacancy_id: str) -> str:
+    raw = (
+        f"[Synthetic Labs\n90%\nSynthetic Engineer {vacancy_id}\n"
+        f"Remote](https://jobright.ai/jobs/info/synthetic-{vacancy_id})\nView more opportunities"
+    )
+    return base64.urlsafe_b64encode(raw.encode()).decode("ascii").rstrip("=")
+
+
+def _unparseable_body() -> str:
+    return base64.urlsafe_b64encode(b"no vacancy card here at all").decode("ascii").rstrip("=")
+
+
+class FiveMessageBacklogBackend:
+    """Canonical Gmail-like source A,B,C,D,E, oldest-first once reversed
+    (Gmail lists newest-first). No platform-owned cursor: list results
+    simply reflect which messages currently carry the processed label,
+    exactly like real Gmail."""
+
+    def __init__(self, *, degrade: str | None = None) -> None:
+        self.pages: dict[str, dict] = {}
+        self._next_page = 1
+        self.processed_message_ids: list[str] = []
+        self.detail_fetch_ids: list[str] = []
+        self._newest_first_order = ["msg-E", "msg-D", "msg-C", "msg-B", "msg-A"]
+        self._degrade = degrade  # message id whose body fails to parse, or None
+
+    def request(self, method, url, *, headers, body, timeout_seconds) -> HttpResponse:
+        if url == entry._GOOGLE_TOKEN_URL:
+            return HttpResponse(200, {}, json.dumps({"access_token": "synthetic-access-token"}).encode())
+        if "gmail.googleapis.com" in url:
+            return self._gmail(method, url, body)
+        if "api.notion.com" in url:
+            return self._notion(method, url, body)
+        raise AssertionError(f"unexpected URL {url}")
+
+    def _gmail(self, method, url, body) -> HttpResponse:
+        if method == "GET" and "/labels" in url:
+            return HttpResponse(
+                200,
+                {},
+                json.dumps(
+                    {
+                        "labels": [
+                            {"id": "label-news", "name": "J Newsletters"},
+                            {"id": "label-processed", "name": "J Newsletters/Processed"},
+                        ]
+                    }
+                ).encode(),
+            )
+        if method == "GET" and "/messages?" in url and "labelIds=label-news" in url:
+            remaining = [mid for mid in self._newest_first_order if mid not in self.processed_message_ids]
+            return HttpResponse(200, {}, json.dumps({"messages": [{"id": mid} for mid in remaining]}).encode())
+        if method == "GET" and "?format=full" in url:
+            message_id = url.split("/messages/", 1)[1].split("?", 1)[0]
+            self.detail_fetch_ids.append(message_id)
+            letter = message_id.rsplit("-", 1)[-1]
+            body_data = _unparseable_body() if letter == self._degrade else _jobright_body(letter)
+            index = ord(letter) - ord("A")
+            return HttpResponse(
+                200,
+                {},
+                json.dumps(
+                    {
+                        "id": message_id,
+                        "internalDate": str((1_700_000_000 + index) * 1000),
+                        "payload": {
+                            "mimeType": "text/plain",
+                            "headers": [
+                                {"name": "From", "value": "alerts@jobright.example.invalid"},
+                                {"name": "Subject", "value": f"Jobright daily jobs {letter}"},
+                                {"name": "List-Unsubscribe", "value": "<https://example.invalid/unsub>"},
+                            ],
+                            "body": {"data": body_data},
+                        },
+                    }
+                ).encode(),
+            )
+        if method == "POST" and url.endswith("/modify"):
+            message_id = url.split("/messages/", 1)[1].split("/modify", 1)[0]
+            payload = json.loads(body.decode("utf-8")) if body else {}
+            if "label-processed" in (payload.get("addLabelIds") or []):
+                self.processed_message_ids.append(message_id)
+            return HttpResponse(200, {}, b"{}")
+        raise AssertionError(f"unexpected Gmail call {method} {url}")
+
+    def _notion(self, method, url, body) -> HttpResponse:
+        payload = json.loads(body.decode("utf-8")) if body else {}
+        if method == "POST" and url.endswith("/query"):
+            wanted = payload["filter"]
+            key = wanted.get("rich_text", {}).get("equals") if "rich_text" in wanted else None
+            results = [p for p in self.pages.values() if self._key(p) == key] if key else []
+            return HttpResponse(200, {}, json.dumps({"results": results, "has_more": False}).encode())
+        if method == "POST" and url.endswith("/pages"):
+            page_id = f"page-{self._next_page}"
+            self._next_page += 1
+            page = {"id": page_id, "properties": payload["properties"]}
+            self.pages[page_id] = page
+            return HttpResponse(200, {}, json.dumps(page).encode())
+        if method == "PATCH":
+            page_id = url.rsplit("/", 1)[-1]
+            self.pages[page_id]["properties"].update(payload["properties"])
+            return HttpResponse(200, {}, json.dumps(self.pages[page_id]).encode())
+        if method == "GET" and "/pages/" in url:
+            page_id = url.rsplit("/", 1)[-1]
+            return HttpResponse(200, {}, json.dumps(self.pages[page_id]).encode())
+        raise AssertionError(f"unexpected Notion call {method} {url}")
+
+    @staticmethod
+    def _key(page):
+        items = page["properties"].get("Stable Job Key", {}).get("rich_text", [])
+        return "".join(i.get("text", {}).get("content", "") for i in items)
+
+
+class ProductionBoundaryBoundedBacklogTests(unittest.TestCase):
+    """The required acceptance scenario, through the actual production
+    entrypoint (entry.main), not a manual composition of the primitive with
+    Gmail helpers: canonical source A,B,C,D,E, batch size 3."""
+
+    def setUp(self) -> None:
+        import tempfile
+
+        handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+        json.dump(PRIVATE_POLICY, handle)
+        handle.close()
+        self._policy_path = handle.name
+        self.addCleanup(os.unlink, self._policy_path)
+        self._env = dict(REQUIRED_ENV)
+        self._env["NEWSLETTER_PRIVATE_POLICY_PATH"] = self._policy_path
+
+    def _run(self, backend, *cli_args):
+        fake_client = HttpClient(backend=backend)
+        with patch.dict(os.environ, self._env, clear=True), patch.object(
+            entry, "HttpClient", return_value=fake_client
+        ), patch.object(entry, "BACKLOG_BATCH_SIZE", 3):
+            exit_code = entry.main(list(cli_args) + ["--timeout-seconds", "30", "--skip-mail-router"])
+        return exit_code
+
+    def test_shared_primitive_owns_the_real_production_bounded_selection(self) -> None:
+        backend = FiveMessageBacklogBackend()
+
+        exit_code = self._run(backend)
+
+        self.assertEqual(exit_code, 0)
+        # The primitive itself selected exactly the leading three of the
+        # complete five-message backlog -- D and E were never hydrated.
+        self.assertEqual(backend.detail_fetch_ids, ["msg-A", "msg-B", "msg-C"])
+        self.assertEqual(backend.processed_message_ids, ["msg-A", "msg-B", "msg-C"])
+        self.assertEqual(len(backend.pages), 3)
+
+        # Natural resume: rereading canonical Gmail state (no platform
+        # checkpoint) shows only D and E now eligible.
+        exit_code_2 = self._run(backend)
+        self.assertEqual(exit_code_2, 0)
+        self.assertEqual(backend.detail_fetch_ids, ["msg-A", "msg-B", "msg-C", "msg-D", "msg-E"])
+        self.assertEqual(backend.processed_message_ids, ["msg-A", "msg-B", "msg-C", "msg-D", "msg-E"])
+
+        # Third execution against a fully drained backlog is a clean no-op:
+        # no further hydration, no further Jobs pages, no further marking.
+        exit_code_3 = self._run(backend)
+        self.assertEqual(exit_code_3, 0)
+        self.assertEqual(backend.detail_fetch_ids, ["msg-A", "msg-B", "msg-C", "msg-D", "msg-E"])
+        self.assertEqual(len(backend.pages), 5)
+
+    def test_negative_control_unsafe_batch_marks_zero_messages_processed(self) -> None:
+        """B fails to parse, which under Newsletter's existing all-or-nothing
+        cleanup_safe policy degrades the WHOLE selected batch -- not just B.
+        This is Newsletter's real semantics, not a fabricated per-item
+        A=True/B=False/C=True result."""
+        backend = FiveMessageBacklogBackend(degrade="B")
+
+        exit_code = self._run(backend)
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(backend.detail_fetch_ids, ["msg-A", "msg-B", "msg-C"])
+        # cleanup_safe was False for the whole batch: NONE of A, B, C are marked.
+        self.assertEqual(backend.processed_message_ids, [])
+        # D and E were never selected, so never hydrated or touched.
+        self.assertNotIn("msg-D", backend.detail_fetch_ids)
+        self.assertNotIn("msg-E", backend.detail_fetch_ids)
+
+        # No source item was lost: canonical reread still shows the entire
+        # uncompleted selected batch (plus D, E, never touched).
+        exit_code_2 = self._run(backend)
+        self.assertEqual(exit_code_2, 1)
+        self.assertEqual(backend.detail_fetch_ids, ["msg-A", "msg-B", "msg-C", "msg-A", "msg-B", "msg-C"])
+        self.assertEqual(backend.processed_message_ids, [])
+
+    def test_empty_backlog_is_a_clean_pass_no_op(self) -> None:
+        backend = FiveMessageBacklogBackend()
+        backend.processed_message_ids = ["msg-A", "msg-B", "msg-C", "msg-D", "msg-E"]
+
+        exit_code = self._run(backend)
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(backend.detail_fetch_ids, [])
+        self.assertEqual(backend.pages, {})
+        self.assertEqual(backend.processed_message_ids, ["msg-A", "msg-B", "msg-C", "msg-D", "msg-E"])
+
+
 if __name__ == "__main__":
     unittest.main()
