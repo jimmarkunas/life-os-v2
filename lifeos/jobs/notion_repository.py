@@ -25,7 +25,7 @@ from typing import Any
 from lifeos.integrations.notion import NotionIdentityQuery, NotionTransport
 from lifeos.jobs.identity import canonical_url
 from lifeos.jobs.lifecycle import LifecycleRecord, LifecycleStatus
-from lifeos.jobs.models import AdmissionStatus, Company, Job, Opportunity, WorkMode
+from lifeos.jobs.models import AdmissionStatus, Company, FitAuthority, Job, Opportunity, WorkMode
 from lifeos.jobs.repository import ReadBackMismatch
 
 STABLE_KEY_PROPERTY = "Stable Job Key"
@@ -47,6 +47,11 @@ _ADMISSION_TO_CANONICAL = {
     AdmissionStatus.EXCLUDED: "Excluded",
 }
 _ADMISSION_FROM_CANONICAL = {v: k for k, v in _ADMISSION_TO_CANONICAL.items()}
+_FIT_AUTHORITY_TO_CANONICAL = {
+    FitAuthority.AUTHORITATIVE: "Authoritative",
+    FitAuthority.NON_AUTHORITATIVE: "Non-Authoritative",
+}
+_FIT_AUTHORITY_FROM_CANONICAL = {v: k for k, v in _FIT_AUTHORITY_TO_CANONICAL.items()}
 
 
 def _chunk(values: list[str], size: int) -> list[list[str]]:
@@ -67,6 +72,10 @@ def _url(value: str | None) -> dict[str, Any]:
 
 def _select(value: str) -> dict[str, Any]:
     return {"select": {"name": value}}
+
+
+def _multi_select(values: tuple[str, ...]) -> dict[str, Any]:
+    return {"multi_select": [{"name": value} for value in values]}
 
 
 def _date(value: date | None) -> dict[str, Any]:
@@ -108,6 +117,13 @@ def _extract_select(prop: Any) -> str | None:
     return value.get("name") if isinstance(value, dict) else None
 
 
+def _extract_multi_select(prop: Any) -> tuple[str, ...]:
+    if not isinstance(prop, dict):
+        return ()
+    items = prop.get("multi_select") or []
+    return tuple(str(item.get("name")) for item in items if isinstance(item, dict) and item.get("name"))
+
+
 def _extract_date(prop: Any) -> date | None:
     if not isinstance(prop, dict):
         return None
@@ -143,9 +159,11 @@ def _record_to_properties(record: LifecycleRecord) -> dict[str, Any]:
         "Apply URL": _url(job.apply_url),
         "Posting Date": _date(job.posting_date),
         "LIFE OS Fit": _number(fit),
-        "Fit Authority": _select("Authoritative" if fit is not None else "Non-Authoritative"),
+        "Fit Authority": _select(_FIT_AUTHORITY_TO_CANONICAL[record.opportunity.fit_authority]),
         "Provider Score": _number(job.provider_score),
         "Admission Status": _select(_ADMISSION_TO_CANONICAL[record.opportunity.admission_status]),
+        "Source Provider": _rich_text(", ".join(record.opportunity.source_providers)),
+        "Source Types": _multi_select(record.opportunity.source_lanes),
         "Applied": _checkbox(record.applied),
         "Applied On": _date(record.applied_on),
         "First Surfaced": _date(record.first_surfaced),
@@ -169,6 +187,9 @@ def _canonical_view(record: LifecycleRecord) -> tuple[Any, ...]:
         job.apply_url,
         job.posting_date,
         record.opportunity.fit,
+        record.opportunity.fit_authority,
+        record.opportunity.source_providers,
+        record.opportunity.source_lanes,
         job.provider_score,
         record.opportunity.admission_status,
         record.applied,
@@ -202,14 +223,22 @@ def _page_to_record(page: dict[str, Any]) -> LifecycleRecord:
         apply_url=_extract_url(props.get("Apply URL")),
         source_lane="",
         provider_score=_extract_number(props.get("Provider Score")),
+        source_provider=_plain_text(props.get("Source Provider")) or None,
     )
     admission_canonical = _extract_select(props.get("Admission Status"))
     admission_status = _ADMISSION_FROM_CANONICAL.get(admission_canonical, AdmissionStatus.PASSED_REVIEW)
+    fit_authority_canonical = _extract_select(props.get("Fit Authority"))
+    fit_authority = _FIT_AUTHORITY_FROM_CANONICAL.get(fit_authority_canonical, FitAuthority.NON_AUTHORITATIVE)
+    source_provider_text = _plain_text(props.get("Source Provider"))
+    source_providers = tuple(part.strip() for part in source_provider_text.split(",") if part.strip())
     opportunity = Opportunity(
         stable_job_key=stable_job_key,
         job=job,
         admission_status=admission_status,
         fit=_extract_number(props.get("LIFE OS Fit")),
+        fit_authority=fit_authority,
+        source_lanes=_extract_multi_select(props.get("Source Types")),
+        source_providers=source_providers,
     )
 
     first_surfaced = _extract_date(props.get("First Surfaced"))
@@ -217,13 +246,17 @@ def _page_to_record(page: dict[str, Any]) -> LifecycleRecord:
     if first_surfaced is None or last_seen is None:
         raise ReadBackMismatch(f"persisted page {page.get('id')} is missing required lifecycle dates")
 
+    applied = _extract_checkbox(props.get("Applied"))
     live = admission_status != AdmissionStatus.EXCLUDED
-    status = LifecycleStatus.NEW if live else LifecycleStatus.HISTORICAL
+    if applied:
+        status = LifecycleStatus.APPLIED
+    else:
+        status = LifecycleStatus.NEW if live else LifecycleStatus.HISTORICAL
 
     return LifecycleRecord(
         opportunity=opportunity,
         status=status,
-        applied=_extract_checkbox(props.get("Applied")),
+        applied=applied,
         applied_on=_extract_date(props.get("Applied On")),
         first_surfaced=first_surfaced,
         review_ready_on=first_surfaced + timedelta(days=1),

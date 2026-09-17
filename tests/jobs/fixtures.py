@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from lifeos.jobs.models import Company, FreshnessStatus, Job, NormalizedCandidate, WorkMode
+from lifeos.jobs.models import Company, FitAuthority, FreshnessStatus, Job, NormalizedCandidate, WorkMode
 from lifeos.jobs.qualification import LaneConfig
 
 RUN_DATE = date(2026, 1, 15)
@@ -45,6 +45,7 @@ def make_job(
     source_lane: str = "Synthetic-Remote",
     provider_job_id: str | None = None,
     canonical_identity: str | None = None,
+    source_provider: str | None = None,
 ) -> Job:
     return Job(
         company=Company(name=company_name),
@@ -58,6 +59,7 @@ def make_job(
         source_lane=source_lane,
         provider_job_id=provider_job_id,
         canonical_identity=canonical_identity,
+        source_provider=source_provider,
     )
 
 
@@ -68,6 +70,7 @@ def make_candidate(
     market: str = "Synthetic-US",
     freshness_status: FreshnessStatus = FreshnessStatus.FRESH,
     evidence_ref: str = "synthetic:evidence:1",
+    fit_authority: FitAuthority = FitAuthority.NON_AUTHORITATIVE,
 ) -> NormalizedCandidate:
     return NormalizedCandidate(
         job=job or make_job(),
@@ -75,4 +78,5 @@ def make_candidate(
         market=market,
         freshness_status=freshness_status,
         evidence_ref=evidence_ref,
+        fit_authority=fit_authority,
     )

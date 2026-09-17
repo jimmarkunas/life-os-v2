@@ -13,7 +13,7 @@ from lifeos.core.http import HttpClient, RetryPolicy
 from lifeos.core.runtime import RunContext
 from lifeos.jobs.fit_scoring import FitEvidence, FitProfile
 from lifeos.jobs.fit_scoring import score as score_fit
-from lifeos.jobs.models import Company, FreshnessStatus, Job, NormalizedCandidate, WorkMode
+from lifeos.jobs.models import Company, FitAuthority, FreshnessStatus, Job, NormalizedCandidate, WorkMode
 from lifeos.jobs.terminal_evidence import Fetcher, FetchResponse, acquire_terminal_vacancy_evidence, parse_posting_date
 from lifeos.newsletter.models import SourceVacancyObservation, fatal_issue_codes
 
@@ -92,6 +92,7 @@ class NewsletterJobsAdapter:
                     work_mode=_infer_work_mode(location), compensation_text=observation.compensation_text,
                     compensation_minimum=None, posting_date=None, apply_url=None,
                     source_lane=cfg.source_lane, provider_job_id=observation.provider_job_id,
+                    source_provider=observation.source_provider,
                 ),
                 fit=None, market=cfg.market, freshness_status=FreshnessStatus.UNRESOLVED,
                 evidence_ref=observation.evidence_ref,
@@ -132,6 +133,7 @@ class NewsletterJobsAdapter:
             posting_date=posting_date, apply_url=apply_url, source_lane=cfg.source_lane,
             provider_job_id=observation.provider_job_id, description_text=description_text,
             provider_score=observation.provider_score,
+            source_provider=observation.source_provider,
         )
 
         # LIFE OS Fit is authoritative evidence only: score it from terminal
@@ -145,10 +147,12 @@ class NewsletterJobsAdapter:
                 FitEvidence(role=role, description_text=description_text, location_text=location or ""),
                 profile=cfg.fit_profile,
             ).score
+        fit_authority = FitAuthority.AUTHORITATIVE if fit is not None else FitAuthority.NON_AUTHORITATIVE
 
         return NormalizedCandidate(
             job=job, fit=fit, market=cfg.market,
             freshness_status=FreshnessStatus.UNRESOLVED,
             evidence_ref=observation.evidence_ref,
             unresolved_reason=None,
+            fit_authority=fit_authority,
         )
