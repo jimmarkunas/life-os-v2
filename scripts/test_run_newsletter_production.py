@@ -318,13 +318,21 @@ class FiveMessageBacklogBackend:
     simply reflect which messages currently carry the processed label,
     exactly like real Gmail."""
 
-    def __init__(self, *, degrade: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        degrade: str | None = None,
+        fail_list: bool = False,
+        fail_detail_for: str | None = None,
+    ) -> None:
         self.pages: dict[str, dict] = {}
         self._next_page = 1
         self.processed_message_ids: list[str] = []
         self.detail_fetch_ids: list[str] = []
         self._newest_first_order = ["msg-E", "msg-D", "msg-C", "msg-B", "msg-A"]
         self._degrade = degrade  # message id whose body fails to parse, or None
+        self._fail_list = fail_list  # simulate a malformed/failed Gmail list response
+        self._fail_detail_for = fail_detail_for  # message id whose detail fetch fails
 
     def request(self, method, url, *, headers, body, timeout_seconds) -> HttpResponse:
         if url == entry._GOOGLE_TOKEN_URL:
@@ -350,11 +358,21 @@ class FiveMessageBacklogBackend:
                 ).encode(),
             )
         if method == "GET" and "/messages?" in url and "labelIds=label-news" in url:
+            if self._fail_list:
+                # Malformed Gmail list response -- gmail.py's own
+                # _list_message_ids raises MailboxTransportError for this,
+                # a real acquisition-layer failure, not a test-injected one.
+                return HttpResponse(200, {}, json.dumps(["not", "an", "object"]).encode())
             remaining = [mid for mid in self._newest_first_order if mid not in self.processed_message_ids]
             return HttpResponse(200, {}, json.dumps({"messages": [{"id": mid} for mid in remaining]}).encode())
         if method == "GET" and "?format=full" in url:
             message_id = url.split("/messages/", 1)[1].split("?", 1)[0]
             self.detail_fetch_ids.append(message_id)
+            if message_id == self._fail_detail_for:
+                # Malformed Gmail message-detail response -- gmail.py's own
+                # _fetch_message_fields raises MailboxTransportError for
+                # this, simulating a hydration failure on a selected item.
+                return HttpResponse(200, {}, json.dumps(["not", "an", "object"]).encode())
             letter = message_id.rsplit("-", 1)[-1]
             body_data = _unparseable_body() if letter == self._degrade else _jobright_body(letter)
             index = ord(letter) - ord("A")
@@ -437,6 +455,19 @@ class ProductionBoundaryBoundedBacklogTests(unittest.TestCase):
             exit_code = entry.main(list(cli_args) + ["--timeout-seconds", "30", "--skip-mail-router"])
         return exit_code
 
+    def _run_capturing_summary(self, backend, *cli_args):
+        import contextlib
+        import io
+
+        fake_client = HttpClient(backend=backend)
+        stdout = io.StringIO()
+        with patch.dict(os.environ, self._env, clear=True), patch.object(
+            entry, "HttpClient", return_value=fake_client
+        ), patch.object(entry, "BACKLOG_BATCH_SIZE", 3), contextlib.redirect_stdout(stdout):
+            exit_code = entry.main(list(cli_args) + ["--timeout-seconds", "30", "--skip-mail-router"])
+        summary = json.loads(stdout.getvalue())
+        return exit_code, summary
+
     def test_shared_primitive_owns_the_real_production_bounded_selection(self) -> None:
         backend = FiveMessageBacklogBackend()
 
@@ -486,6 +517,67 @@ class ProductionBoundaryBoundedBacklogTests(unittest.TestCase):
         self.assertEqual(exit_code_2, 1)
         self.assertEqual(backend.detail_fetch_ids, ["msg-A", "msg-B", "msg-C", "msg-A", "msg-B", "msg-C"])
         self.assertEqual(backend.processed_message_ids, [])
+
+    def test_enumeration_failure_degrades_closed_without_crashing(self) -> None:
+        """Gmail backlog enumeration fails before any selection/hydration
+        happens. entry.main() must not raise; it must report DEGRADED with
+        a real acquisition error, exactly as NewsletterProcessor.process_window
+        used to before this path called Gmail enumeration directly."""
+        backend = FiveMessageBacklogBackend(fail_list=True)
+
+        exit_code, summary = self._run_capturing_summary(backend)
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(backend.detail_fetch_ids, [])
+        self.assertEqual(backend.processed_message_ids, [])
+        self.assertEqual(backend.pages, {})
+
+        parse = summary["newsletter_parse"]
+        self.assertEqual(parse["state"], "DEGRADED")
+        self.assertEqual(parse["errors"], 1)
+        detail = parse["error_details"][0]
+        self.assertEqual(detail["mailbox"], "gmail")
+        self.assertEqual(detail["operation"], "fetch")
+        self.assertIn("MailboxTransportError", detail["detail"])
+        self.assertNotIn("jobs", summary)
+
+        # Canonical Gmail state is untouched -- fully resumable. Clearing
+        # the injected failure and rerunning against the SAME backend
+        # proves nothing was silently consumed/lost during the failure.
+        backend._fail_list = False
+        exit_code_2 = self._run(backend)
+        self.assertEqual(exit_code_2, 0)
+        self.assertEqual(backend.detail_fetch_ids, ["msg-A", "msg-B", "msg-C"])
+        self.assertEqual(backend.processed_message_ids, ["msg-A", "msg-B", "msg-C"])
+
+    def test_hydration_failure_degrades_closed_without_partial_completion(self) -> None:
+        """Enumeration succeeds and a batch is selected, but hydrating one
+        selected message fails. No message in the incomplete batch may be
+        marked processed, and no Jobs mutation may occur."""
+        backend = FiveMessageBacklogBackend(fail_detail_for="msg-B")
+
+        exit_code, summary = self._run_capturing_summary(backend)
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(backend.processed_message_ids, [])
+        self.assertEqual(backend.pages, {})
+
+        parse = summary["newsletter_parse"]
+        self.assertEqual(parse["state"], "DEGRADED")
+        self.assertEqual(parse["errors"], 1)
+        detail = parse["error_details"][0]
+        self.assertEqual(detail["mailbox"], "gmail")
+        self.assertEqual(detail["operation"], "fetch")
+        self.assertIn("MailboxTransportError", detail["detail"])
+        self.assertNotIn("jobs", summary)
+
+        # Canonical Gmail state remains resumable: nothing was marked
+        # processed, so clearing the injected failure and rerunning
+        # succeeds against the exact same selected batch.
+        backend._fail_detail_for = None
+        exit_code_2 = self._run(backend)
+        self.assertEqual(exit_code_2, 0)
+        self.assertEqual(backend.processed_message_ids, ["msg-A", "msg-B", "msg-C"])
 
     def test_empty_backlog_is_a_clean_pass_no_op(self) -> None:
         backend = FiveMessageBacklogBackend()
