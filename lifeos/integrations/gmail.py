@@ -6,9 +6,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from threading import Lock
 from time import sleep
-from typing import Any, Generic, Mapping, TypeVar
+from typing import Any, Generic, Mapping, Sequence, TypeVar
 from urllib.parse import quote, urlencode
 
+from lifeos.core.backlog import consume_bounded_backlog
 from lifeos.core.config import RuntimeConfig
 from lifeos.core.http import HttpClient, RetryPolicy
 from lifeos.core.runtime import RunContext
@@ -125,18 +126,11 @@ class GmailMailboxTransport(Generic[T]):
         self._context.require_time(SCAN_CHUNK_PACING_SECONDS)
         sleep(SCAN_CHUNK_PACING_SECONDS)
 
-    def fetch_unprocessed(
-        self, start: datetime, end: datetime, boundary_name: str
-    ) -> tuple[RoutedNewsletterMessage, ...]:
-        """Fetch one bounded batch of staged Newsletter messages not yet accepted.
-
-        The complete age-independent Gmail label backlog is enumerated on every
-        execution. Only the oldest bounded batch is hydrated and handed to the
-        existing parse/Jobs pipeline. Accepted messages receive the processed
-        label, so later executions naturally advance through the same durable
-        Gmail queue without another datastore or checkpoint.
-        """
-        _validate_window(start, end)
+    def enumerate_unprocessed_ids(self, boundary_name: str) -> tuple[str, ...]:
+        """Enumerate the COMPLETE age-independent Newsletter label backlog,
+        oldest-first, with no bounding. Gmail lists the label newest-first;
+        this reverses it so callers see genuine canonical order and can
+        apply their own bounded selection (see lifeos.core.backlog)."""
         label_id = self._resolve_label_id(boundary_name)
         processed_label = _processed_label_name(boundary_name)
         try:
@@ -149,13 +143,15 @@ class GmailMailboxTransport(Generic[T]):
             label_id=label_id,
             exclude_label_name=processed_label or None,
         )
+        return tuple(reversed(ids))
+
+    def hydrate_messages(self, message_ids: Sequence[str]) -> tuple[RoutedNewsletterMessage, ...]:
+        """Hydrate exactly the given (already-selected) message IDs. Never
+        enumerates or bounds on its own -- callers choose which references
+        to hydrate."""
+        ids = tuple(message_ids)
         if not ids:
             return ()
-
-        # Gmail lists the label backlog newest-first. Enumerate it completely,
-        # then take the tail so bounded executions drain oldest-first.
-        ids = tuple(reversed(ids[-BACKLOG_BATCH_SIZE:]))
-
         messages: list[RoutedNewsletterMessage] = []
         failures: dict[str, Exception] = {}
         for index, message_id in enumerate(ids):
@@ -183,6 +179,32 @@ class GmailMailboxTransport(Generic[T]):
                 )
         messages.sort(key=lambda item: (item.received_at, item.message_id))
         return tuple(messages)
+
+    def fetch_unprocessed(
+        self, start: datetime, end: datetime, boundary_name: str
+    ) -> tuple[RoutedNewsletterMessage, ...]:
+        """Fetch one bounded batch of staged Newsletter messages not yet
+        accepted. The shared platform mechanic (lifeos.core.backlog) receives
+        the COMPLETE current backlog from enumerate_unprocessed_ids and is
+        the sole place bounded selection happens; hydrate_messages then
+        hydrates only the items it selects. Accepted messages receive the
+        processed label, so later executions naturally advance through the
+        same durable Gmail queue without another datastore or checkpoint.
+        """
+        _validate_window(start, end)
+        hydrated: list[RoutedNewsletterMessage] = []
+
+        def _hydrate_selected(batch: Sequence[str]) -> dict[str, bool]:
+            hydrated.extend(self.hydrate_messages(batch))
+            return {message_id: True for message_id in batch}
+
+        consume_bounded_backlog(
+            enumerate_backlog=lambda: self.enumerate_unprocessed_ids(boundary_name),
+            batch_size=BACKLOG_BATCH_SIZE,
+            process_batch=_hydrate_selected,
+            mark_complete=lambda _message_id: None,
+        )
+        return tuple(hydrated)
 
     def _pace_backlog_detail_read(self) -> None:
         self._context.require_time(BACKLOG_DETAIL_PACING_SECONDS)
