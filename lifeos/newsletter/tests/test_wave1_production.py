@@ -128,6 +128,17 @@ class FakeMailbox:
         return out
 
 
+class FakeNewsletterSource:
+    mailbox = "gmail"
+
+    def __init__(self, messages: list[RoutedNewsletterMessage]) -> None:
+        self.messages = messages
+
+    def fetch_unprocessed(self, start: datetime, end: datetime, boundary_name: str):
+        assert boundary_name == BOUNDARY
+        return [message for message in self.messages if start <= message.received_at < end]
+
+
 def _mail(message_id: str, subject: str, *, sender: str, body: str = "", html: str = "", headers=None, minute: int = 0) -> MailMessage:
     return MailMessage(
         provider="gmail",
@@ -184,6 +195,24 @@ def _linkedin_body() -> str:
     """
 
 
+def _lensa_no_apply_url_body() -> str:
+    return """
+    Synthetic Labs
+    Synthetic Engineer
+    $120K - $150K / yr Remote
+    Gig Jobs
+    unsubscribe
+    """
+
+
+def _jobright_malformed_identity_body() -> str:
+    return """
+    [Malformed card](https://jobright.ai/jobs/info/malformed)
+    View more opportunities
+    unsubscribe
+    """
+
+
 def test_lensa_variants_duplicate_rendering_controls_and_non_target_roles() -> None:
     result = parse_message(
         RoutedNewsletterMessage(
@@ -206,7 +235,7 @@ def test_lensa_variants_duplicate_rendering_controls_and_non_target_roles() -> N
     ]
 
 
-def test_lensa_positional_recovery_requires_exact_count() -> None:
+def test_lensa_positional_recovery_mismatch_preserves_missing_url_issue_without_degrading() -> None:
     html = """
     <a href="https://email.lensa.com/f/a/one">Apply $100K</a>
     <a href="https://email.lensa.com/f/a/two">Apply $120K</a>
@@ -226,10 +255,11 @@ def test_lensa_positional_recovery_requires_exact_count() -> None:
         )
     )
 
-    assert result.state is ParseState.DEGRADED
+    assert result.state is ParseState.PASS
     assert len(result.observations) == 1
     assert result.observations[0].source_apply_url is None
     assert "source-apply-url-missing" in result.observations[0].issues
+    assert [issue.code for issue in result.issues] == ["source-apply-url-missing"]
 
 
 def test_jobright_and_linkedin_complete_primary_cards() -> None:
@@ -315,3 +345,64 @@ def test_complete_wave1_mailbox_e2e_and_idempotent_replay() -> None:
     assert {r.stable_job_key for r in first.ingest_results if r.stable_job_key} == {
         r.stable_job_key for r in second.ingest_results if r.stable_job_key
     }
+
+
+def test_missing_source_apply_url_is_enrichment_only_through_real_parser_boundary() -> None:
+    message = RoutedNewsletterMessage(
+        mailbox="gmail",
+        message_id="synthetic-lensa-no-url",
+        received_at=RUN_AT,
+        sender="alerts@lensa.example.invalid",
+        subject="Lensa job alert",
+        body_text=_lensa_no_apply_url_body(),
+    )
+    process_result = NewsletterProcessor(boundary_name=BOUNDARY).process_window(
+        [FakeNewsletterSource([message])],
+        RUN_AT,
+        RUN_AT + timedelta(hours=1),
+    )
+
+    assert process_result.state.value == "PASS"
+    assert len(process_result.messages) == 1
+    parsed = process_result.messages[0]
+    assert parsed.state is ParseState.PASS
+    assert len(parsed.observations) == 1
+    assert parsed.issues[0].code == "source-apply-url-missing"
+    assert parsed.observations[0].issues == ("source-apply-url-missing",)
+
+    repo = InMemoryCareerRepository()
+    result = _run_feature(process_result, repo)
+
+    assert result.cleanup_safe is True
+    assert result.execution.status is ExecutionStatus.PASS
+    assert result.ingest_results[0].disposition == Disposition.CREATED
+    assert result.ingest_results[0].stable_job_key is not None
+    persisted = repo.get_many([result.ingest_results[0].stable_job_key])[result.ingest_results[0].stable_job_key]
+    assert persisted.opportunity.admission_status.value == "passed_review"
+    assert persisted.opportunity.job.apply_url is None
+    assert persisted.opportunity.fit is None
+    assert all(item.disposition is not Disposition.REVIEW_DEGRADED for item in result.ingest_results)
+
+
+def test_identity_critical_parser_issue_still_fails_closed_through_real_parser_boundary() -> None:
+    message = RoutedNewsletterMessage(
+        mailbox="gmail",
+        message_id="synthetic-jobright-malformed",
+        received_at=RUN_AT,
+        sender="alerts@jobright.example.invalid",
+        subject="Jobright daily jobs",
+        body_text=_jobright_malformed_identity_body(),
+    )
+    process_result = NewsletterProcessor(boundary_name=BOUNDARY).process_window(
+        [FakeNewsletterSource([message])],
+        RUN_AT,
+        RUN_AT + timedelta(hours=1),
+    )
+
+    assert process_result.state.value == "DEGRADED"
+    assert process_result.messages[0].state is ParseState.DEGRADED
+    assert "unresolved-card-shape" in process_result.observations[0].issues
+
+    result = _run_feature(process_result, InMemoryCareerRepository())
+    assert result.ingest_results[0].disposition == Disposition.REVIEW_DEGRADED
+    assert result.cleanup_safe is False

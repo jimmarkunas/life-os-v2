@@ -15,7 +15,7 @@ from lifeos.jobs.fit_scoring import FitEvidence, FitProfile
 from lifeos.jobs.fit_scoring import score as score_fit
 from lifeos.jobs.models import Company, FreshnessStatus, Job, NormalizedCandidate, WorkMode
 from lifeos.jobs.terminal_evidence import Fetcher, FetchResponse, acquire_terminal_vacancy_evidence, parse_posting_date
-from lifeos.newsletter.models import SourceVacancyObservation
+from lifeos.newsletter.models import SourceVacancyObservation, fatal_issue_codes
 
 _COMPENSATION_NUMBER = re.compile(r"\$?\s*([\d][\d,]*)(\s*[kK])?")
 
@@ -84,7 +84,8 @@ class NewsletterJobsAdapter:
         role = (observation.role or "").strip()
         location = observation.location_text
 
-        if observation.issues:
+        fatal_issues = fatal_issue_codes(observation.issues)
+        if fatal_issues:
             return NormalizedCandidate(
                 job=Job(
                     company=Company(name=company), role=role, location=location,
@@ -94,7 +95,7 @@ class NewsletterJobsAdapter:
                 ),
                 fit=None, market=cfg.market, freshness_status=FreshnessStatus.UNRESOLVED,
                 evidence_ref=observation.evidence_ref,
-                unresolved_reason=f"source observation has unresolved issues: {', '.join(observation.issues)}",
+                unresolved_reason=f"source observation has unresolved issues: {', '.join(fatal_issues)}",
             )
 
         # Enrichment failure is not identity failure: a missing source apply

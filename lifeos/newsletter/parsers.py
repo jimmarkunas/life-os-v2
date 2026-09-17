@@ -14,7 +14,7 @@ from email.parser import Parser
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
 
-from .models import MessageParseResult, ParseIssue, ParseState, RoutedNewsletterMessage, SourceVacancyObservation
+from .models import MessageParseResult, ParseIssue, ParseState, RoutedNewsletterMessage, SourceVacancyObservation, fatal_issue_codes
 
 
 MONEY = re.compile(r"\$\s*\d[\d,.]*\s*[kK]?(?:\s*[-–]\s*\$?\s*\d[\d,.]*\s*[kK]?)?\s*/?\s*(?:yr|year|hr|hour|wk|week)?", re.I)
@@ -62,13 +62,21 @@ def parse_message(message: RoutedNewsletterMessage) -> MessageParseResult:
     best_observations: tuple[SourceVacancyObservation, ...] = ()
     for source_text, source_kind in _source_texts(message):
         observations, terminal, parse_issues = _parse_provider(provider, source_text, message, source_kind)
-        if observations and terminal and not parse_issues:
-            return MessageParseResult(message_ref, provider, ParseState.PASS, tuple(observations), ())
+        if observations and terminal and not fatal_issue_codes(tuple(parse_issues)):
+            return MessageParseResult(
+                message_ref,
+                provider,
+                ParseState.PASS,
+                tuple(observations),
+                tuple(_dedupe_issues([ParseIssue(code, message_ref) for code in parse_issues])),
+            )
         if len(observations) > len(best_observations):
             best_observations = tuple(observations)
         issues.extend(ParseIssue(code, message_ref) for code in parse_issues)
 
     if best_observations:
+        if issues and not fatal_issue_codes(tuple(issue.code for issue in issues)):
+            return MessageParseResult(message_ref, provider, ParseState.PASS, best_observations, tuple(_dedupe_issues(issues)))
         if not issues:
             issues.append(ParseIssue("message-parse-degraded", message_ref))
         return MessageParseResult(message_ref, provider, ParseState.DEGRADED, best_observations, tuple(_dedupe_issues(issues)))
