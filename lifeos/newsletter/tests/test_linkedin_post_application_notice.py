@@ -27,6 +27,18 @@ def test_linkedin_post_application_networking_notice_is_terminal_empty_pass() ->
     assert result.issues == ()
 
 
+def test_linkedin_job_seeker_guidance_is_terminal_empty_pass() -> None:
+    result = _parse_message_or_known_empty(
+        _message(
+            "Synthetic Person, looking for a new job?",
+            "Learn how to find the jobs you want. Search for jobs and update your profile.",
+        )
+    )
+    assert result.state is ParseState.PASS
+    assert result.observations == ()
+    assert result.issues == ()
+
+
 def test_unrecognized_linkedin_message_still_fails_closed() -> None:
     result = _parse_message_or_known_empty(
         _message("A LinkedIn notification", "There are no vacancy cards in this synthetic message.")
