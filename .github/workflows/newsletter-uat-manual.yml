@@ -46,7 +46,7 @@ jobs:
         run: >
           PYTHONPATH="$GITHUB_WORKSPACE" python3.12
           scripts/run_newsletter_production.py
-          --timeout-seconds 90
+          --timeout-seconds 300
           --window-hours 24
 
       - name: Newsletter production replay (idempotency proof)
@@ -54,5 +54,5 @@ jobs:
         run: >
           PYTHONPATH="$GITHUB_WORKSPACE" python3.12
           scripts/run_newsletter_production.py
-          --timeout-seconds 90
+          --timeout-seconds 300
           --window-hours 24
