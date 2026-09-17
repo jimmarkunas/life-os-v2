@@ -12,8 +12,7 @@ concurrency:
 
 jobs:
   uat:
-    name: Bounded Newsletter production UAT
-    if: github.ref == 'refs/heads/main'
+    name: One-message Gmail diagnostic
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
@@ -25,10 +24,10 @@ jobs:
       NOTION_API_TOKEN: ${{ secrets.NOTION_API_TOKEN }}
       NOTION_JOB_LEDGER_DATA_SOURCE_ID: ${{ secrets.NOTION_JOB_LEDGER_DATA_SOURCE_ID }}
     steps:
-      - name: Checkout main
+      - name: Checkout diagnostic branch
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: diagnose/gmail-message-403
           persist-credentials: false
 
       - name: Set up Python 3.12
@@ -36,16 +35,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Newsletter production run
+      - name: Fetch one Gmail message
         run: >
-          PYTHONPATH="$GITHUB_WORKSPACE" python3.12
-          scripts/run_newsletter_production.py
-          --timeout-seconds 90
-          --window-hours 24
-
-      - name: Newsletter production replay (idempotency proof)
-        run: >
-          PYTHONPATH="$GITHUB_WORKSPACE" python3.12
-          scripts/run_newsletter_production.py
-          --timeout-seconds 90
-          --window-hours 24
+          python3.12 scripts/diagnose_gmail_message.py
+          1a07f4a63a8a9b48
