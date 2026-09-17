@@ -67,7 +67,9 @@ class BacklogFakeHttp(FakeHttp):
             assert "after:" not in decoded
             assert "before:" not in decoded
             if '-label:"J+Newsletters/Processed"' in decoded or '-label:"J Newsletters/Processed"' in decoded:
-                return {"messages": [{"id": "msg-old"}, {"id": "msg-recent"}, {"id": "msg-new"}]}
+                if "pageToken=page-2" in decoded:
+                    return {"messages": [{"id": "msg-new"}]}
+                return {"messages": [{"id": "msg-old"}, {"id": "msg-recent"}], "nextPageToken": "page-2"}
             return {
                 "messages": [
                     {"id": "msg-old"},

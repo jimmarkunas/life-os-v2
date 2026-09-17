@@ -8,6 +8,7 @@ from unittest.mock import patch
 from urllib.parse import parse_qs
 
 from lifeos.core.http import HttpClient, HttpResponse
+from lifeos.newsletter.processor import NewsletterError, NewsletterExecutionState, NewsletterProcessResult, NewsletterTimings
 
 from . import run_newsletter_production as entry
 
@@ -267,6 +268,36 @@ class MainEntryPointTests(unittest.TestCase):
     def test_timeout_above_platform_ceiling_is_rejected(self) -> None:
         exit_code, _backend = self._run("--timeout-seconds", "301")
         self.assertEqual(exit_code, 2)
+
+    def test_summary_preserves_newsletter_acquisition_error_details(self) -> None:
+        process_result = NewsletterProcessResult(
+            NewsletterExecutionState.DEGRADED,
+            (),
+            (
+                NewsletterError(
+                    "gmail",
+                    "fetch",
+                    "MailboxTransportError: Gmail Newsletter message acquisition incomplete: mailbox=gmail operation=fetch_unprocessed failed_messages=[msg-stuck:TimeoutError:synthetic]",
+                ),
+            ),
+            NewsletterTimings(0.1, 0.0, 0.1),
+        )
+
+        summary = entry._safe_summary(
+            dry_run=False,
+            elapsed_seconds=0.1,
+            mail_preview=None,
+            mail_result=None,
+            process_result=process_result,
+            feature_result=None,
+            processed_count=0,
+            processed_errors=0,
+        )
+
+        self.assertEqual(summary["newsletter_parse"]["errors"], 1)
+        self.assertEqual(summary["newsletter_parse"]["error_details"][0]["mailbox"], "gmail")
+        self.assertEqual(summary["newsletter_parse"]["error_details"][0]["operation"], "fetch")
+        self.assertIn("msg-stuck:TimeoutError:synthetic", summary["newsletter_parse"]["error_details"][0]["detail"])
 
 
 if __name__ == "__main__":

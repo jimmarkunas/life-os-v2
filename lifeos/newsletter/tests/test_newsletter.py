@@ -106,10 +106,11 @@ Content-Type: text/html; charset=utf-8
 
     def test_processor_fetch_failure_is_degraded_and_cleanup_never_parser_authorized(self):
         class FailingSource(FakeSource):
-            def fetch_unprocessed(self,start,end,boundary_name): raise TimeoutError("synthetic")
+            def fetch_unprocessed(self,start,end,boundary_name): raise TimeoutError("mailbox=gmail operation=fetch_unprocessed failed_messages=[msg-stuck:TimeoutError:synthetic]")
         good=FakeSource("outlook",[msg("synthetic-ok","Jobright jobs","[Synthetic Labs\n90%\nProgram Manager\nRemote](https://jobright.ai/jobs/info/synthetic-ok)",mailbox="outlook")])
         result=NewsletterProcessor().process_window([FailingSource("gmail",[]),good],self.start,self.end)
         self.assertEqual(result.state,NewsletterExecutionState.DEGRADED); self.assertEqual(len(result.observations),1); self.assertFalse(result.cleanup_safe)
+        self.assertIn("msg-stuck:TimeoutError:synthetic", result.errors[0].detail)
     def test_jobs_adapter_seam_preserves_one_input_per_observation(self):
         parsed=parse_message(msg("synthetic-adapt","Jobright jobs","[Synthetic Labs\n90%\nProgram Manager\nRemote](https://jobright.ai/jobs/info/synthetic-adapt)"))
         class Adapter:

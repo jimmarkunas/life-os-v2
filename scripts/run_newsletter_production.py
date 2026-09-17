@@ -109,7 +109,13 @@ def _safe_summary(*, dry_run: bool, elapsed_seconds: float, mail_preview, mail_r
     summary: dict = {"dry_run": dry_run, "elapsed_seconds": round(elapsed_seconds, 3), "processed_messages": processed_count, "processed_errors": processed_errors}
     if mail_preview is not None: summary["mail_preview"] = mail_preview
     if mail_result is not None: summary["mail"] = {"state": mail_result.state.value, "scanned": mail_result.scanned_count, "staged": sum(1 for r in mail_result.records if r.routed), "errors": len(mail_result.errors), "staging_safe": mail_result.checkpoint_safe}
-    if process_result is not None: summary["newsletter_parse"] = {"state": process_result.state.value, "messages": len(process_result.messages), "observations": len(process_result.observations), "errors": len(process_result.errors)}
+    if process_result is not None:
+        summary["newsletter_parse"] = {"state": process_result.state.value, "messages": len(process_result.messages), "observations": len(process_result.observations), "errors": len(process_result.errors)}
+        if process_result.errors:
+            summary["newsletter_parse"]["error_details"] = [
+                {"mailbox": error.mailbox, "operation": error.operation, "detail": error.detail}
+                for error in process_result.errors
+            ]
     if feature_result is not None:
         disposition_counts = {d.value: 0 for d in Disposition}
         for result in feature_result.ingest_results: disposition_counts[result.disposition.value] += 1

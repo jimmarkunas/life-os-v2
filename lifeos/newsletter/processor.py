@@ -75,7 +75,7 @@ class NewsletterProcessor:
                     try:
                         batch = future.result()
                     except Exception as exc:
-                        errors.append(NewsletterError(source.mailbox, "fetch", type(exc).__name__))
+                        errors.append(NewsletterError(source.mailbox, "fetch", _safe_error_detail(exc)))
                         continue
                     for message in batch:
                         if message.mailbox != source.mailbox:
@@ -106,3 +106,12 @@ class NewsletterProcessor:
             tuple(errors),
             NewsletterTimings(fetch_seconds, parse_seconds, perf_counter() - total_started),
         )
+
+
+def _safe_error_detail(exc: Exception) -> str:
+    detail = str(exc).replace("\n", " ").strip()
+    if len(detail) > 240:
+        detail = f"{detail[:237]}..."
+    if detail:
+        return f"{type(exc).__name__}: {detail}"
+    return type(exc).__name__
