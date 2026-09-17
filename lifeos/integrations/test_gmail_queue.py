@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import base64
+import time
 from datetime import datetime, timezone
+from threading import Lock
 from urllib.parse import unquote
 
+from lifeos.core.http import HttpError, HttpErrorKind
 from lifeos.core.runtime import RunContext
 from lifeos.integrations.gmail import GmailMailboxTransport
 from lifeos.integrations.mailbox import MailboxTransportError
@@ -137,6 +140,45 @@ class DetailRetryFakeHttp(FakeHttp):
         return super().request_json(context, method, url, **kwargs)
 
 
+class ConcurrentDetailRejectingHttp(FakeHttp):
+    def __init__(self) -> None:
+        super().__init__()
+        self._lock = Lock()
+        self._active_detail_requests = 0
+        self.max_active_detail_requests = 0
+
+    def request_json(self, context, method, url, **kwargs):
+        if method == "GET" and "/messages?" in url:
+            return {"messages": [{"id": "msg-a"}, {"id": "msg-b"}]}
+        for message_id in ("msg-a", "msg-b"):
+            if method == "GET" and f"/messages/{message_id}?format=full" in url:
+                with self._lock:
+                    self._active_detail_requests += 1
+                    self.max_active_detail_requests = max(self.max_active_detail_requests, self._active_detail_requests)
+                    active = self._active_detail_requests
+                try:
+                    if active > 1:
+                        raise HttpError(HttpErrorKind.HTTP_STATUS, status_code=403, attempts=1)
+                    time.sleep(0.01)
+                    body = base64.urlsafe_b64encode(f"body {message_id}".encode("utf-8")).decode("ascii").rstrip("=")
+                    return {
+                        "id": message_id,
+                        "internalDate": "1789574400000",
+                        "payload": {
+                            "mimeType": "text/plain",
+                            "headers": [
+                                {"name": "From", "value": "alerts@example.invalid"},
+                                {"name": "Subject", "value": f"Synthetic {message_id}"},
+                            ],
+                            "body": {"data": body},
+                        },
+                    }
+                finally:
+                    with self._lock:
+                        self._active_detail_requests -= 1
+        return super().request_json(context, method, url, **kwargs)
+
+
 def _mailbox(http: FakeHttp) -> GmailMailboxTransport:
     return GmailMailboxTransport(
         context=RunContext.start(timeout_seconds=45),
@@ -196,6 +238,19 @@ def test_unprocessed_queue_retries_transient_detail_failure_and_returns_complete
 
     assert [message.message_id for message in messages] == ["msg-flaky", "msg-ok"]
     assert http.detail_attempts == {"msg-ok": 1, "msg-flaky": 2}
+
+
+def test_unprocessed_queue_materializes_without_concurrent_detail_fetches() -> None:
+    http = ConcurrentDetailRejectingHttp()
+    http.created_processed = True
+    mailbox = _mailbox(http)
+    start = datetime(2026, 9, 15, tzinfo=timezone.utc)
+    end = datetime(2026, 9, 16, tzinfo=timezone.utc)
+
+    messages = mailbox.fetch_unprocessed(start, end, "J Newsletters")
+
+    assert [message.message_id for message in messages] == ["msg-a", "msg-b"]
+    assert http.max_active_detail_requests == 1
 
 
 def test_unprocessed_queue_fails_closed_with_message_id_after_retry_failure() -> None:
