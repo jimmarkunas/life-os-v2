@@ -24,6 +24,7 @@ from lifeos.core.backlog import consume_bounded_backlog
 from lifeos.core.http import HttpClient, HttpError, RetryPolicy
 from lifeos.core.runtime import DeadlineExceeded, RunContext
 from lifeos.integrations.gmail import BACKLOG_BATCH_SIZE, GmailMailboxTransport
+from lifeos.integrations.mailbox import MailboxTransportError
 from lifeos.integrations.notion import NotionIdentityQuery, NotionTransport, NotionTransportError
 from lifeos.jobs.fit_scoring import FitProfile, PenaltyRule, RoleFamily, ScopeCategory
 from lifeos.jobs.newsletter_adapter import HttpClientFetcher, NewsletterAdapterConfig, NewsletterJobsAdapter
@@ -34,7 +35,14 @@ from lifeos.jobs.qualification import LaneConfig
 from lifeos.mail.classifier import DeterministicMailClassifier
 from lifeos.mail.models import MailClass, MailMessage
 from lifeos.mail.router import MailRouter
-from lifeos.newsletter.processor import NewsletterProcessor
+from lifeos.newsletter.processor import (
+    NewsletterError,
+    NewsletterExecutionState,
+    NewsletterProcessor,
+    NewsletterProcessResult,
+    NewsletterTimings,
+    _safe_error_detail,
+)
 
 DEFAULT_TIMEOUT_SECONDS = 45.0
 MAX_TIMEOUT_SECONDS = 300.0
@@ -459,12 +467,29 @@ def main(argv: list[str] | None = None) -> int:
             # a safely-accounted batch. An empty backlog calls process_batch
             # zero times, so no Jobs/Gmail mutation happens -- a clean
             # PASS/no-op with no platform-owned cursor or checkpoint.
-            consume_bounded_backlog(
-                enumerate_backlog=lambda: gmail.enumerate_unprocessed_ids(NEWSLETTER_BOUNDARY),
-                batch_size=BACKLOG_BATCH_SIZE,
-                process_batch=_process_selected_batch,
-                mark_complete=_mark_message_processed,
-            )
+            try:
+                consume_bounded_backlog(
+                    enumerate_backlog=lambda: gmail.enumerate_unprocessed_ids(NEWSLETTER_BOUNDARY),
+                    batch_size=BACKLOG_BATCH_SIZE,
+                    process_batch=_process_selected_batch,
+                    mark_complete=_mark_message_processed,
+                )
+            except (MailboxTransportError, HttpError) as exc:
+                # Gmail enumeration or selected-message hydration failed.
+                # Restore the fail-closed acquisition-error behavior
+                # NewsletterProcessor.process_window used to provide before
+                # this path called Gmail directly: no message in the
+                # attempted batch was marked processed (mark_complete is
+                # only ever reached after process_batch returns, which
+                # requires hydration to have already succeeded), so canonical
+                # Gmail state remains fully resumable on the next execution.
+                execution_status = "DEGRADED"
+                process_result = NewsletterProcessResult(
+                    NewsletterExecutionState.DEGRADED,
+                    (),
+                    (NewsletterError("gmail", "fetch", _safe_error_detail(exc)),),
+                    NewsletterTimings(0.0, 0.0, context.elapsed_seconds()),
+                )
     except DeadlineExceeded:
         execution_status = "DEGRADED"
         print("BLOCKED: execution deadline exhausted", file=sys.stderr)
