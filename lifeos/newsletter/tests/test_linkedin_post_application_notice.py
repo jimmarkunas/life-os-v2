@@ -9,7 +9,7 @@ def _message(subject: str, body: str) -> RoutedNewsletterMessage:
         mailbox="gmail",
         message_id="synthetic-linkedin-post-application",
         received_at=datetime(2026, 9, 17, tzinfo=timezone.utc),
-        sender="LinkedIn <jobs-noreply@linkedin.com>",
+        sender="Synthetic LinkedIn notification via linkedin.com",
         subject=subject,
         body_text=body,
     )
