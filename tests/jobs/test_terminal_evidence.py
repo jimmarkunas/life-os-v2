@@ -72,6 +72,57 @@ def test_intermediary_resolves_through_downstream_link():
     assert result.final_url == "https://greenhouse.io/employer/jobs/42"
 
 
+def test_jobright_lensa_chain_resolves_to_employer_ats():
+    fetcher = FakeFetcher({
+        "https://jobright.ai/jobs/info/1": FetchResponse(final_url="https://jobright.ai/jobs/info/1", body='<a href="https://lensa.com/job/redirect-2">continue</a>'),
+        "https://lensa.com/job/redirect-2": FetchResponse(final_url="https://lensa.com/job/redirect-2", body='<a href="https://greenhouse.io/employer/jobs/42">Apply</a>'),
+    })
+    result = resolve_final_vacancy_url("https://jobright.ai/jobs/info/1", fetcher=fetcher)
+    assert result.final_url == "https://greenhouse.io/employer/jobs/42"
+    assert result.chain == (
+        "https://jobright.ai/jobs/info/1",
+        "https://lensa.com/job/redirect-2",
+        "https://greenhouse.io/employer/jobs/42",
+    )
+
+
+def test_linkedin_easy_apply_with_terminal_evidence_can_remain_linkedin():
+    body = """
+    <html><body>Easy Apply</body><script type="application/ld+json">
+    {"@type": "JobPosting", "description": "Build platform programs.", "datePosted": "2026-01-10"}
+    </script></html>
+    """
+    fetcher = FakeFetcher({"https://linkedin.com/jobs/view/1": FetchResponse(final_url="https://linkedin.com/jobs/view/1", body=body)})
+    result = resolve_final_vacancy_url("https://linkedin.com/jobs/view/1", fetcher=fetcher)
+    assert result.final_url == "https://linkedin.com/jobs/view/1"
+    assert result.verified_body == body
+
+
+def test_linkedin_external_apply_resolves_downstream_not_linkedin():
+    body = """
+    <html><body>Easy Apply is not available. Apply on company site.</body>
+    <a href="https://greenhouse.io/employer/jobs/42">Apply externally</a>
+    <script type="application/ld+json">
+    {"@type": "JobPosting", "description": "Build platform programs.", "datePosted": "2026-01-10"}
+    </script></html>
+    """
+    fetcher = FakeFetcher({"https://linkedin.com/jobs/view/1": FetchResponse(final_url="https://linkedin.com/jobs/view/1", body=body)})
+    result = resolve_final_vacancy_url("https://linkedin.com/jobs/view/1", fetcher=fetcher)
+    assert result.final_url == "https://greenhouse.io/employer/jobs/42"
+
+
+def test_ambiguous_linkedin_returns_no_fabricated_terminal_url():
+    body = """
+    <html><script type="application/ld+json">
+    {"@type": "JobPosting", "description": "Build platform programs.", "datePosted": "2026-01-10"}
+    </script></html>
+    """
+    fetcher = FakeFetcher({"https://linkedin.com/jobs/view/1": FetchResponse(final_url="https://linkedin.com/jobs/view/1", body=body)})
+    result = resolve_final_vacancy_url("https://linkedin.com/jobs/view/1", fetcher=fetcher)
+    assert result.final_url is None
+    assert result.chain == ("https://linkedin.com/jobs/view/1",)
+
+
 def test_multi_hop_intermediary_chain_bounded_and_resolves():
     fetcher = FakeFetcher({
         "https://linkedin.com/jobs/view/1": FetchResponse(final_url="https://linkedin.com/jobs/view/1", body='<a href="https://lensa.com/job/redirect-2">continue</a>'),
