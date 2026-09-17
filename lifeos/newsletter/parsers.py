@@ -47,6 +47,8 @@ def detect_source(message: RoutedNewsletterMessage) -> str | None:
         return "Lensa"
     if "linkedin" in sender and "job" in (sender + subject):
         return "LinkedIn Jobs"
+    if "dice" in sender or "dice" in subject:
+        return "Dice"
     adapter = str(message.headers.get("X-LifeOS-Source-Adapter") or message.headers.get("x-lifeos-source-adapter") or "").strip()
     return adapter or None
 
@@ -611,4 +613,23 @@ def _parse_markdown_generic(text: str) -> tuple[list[dict[str, object]], str | N
         else:
             continue
         cards.append({"company": company, "role": role, "location": location, "compensation": "Not disclosed", "apply_url": href})
-    return cards, "markdown" if cards else None
+    if not cards and re.search(r"<\s*[a-zA-Z]", text):
+        parser = _StructuredLinkExtractor()
+        try:
+            parser.feed(text)
+        except Exception:
+            return cards, None
+        for href, parts in parser.links:
+            label = "\n".join(parts)
+            if _is_control_link(label, href):
+                continue
+            lines = _lines(label)
+            if len(lines) >= 3:
+                company, role, location = lines[0], lines[1], lines[2]
+            elif len(lines) >= 2:
+                company, role, location = lines[0], lines[1], "Unknown"
+            else:
+                continue
+            compensation = next((line for line in lines if MONEY.search(line)), "Not disclosed")
+            cards.append({"company": company, "role": role, "location": location, "compensation": compensation, "apply_url": href})
+    return cards, "generic-links" if cards else None

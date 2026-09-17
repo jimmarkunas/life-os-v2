@@ -28,6 +28,74 @@ class NewsletterTests(unittest.TestCase):
         self.assertEqual(obs.source_provider,"Lensa"); self.assertEqual(obs.company,"Synthetic Works")
         self.assertEqual(obs.source_apply_url,"https://jobs.lensa.com/synthetic-role")
 
+    def test_raw_dice_mail_uses_generic_parser_contract(self):
+        raw = """From: Dice <alerts@dice.example.invalid>
+Subject: Dice job alert: new jobs for you
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><body>
+  <a href="https://www.dice.example.invalid/job-detail/synthetic-123">
+    <div>Acme Synthetic Co</div>
+    <div>Technical Program Manager</div>
+    <div>Remote - Synthetic Country</div>
+    <div>$120K - $145K / yr</div>
+  </a>
+  <a href="https://www.dice.example.invalid/settings">Manage alerts</a>
+  unsubscribe
+</body></html>
+"""
+        result = parse_message(
+            RoutedNewsletterMessage(
+                mailbox="gmail",
+                message_id="synthetic-dice",
+                received_at=datetime(2026,1,15,12,0,tzinfo=timezone.utc),
+                sender="alerts@dice.example.invalid",
+                subject="Dice job alert: new jobs for you",
+                body_text="",
+                headers={"List-Unsubscribe": "<https://www.dice.example.invalid/unsubscribe>"},
+                raw_mime=raw,
+            )
+        )
+        self.assertEqual(result.source_provider, "Dice")
+        self.assertEqual(result.state, ParseState.PASS)
+        self.assertEqual(len(result.observations), 1)
+        obs = result.observations[0]
+        self.assertEqual(obs.source_provider, "Dice")
+        self.assertEqual(obs.company, "Acme Synthetic Co")
+        self.assertEqual(obs.role, "Technical Program Manager")
+        self.assertEqual(obs.location_text, "Remote - Synthetic Country")
+        self.assertEqual(obs.compensation_text, "$120K - $145K / yr")
+        self.assertEqual(obs.source_apply_url, "https://www.dice.example.invalid/job-detail/synthetic-123")
+        self.assertEqual(obs.issues, ())
+
+    def test_malformed_dice_mail_degrades_without_fabricated_vacancy(self):
+        raw = """From: Dice <alerts@dice.example.invalid>
+Subject: Dice job alert
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><body>
+  <a href="https://www.dice.example.invalid/job-detail/synthetic-malformed">View job</a>
+  unsubscribe
+</body></html>
+"""
+        result = parse_message(
+            RoutedNewsletterMessage(
+                mailbox="gmail",
+                message_id="synthetic-dice-bad",
+                received_at=datetime(2026,1,15,12,0,tzinfo=timezone.utc),
+                sender="alerts@dice.example.invalid",
+                subject="Dice job alert",
+                body_text="",
+                raw_mime=raw,
+            )
+        )
+        self.assertEqual(result.source_provider, "Dice")
+        self.assertEqual(result.state, ParseState.DEGRADED)
+        self.assertEqual(result.observations, ())
+        self.assertEqual([issue.code for issue in result.issues], ["no-vacancy-cards-parsed"])
+
     def test_linkedin_source_extracts_provider_job_id_without_canonical_identity(self):
         body="[Senior Product Manager\nSynthetic Systems · Remote](https://www.linkedin.com/jobs/view/123456789/)"
         result=parse_message(msg("synthetic-li","LinkedIn jobs for you",body,sender="jobs@linkedin.example.invalid"))
