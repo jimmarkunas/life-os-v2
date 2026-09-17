@@ -85,6 +85,30 @@ Prefer local deterministic evidence over live-system debugging.
 
 Do not rerun the same passing proof unless code changed or a new failure creates a new factual question.
 
+### 6.1 Package evidence standard
+
+**Green CI proves the code runs. Boundary evidence proves the package works.**
+
+Before implementation, every package must name:
+
+- the changed claim;
+- the failure mode that could still make that claim false;
+- the lowest real boundary capable of exposing that failure;
+- one negative control that must remain fail-closed or unchanged.
+
+Every package requires:
+
+1. **Targeted deterministic proof** for the exact changed logic.
+2. **Lowest-real-boundary proof** using the nearest actual interface that can falsify the claim.
+3. **Relevant regression proof** for previously accepted behavior the package can realistically affect.
+4. **Main CI proof** on the merged SHA before acceptance.
+
+"Lowest real boundary" does **not** mean "hit a live external system every time." Fake or control unreliable outside dependencies when useful, while keeping the business pipeline, repository contract, serialization/mapping, and decision logic real enough to expose the package's failure mode.
+
+Use a real external source-system mutation/read-back only when that source system itself can invalidate the claim, or for final integrated acceptance. Consequential real writes still require direct post-write verification.
+
+Prefer the smallest proof that can disprove the package. Do not create a testing framework, acceptance service, QA datastore, second canonical ledger, test orchestrator, evidence datastore, scheduler, or new recovery architecture to enforce this standard.
+
 ## 7. Review
 
 One coherent mutation gets one implementer and one Tech Lead review by default.
@@ -149,3 +173,11 @@ Use terms consistently:
 - `ACCEPTED` — the exact changed real boundary executed successfully and authoritative state was read back.
 - `CLOSED` — accepted and no known defect/recovery debt remains in the promised outcome.
 - `DEGRADED` — fail-closed safety state, never completion.
+
+For package sequencing, use these review checkpoints without creating another workflow system:
+
+`CODE GREEN → BOUNDARY PROVEN → MERGED → MAIN CI GREEN → PACKAGE ACCEPTED`
+
+These are evidence checkpoints only. `PACKAGE ACCEPTED` means this policy's `ACCEPTED` standard has been met for the package. A dependent next package must not begin merely because a PR merged; it may begin only after the prior package is explicitly accepted.
+
+A package acceptance report should stay concise and factual: exact changed claim, bounded files changed, targeted proof, boundary before/after evidence, negative control, relevant regression result, merged/main SHA, main CI result, and any known defect. Test counts alone are not acceptance evidence.
