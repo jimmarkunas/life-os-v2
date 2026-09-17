@@ -31,6 +31,7 @@ MAX_LIST_PAGES = 20
 GMAIL_ACCESS_TOKEN_FIELD = "GMAIL_API_TOKEN"
 PROCESSED_LABEL_SUFFIX = "Processed"
 BACKLOG_DETAIL_PACING_SECONDS = 0.25
+BACKLOG_BATCH_SIZE = 10
 
 
 class GmailMailboxTransport(Generic[T]):
@@ -115,14 +116,13 @@ class GmailMailboxTransport(Generic[T]):
     def fetch_unprocessed(
         self, start: datetime, end: datetime, boundary_name: str
     ) -> tuple[RoutedNewsletterMessage, ...]:
-        """Fetch staged Newsletter messages that have not been accepted yet.
+        """Fetch one bounded batch of staged Newsletter messages not yet accepted.
 
-        Staging into ``boundary_name`` is intentionally independent from accepted
-        processing. A second Gmail label records accepted processing, so a failed
-        run leaves the message visible in ``J Newsletters`` and eligible for retry
-        without putting it back in Inbox. Backlog consumption is intentionally
-        age-independent: every message carrying the Newsletter label and not the
-        processed label is eligible for the existing parse and Jobs pipeline.
+        The complete age-independent Gmail label backlog is enumerated on every
+        execution. Only the oldest bounded batch is hydrated and handed to the
+        existing parse/Jobs pipeline. Accepted messages receive the processed
+        label, so later executions naturally advance through the same durable
+        Gmail queue without another datastore or checkpoint.
         """
         _validate_window(start, end)
         label_id = self._resolve_label_id(boundary_name)
@@ -139,6 +139,10 @@ class GmailMailboxTransport(Generic[T]):
         )
         if not ids:
             return ()
+
+        # Gmail lists the label backlog newest-first. Enumerate it completely,
+        # then take the tail so bounded executions drain oldest-first.
+        ids = tuple(reversed(ids[-BACKLOG_BATCH_SIZE:]))
 
         messages: list[RoutedNewsletterMessage] = []
         failures: dict[str, Exception] = {}
