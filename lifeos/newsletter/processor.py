@@ -54,7 +54,10 @@ def _is_known_non_vacancy_notification(message: RoutedNewsletterMessage) -> bool
     no-card messages still fail closed.
     """
     sender = message.sender.casefold()
-    subject = message.subject.casefold().strip()
+    # LinkedIn subjects observed in production use a typographic apostrophe
+    # (U+2018/U+2019), not ASCII "'"; normalize before matching so the
+    # pattern below actually matches real mail, not just synthetic fixtures.
+    subject = message.subject.casefold().strip().replace("‘", "'").replace("’", "'")
     return (
         "linkedin.com" in sender
         and (
@@ -63,6 +66,7 @@ def _is_known_non_vacancy_notification(message: RoutedNewsletterMessage) -> bool
                 and subject.endswith(" to learn more")
             )
             or subject.endswith(", looking for a new job?")
+            or subject.startswith("we've turned off your job alert for ")
         )
     )
 
