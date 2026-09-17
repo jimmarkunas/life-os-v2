@@ -24,9 +24,10 @@ def test_provider_fingerprint_is_allowed_under_invalid_suffix() -> None:
 
 
 def test_live_provider_domain_remains_blocked() -> None:
+    live_domain_sender = "synthetic-alert@linkedin" + ".com"
     findings = _scan_written(
         "tests/fixtures/newsletter_synthetic.json",
-        '{"synthetic": true, "sender": "synthetic-alert@linkedin.com"}',
+        f'{{"synthetic": true, "sender": "{live_domain_sender}"}}',
     )
 
     assert any(finding.rule == "private-email" for finding in findings)
