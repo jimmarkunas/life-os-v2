@@ -289,4 +289,7 @@ def test_feature_only_looks_up_keys_it_actually_touched():
     repo = RecordingRepository()
     run_newsletter_feature(_process_result((_observation(),)), adapter=_adapter(fetcher), lane=LANE, lane_priority=LANE_PRIORITY, repository=repo, run_date=RUN_DATE, context=_context())
     assert len(repo.get_many_calls) == 1
-    assert len(repo.get_many_calls[0]) == 1  # exactly the one observed key, never "all keys"
+    assert set(repo.get_many_calls[0]) == {
+        "url:https://greenhouse.io/acme/jobs/1",
+        "acme synthetic co|synthetic engineer|remote - synthetic country",
+    }  # exactly the observed identity evidence, never "all keys"

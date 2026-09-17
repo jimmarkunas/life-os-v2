@@ -18,6 +18,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Protocol
 
+from lifeos.jobs.identity import canonical_url
 from lifeos.jobs.lifecycle import LifecycleRecord
 
 
@@ -30,6 +31,11 @@ class CareerRepository(Protocol):
     def get_many(self, stable_job_keys: list[str]) -> dict[str, LifecycleRecord]:
         """Narrow identity lookup for exactly the keys this run needs.
         Must never require scanning the full canonical store."""
+        ...
+
+    def get_by_apply_urls(self, apply_urls: list[str]) -> dict[str, LifecycleRecord]:
+        """Narrow lookup by canonical Apply URL for exactly the URLs this run
+        touches. Must never require scanning the full canonical store."""
         ...
 
     def upsert(self, record: LifecycleRecord) -> LifecycleRecord:
@@ -50,6 +56,15 @@ class InMemoryCareerRepository:
 
     def get_many(self, stable_job_keys: list[str]) -> dict[str, LifecycleRecord]:
         return {key: self._store[key] for key in stable_job_keys if key in self._store}
+
+    def get_by_apply_urls(self, apply_urls: list[str]) -> dict[str, LifecycleRecord]:
+        requested = {url for url in (canonical_url(value) for value in apply_urls) if url}
+        found: dict[str, LifecycleRecord] = {}
+        for record in self._store.values():
+            url = canonical_url(record.opportunity.job.apply_url)
+            if url in requested:
+                found[url] = record
+        return found
 
     def upsert(self, record: LifecycleRecord) -> LifecycleRecord:
         key = record.opportunity.stable_job_key

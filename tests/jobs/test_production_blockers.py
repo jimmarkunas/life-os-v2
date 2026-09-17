@@ -263,6 +263,11 @@ class FailingGetManyRepository(InMemoryCareerRepository):
         raise RuntimeError("synthetic transport failure")
 
 
+class FailingApplyUrlLookupRepository(InMemoryCareerRepository):
+    def get_by_apply_urls(self, apply_urls):
+        raise RuntimeError("synthetic apply-url lookup failure")
+
+
 class FailingUpsertRepository(InMemoryCareerRepository):
     def upsert(self, record):
         raise RuntimeError("synthetic write failure")
@@ -282,6 +287,23 @@ def test_get_many_transport_failure_is_review_degraded():
     results = ingest(_candidates_for_observation(), lane=LANE, lane_priority=LANE_PRIORITY, repository=FailingGetManyRepository(), run_date=RUN_DATE)
     assert len(results) == 1
     assert results[0].disposition == Disposition.REVIEW_DEGRADED
+
+
+def test_deterministic_exclusion_does_not_require_repository_lookup():
+    strict_lane = LaneConfig(
+        name="Synthetic-Newsletter", market="Synthetic-US", fit_floor=999, target_review_floor=None,
+        work_mode_policy="any", compensation_floor=None, freshness_gate=False, freshness_max_days=None,
+    )
+    results = ingest(_candidates_for_observation(), lane=strict_lane, lane_priority=LANE_PRIORITY, repository=FailingGetManyRepository(), run_date=RUN_DATE)
+    assert len(results) == 1
+    assert results[0].disposition == Disposition.EXCLUDED
+
+
+def test_apply_url_lookup_failure_is_review_degraded():
+    results = ingest(_candidates_for_observation(), lane=LANE, lane_priority=LANE_PRIORITY, repository=FailingApplyUrlLookupRepository(), run_date=RUN_DATE)
+    assert len(results) == 1
+    assert results[0].disposition == Disposition.REVIEW_DEGRADED
+    assert "apply-url lookup failed" in (results[0].detail or "")
 
 
 def test_write_failure_is_review_degraded():

@@ -1,11 +1,39 @@
 from __future__ import annotations
 
-from lifeos.jobs.models import WorkMode
+from lifeos.jobs.lifecycle import new_record
+from lifeos.jobs.models import AdmissionStatus, Opportunity, WorkMode
 from lifeos.jobs.newsletter_contract import Disposition, ingest
 from lifeos.jobs.repository import InMemoryCareerRepository
 from tests.jobs.fixtures import REMOTE_LANE, RUN_DATE, make_candidate, make_job
 
 LANE_PRIORITY = {"Synthetic-Remote": 0}
+
+
+class CountingRepository(InMemoryCareerRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        self.upsert_count = 0
+
+    def upsert(self, record):
+        self.upsert_count += 1
+        return super().upsert(record)
+
+
+def _seed(
+    repo: InMemoryCareerRepository,
+    key: str,
+    *,
+    apply_url: str | None = None,
+    company_name: str = "Acme Synthetic Co",
+    role: str = "Synthetic Engineer",
+    location: str | None = "Remote - Synthetic Country",
+):
+    opportunity = Opportunity(
+        stable_job_key=key,
+        job=make_job(company_name=company_name, role=role, location=location, apply_url=apply_url),
+        admission_status=AdmissionStatus.PASSED_REVIEW,
+    )
+    return repo.upsert(new_record(opportunity, run_date=RUN_DATE))
 
 
 def test_every_candidate_receives_exactly_one_disposition():
@@ -177,3 +205,181 @@ def test_idempotent_rerun_of_identical_batch_does_not_duplicate_opportunity():
     assert second[0].disposition == Disposition.UPDATED
     assert first[0].stable_job_key == second[0].stable_job_key
     assert len(repo.get_many([first[0].stable_job_key])) == 1
+
+
+def test_existing_fallback_identity_later_canonical_url_updates_same_job():
+    repo = InMemoryCareerRepository()
+    fallback_job = make_job(
+        company_name="Acme Synthetic Co",
+        role="Technical Program Manager",
+        location="Remote",
+        apply_url=None,
+    )
+    first = ingest(
+        [make_candidate(job=fallback_job, fit=None, evidence_ref="ev:first")],
+        lane=REMOTE_LANE,
+        lane_priority=LANE_PRIORITY,
+        repository=repo,
+        run_date=RUN_DATE,
+    )
+    assert first[0].disposition == Disposition.CREATED
+    assert first[0].stable_job_key == "acme synthetic co|technical program manager|remote"
+
+    enriched_job = make_job(
+        company_name="Acme Synthetic Co",
+        role="Technical Program Manager",
+        location="Remote",
+        apply_url="https://greenhouse.io/acme/jobs/123",
+    )
+    second = ingest(
+        [make_candidate(job=enriched_job, evidence_ref="ev:second")],
+        lane=REMOTE_LANE,
+        lane_priority=LANE_PRIORITY,
+        repository=repo,
+        run_date=RUN_DATE,
+    )
+
+    assert second[0].disposition == Disposition.UPDATED
+    assert second[0].stable_job_key == first[0].stable_job_key
+    assert repo.get_many(["url:https://greenhouse.io/acme/jobs/123"]) == {}
+    persisted = repo.get_many([first[0].stable_job_key])[first[0].stable_job_key]
+    assert persisted.opportunity.job.apply_url == "https://greenhouse.io/acme/jobs/123"
+
+
+def test_persisted_apply_url_resolves_future_changed_fallback_to_existing_job():
+    repo = InMemoryCareerRepository()
+    existing_key = "acme synthetic co|technical program manager|remote"
+    _seed(repo, existing_key, apply_url="https://greenhouse.io/acme/jobs/123", role="Technical Program Manager", location="Remote")
+
+    changed_fallback_job = make_job(
+        company_name="Acme Inc",
+        role="TPM",
+        location="Remote US",
+        apply_url="https://greenhouse.io/acme/jobs/123",
+    )
+    result = ingest(
+        [make_candidate(job=changed_fallback_job, evidence_ref="ev:url")],
+        lane=REMOTE_LANE,
+        lane_priority=LANE_PRIORITY,
+        repository=repo,
+        run_date=RUN_DATE,
+    )
+
+    assert result[0].disposition == Disposition.UPDATED
+    assert result[0].stable_job_key == existing_key
+    assert len(repo.get_many([existing_key])) == 1
+
+
+def test_existing_url_key_row_still_resolves_to_url_key():
+    repo = InMemoryCareerRepository()
+    url_key = "url:https://greenhouse.io/acme/jobs/123"
+    _seed(repo, url_key, apply_url="https://greenhouse.io/acme/jobs/123")
+
+    result = ingest(
+        [make_candidate(job=make_job(apply_url="https://greenhouse.io/acme/jobs/123"), evidence_ref="ev:url")],
+        lane=REMOTE_LANE,
+        lane_priority=LANE_PRIORITY,
+        repository=repo,
+        run_date=RUN_DATE,
+    )
+
+    assert result[0].disposition == Disposition.UPDATED
+    assert result[0].stable_job_key == url_key
+
+
+def test_url_and_fallback_matching_same_existing_row_converges_safely():
+    repo = InMemoryCareerRepository()
+    fallback_key = "acme synthetic co|synthetic engineer|remote - synthetic country"
+    _seed(repo, fallback_key, apply_url="https://greenhouse.io/acme/jobs/123")
+
+    result = ingest(
+        [make_candidate(job=make_job(apply_url="https://greenhouse.io/acme/jobs/123"), evidence_ref="ev:both")],
+        lane=REMOTE_LANE,
+        lane_priority=LANE_PRIORITY,
+        repository=repo,
+        run_date=RUN_DATE,
+    )
+
+    assert result[0].disposition == Disposition.UPDATED
+    assert result[0].stable_job_key == fallback_key
+
+
+def test_url_and_fallback_matching_different_existing_rows_is_review_degraded_no_write():
+    repo = CountingRepository()
+    _seed(repo, "url:https://greenhouse.io/acme/jobs/123", apply_url="https://greenhouse.io/acme/jobs/123")
+    _seed(repo, "acme synthetic co|synthetic engineer|remote - synthetic country", apply_url=None)
+    repo.upsert_count = 0
+
+    result = ingest(
+        [make_candidate(job=make_job(apply_url="https://greenhouse.io/acme/jobs/123"), evidence_ref="ev:collision")],
+        lane=REMOTE_LANE,
+        lane_priority=LANE_PRIORITY,
+        repository=repo,
+        run_date=RUN_DATE,
+    )
+
+    assert result[0].disposition == Disposition.REVIEW_DEGRADED
+    assert "multiple existing Jobs" in (result[0].detail or "")
+    assert repo.upsert_count == 0
+
+
+def test_no_existing_match_keeps_current_stable_job_key_priority():
+    repo = InMemoryCareerRepository()
+    url_result = ingest(
+        [make_candidate(job=make_job(apply_url="https://greenhouse.io/acme/jobs/123"), evidence_ref="ev:url")],
+        lane=REMOTE_LANE,
+        lane_priority=LANE_PRIORITY,
+        repository=repo,
+        run_date=RUN_DATE,
+    )
+    fallback_result = ingest(
+        [make_candidate(job=make_job(apply_url=None, role="Technical Program Manager", location="Remote"), fit=None, evidence_ref="ev:fallback")],
+        lane=REMOTE_LANE,
+        lane_priority=LANE_PRIORITY,
+        repository=repo,
+        run_date=RUN_DATE,
+    )
+
+    assert url_result[0].stable_job_key == "url:https://greenhouse.io/acme/jobs/123"
+    assert fallback_result[0].stable_job_key == "acme synthetic co|technical program manager|remote"
+
+
+def test_multiple_observations_converging_to_existing_job_produce_one_mutation():
+    repo = CountingRepository()
+    existing_key = "acme synthetic co|technical program manager|remote"
+    _seed(repo, existing_key, apply_url="https://greenhouse.io/acme/jobs/123", role="Technical Program Manager", location="Remote")
+    repo.upsert_count = 0
+
+    candidates = [
+        make_candidate(
+            job=make_job(company_name="Acme Inc", role="TPM", location="Remote US", apply_url="https://greenhouse.io/acme/jobs/123"),
+            evidence_ref="ev:url",
+        ),
+        make_candidate(
+            job=make_job(role="Technical Program Manager", location="Remote", apply_url=None),
+            fit=None,
+            evidence_ref="ev:fallback",
+        ),
+    ]
+    result = ingest(candidates, lane=REMOTE_LANE, lane_priority=LANE_PRIORITY, repository=repo, run_date=RUN_DATE)
+
+    assert {item.disposition for item in result} == {Disposition.UPDATED, Disposition.DUPLICATE}
+    assert {item.stable_job_key for item in result} == {existing_key}
+    assert repo.upsert_count == 1
+
+
+def test_apply_url_lookup_uses_canonical_tracking_normalization():
+    repo = InMemoryCareerRepository()
+    existing_key = "acme synthetic co|synthetic engineer|remote - synthetic country"
+    _seed(repo, existing_key, apply_url="https://greenhouse.io/acme/jobs/123?utm_source=stored")
+
+    result = ingest(
+        [make_candidate(job=make_job(apply_url="https://greenhouse.io/acme/jobs/123?utm_source=incoming&ref=x"), evidence_ref="ev:tracked")],
+        lane=REMOTE_LANE,
+        lane_priority=LANE_PRIORITY,
+        repository=repo,
+        run_date=RUN_DATE,
+    )
+
+    assert result[0].disposition == Disposition.UPDATED
+    assert result[0].stable_job_key == existing_key
