@@ -46,6 +46,34 @@ class NewsletterProcessResult:
     def cleanup_safe(self) -> bool:
         return False
 
+def _is_known_non_vacancy_notification(message: RoutedNewsletterMessage) -> bool:
+    """Recognize a proven LinkedIn post-application networking notice.
+
+    This is deliberately narrow: it closes an already-routed message that
+    contains no vacancy cards without weakening fail-closed behavior for
+    unknown parser failures.
+    """
+    sender = message.sender.casefold()
+    subject = message.subject.casefold().strip()
+    body = message.body_text.casefold().replace("’", "'")
+    return (
+        "linkedin.com" in sender
+        and subject.startswith("message people you know at ")
+        and "now that you've applied to " in body
+        and "message your connections to learn more about the company" in body
+    )
+
+def _parse_message_or_known_empty(message: RoutedNewsletterMessage) -> MessageParseResult:
+    if _is_known_non_vacancy_notification(message):
+        return MessageParseResult(
+            f"{message.mailbox}:{message.message_id}",
+            "LinkedIn Jobs",
+            ParseState.PASS,
+            (),
+            (),
+        )
+    return parse_message(message)
+
 class NewsletterProcessor:
     def __init__(self, *, boundary_name: str = "J Newsletters", max_workers: int = 8) -> None:
         self._boundary_name = boundary_name
@@ -90,7 +118,7 @@ class NewsletterProcessor:
             with ThreadPoolExecutor(max_workers=min(self._parse_workers, len(messages))) as pool:
                 for chunk_start in range(0, len(messages), self._parse_workers):
                     chunk = messages[chunk_start : chunk_start + self._parse_workers]
-                    futures = [pool.submit(parse_message, message) for message in chunk]
+                    futures = [pool.submit(_parse_message_or_known_empty, message) for message in chunk]
                     for future in futures:
                         parsed.append(future.result())
         parse_seconds = perf_counter() - parse_started
