@@ -5,6 +5,7 @@ import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from threading import Lock
+from time import sleep
 from typing import Any, Generic, Mapping, TypeVar
 from urllib.parse import quote, urlencode
 
@@ -29,6 +30,7 @@ DEFAULT_MAX_LIST_PAGES = 10
 MAX_LIST_PAGES = 20
 GMAIL_ACCESS_TOKEN_FIELD = "GMAIL_API_TOKEN"
 PROCESSED_LABEL_SUFFIX = "Processed"
+BACKLOG_DETAIL_PACING_SECONDS = 0.25
 
 
 class GmailMailboxTransport(Generic[T]):
@@ -140,18 +142,23 @@ class GmailMailboxTransport(Generic[T]):
 
         messages: list[RoutedNewsletterMessage] = []
         failures: dict[str, Exception] = {}
-        for message_id in ids:
+        for index, message_id in enumerate(ids):
             try:
                 messages.append(self._fetch_routed_message(message_id))
             except Exception as exc:
                 failures[message_id] = exc
+            if index + 1 < len(ids):
+                self._pace_backlog_detail_read()
         if failures:
             retry_failures: dict[str, Exception] = {}
-            for message_id in failures:
+            failed_ids = tuple(failures)
+            for index, message_id in enumerate(failed_ids):
                 try:
                     messages.append(self._fetch_routed_message(message_id))
                 except Exception as exc:
                     retry_failures[message_id] = exc
+                if index + 1 < len(failed_ids):
+                    self._pace_backlog_detail_read()
             if retry_failures:
                 raise MailboxTransportError(
                     "Gmail Newsletter message acquisition incomplete: "
@@ -160,6 +167,10 @@ class GmailMailboxTransport(Generic[T]):
                 )
         messages.sort(key=lambda item: (item.received_at, item.message_id))
         return tuple(messages)
+
+    def _pace_backlog_detail_read(self) -> None:
+        self._context.require_time(BACKLOG_DETAIL_PACING_SECONDS)
+        sleep(BACKLOG_DETAIL_PACING_SECONDS)
 
     def route_to_newsletters(self, message_id: str, boundary_name: str) -> None:
         """Stage confirmed automated job mail out of Inbox immediately."""
