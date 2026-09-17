@@ -60,6 +60,7 @@ class RetryPolicy:
     max_attempts: int = 1
     backoff_seconds: float = 0.25
     max_backoff_seconds: float = 2.0
+    retryable_api_reasons: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.max_attempts < 1 or self.max_attempts > MAX_HTTP_ATTEMPTS:
@@ -186,15 +187,26 @@ class HttpClient:
                 return response
 
             retry_after = _retry_after_seconds(response.headers)
-            kind = HttpErrorKind.RATE_LIMIT if response.status_code == 429 else HttpErrorKind.HTTP_STATUS
+            api_detail = _structured_api_error(response)
+            api_reason = api_detail.get("api_reason")
+            reason_retryable = bool(api_reason and api_reason in retry.retryable_api_reasons)
+            kind = (
+                HttpErrorKind.RATE_LIMIT
+                if response.status_code == 429 or reason_retryable
+                else HttpErrorKind.HTTP_STATUS
+            )
             last_error = HttpError(
                 kind,
                 status_code=response.status_code,
                 attempts=attempt,
                 retry_after_seconds=retry_after,
-                **_structured_api_error(response),
+                **api_detail,
             )
-            retryable = response.status_code in {408, 429} or 500 <= response.status_code <= 599
+            retryable = (
+                response.status_code in {408, 429}
+                or 500 <= response.status_code <= 599
+                or reason_retryable
+            )
             if not retryable or attempt >= retry.max_attempts:
                 raise last_error
             self._backoff(context, retry, attempt, retry_after_seconds=retry_after)

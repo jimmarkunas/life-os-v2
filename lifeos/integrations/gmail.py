@@ -17,7 +17,12 @@ from .mailbox import MailMessageFactory, MailboxTransportError
 
 T = TypeVar("T")
 _GMAIL_API = "https://gmail.googleapis.com/gmail/v1"
-_READ_RETRY = RetryPolicy(max_attempts=2, backoff_seconds=0.1, max_backoff_seconds=1.0)
+_READ_RETRY = RetryPolicy(
+    max_attempts=2,
+    backoff_seconds=0.1,
+    max_backoff_seconds=1.0,
+    retryable_api_reasons=("rateLimitExceeded",),
+)
 _NO_RETRY = RetryPolicy(max_attempts=1)
 MAX_MESSAGE_DETAIL_WORKERS = 8
 DEFAULT_MAX_LIST_PAGES = 10
