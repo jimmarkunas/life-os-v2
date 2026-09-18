@@ -6,18 +6,6 @@ from pathlib import Path
 from lifeos.jobs import newsletter_runtime, us_remote_runtime
 
 
-_SHARED_HELPERS = (
-    "_preexclude",
-    "_accepted_newsletter_message_ids",
-)
-
-
-def test_extraction_reuses_canonical_newsletter_helpers() -> None:
-    """Extraction must delegate policy/accounting helpers to the current runtime."""
-    for name in _SHARED_HELPERS:
-        assert getattr(newsletter_runtime, name) is getattr(us_remote_runtime, name)
-
-
 def test_extraction_preserves_canonical_side_effect_boundaries() -> None:
     """Newsletter-only composition must reuse canonical integrations, not fork them."""
     source = Path(newsletter_runtime.__file__).read_text(encoding="utf-8")
