@@ -259,11 +259,12 @@ class GmailMailboxTransport(Generic[T]):
             hydrated.extend(self.hydrate_messages(batch))
             return {message_id: True for message_id in batch}
 
-        def _admit_message(_message_id: str, _index: int) -> bool:
-            return (
-                self._context.remaining_seconds()
-                > BACKLOG_MESSAGE_RUNTIME_RESERVE_SECONDS + BACKLOG_PER_MESSAGE_ADMISSION_SECONDS
+        def _admit_message(_message_id: str, index: int) -> bool:
+            required_seconds = (
+                BACKLOG_MESSAGE_RUNTIME_RESERVE_SECONDS
+                + BACKLOG_PER_MESSAGE_ADMISSION_SECONDS * (index + 1)
             )
+            return self._context.remaining_seconds() > required_seconds
 
         consume_bounded_backlog(
             enumerate_backlog=lambda: self.enumerate_unprocessed_ids(boundary_name),
