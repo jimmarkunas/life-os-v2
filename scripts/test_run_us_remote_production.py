@@ -120,9 +120,9 @@ class NewsletterWorkloadAdmissionTests(unittest.TestCase):
     def test_terminal_capacity_reserves_web_work_and_finalize_headroom(self) -> None:
         context = SimpleNamespace(remaining_seconds=lambda: 102.0)
 
-        capacity = runtime._terminal_resolution_capacity(context, web_terminal_count=4)
+        capacity = runtime._terminal_resolution_capacity(context)
 
-        self.assertEqual(capacity, 4)
+        self.assertEqual(capacity, 8)
 
     def test_message_selection_is_whole_message_and_defers_costly_tail(self) -> None:
         obs_a = tuple(SimpleNamespace(evidence_ref=f"a:{index}") for index in range(12))
@@ -140,10 +140,9 @@ class NewsletterWorkloadAdmissionTests(unittest.TestCase):
             process_result,
             list(obs_a + obs_b),
             context=context,
-            web_terminal_count=4,
         )
 
-        self.assertEqual(budget, 4)
+        self.assertEqual(budget, 8)
         self.assertEqual(admitted, 0)
         self.assertEqual(selected, {"msg-zero"})
         self.assertNotIn("msg-b", selected)

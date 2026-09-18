@@ -42,7 +42,7 @@ def load_registry() -> dict:
     return data
 
 
-def _terminal_resolution_capacity(context: RunContext, *, web_terminal_count: int) -> int:
+def _terminal_resolution_capacity(context: RunContext) -> int:
     """Conservative downstream-work budget, expressed in Newsletter observations.
 
     One resolver slot may consume the primary HTTP timeout plus bounded browser
@@ -51,7 +51,7 @@ def _terminal_resolution_capacity(context: RunContext, *, web_terminal_count: in
     """
     usable_seconds = max(0.0, context.remaining_seconds() - _TERMINAL_FINALIZE_RESERVE_SECONDS)
     total_slots = int(usable_seconds // _TERMINAL_RESOLUTION_SLOT_SECONDS) * _TERMINAL_RESOLUTION_WORKERS
-    return max(0, total_slots - max(0, int(web_terminal_count)))
+    return max(0, total_slots)
 
 
 def _select_newsletter_message_ids(
@@ -59,7 +59,6 @@ def _select_newsletter_message_ids(
     terminal_observations: list[SourceVacancyObservation],
     *,
     context: RunContext,
-    web_terminal_count: int,
 ) -> tuple[set[str], int, int]:
     """Select complete Gmail messages whose terminal work fits this run.
 
@@ -68,7 +67,7 @@ def _select_newsletter_message_ids(
     the first costly message does not fit, later costly messages remain queued;
     zero-cost messages may still drain because they require no terminal fetch.
     """
-    budget = _terminal_resolution_capacity(context, web_terminal_count=web_terminal_count)
+    budget = _terminal_resolution_capacity(context)
     terminal_refs = {observation.evidence_ref for observation in terminal_observations}
     selected: set[str] = set()
     admitted = 0
@@ -280,7 +279,6 @@ def execute_us_remote(
                 newsletter_result,
                 newsletter_to_resolve,
                 context=context,
-                web_terminal_count=len(web_to_resolve),
             )
         )
         selected_newsletter_refs = {
