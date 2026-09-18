@@ -33,6 +33,8 @@ GMAIL_ACCESS_TOKEN_FIELD = "GMAIL_API_TOKEN"
 PROCESSED_LABEL_SUFFIX = "Processed"
 BACKLOG_DETAIL_PACING_SECONDS = 0.25
 BACKLOG_BATCH_SIZE = 10
+BACKLOG_MESSAGE_RUNTIME_RESERVE_SECONDS = 20.0
+BACKLOG_PER_MESSAGE_ADMISSION_SECONDS = 2.0
 # Headers sufficient for DeterministicMailClassifier's AUTOMATED_JOB_SOURCE
 # routing decision (sender/subject plus automation/source-adapter headers).
 # That decision does not use body_text, so format=metadata with exactly
@@ -239,11 +241,18 @@ class GmailMailboxTransport(Generic[T]):
             hydrated.extend(self.hydrate_messages(batch))
             return {message_id: True for message_id in batch}
 
+        def _admit_message(_message_id: str, _index: int) -> bool:
+            return (
+                self._context.remaining_seconds()
+                > BACKLOG_MESSAGE_RUNTIME_RESERVE_SECONDS + BACKLOG_PER_MESSAGE_ADMISSION_SECONDS
+            )
+
         consume_bounded_backlog(
             enumerate_backlog=lambda: self.enumerate_unprocessed_ids(boundary_name),
             batch_size=BACKLOG_BATCH_SIZE,
             process_batch=_hydrate_selected,
             mark_complete=lambda _message_id: None,
+            admit_item=_admit_message,
         )
         return tuple(hydrated)
 
