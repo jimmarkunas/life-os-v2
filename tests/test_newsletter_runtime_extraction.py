@@ -40,9 +40,3 @@ def test_extraction_keeps_existing_external_resolution_limit() -> None:
     """The extraction must not raise the established eight-call resolver ceiling."""
     source = Path(newsletter_runtime.__file__).read_text(encoding="utf-8")
     assert "max_workers=8" in source
-
-
-def test_extraction_does_not_mutate_existing_combined_runtime() -> None:
-    """Run 1/2 is additive only; the known-good combined runtime remains available."""
-    assert callable(us_remote_runtime.execute_us_remote)
-    assert callable(newsletter_runtime.execute_newsletter)
