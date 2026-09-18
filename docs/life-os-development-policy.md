@@ -74,6 +74,22 @@ For a pre-scoped package, the Tech Lead owns architecture/context compilation. T
 - Targeted proof first; affected regression once; full suite once before landing.
 - If an implementer must rediscover broad architecture to execute a pre-scoped package, treat the handoff as defective and return to the Tech Lead rather than expanding context.
 
+### 4.2 Token-conserving implementation mode
+
+Codex/implementation-agent usage is a constrained engineering resource. For every pre-scoped implementation or production-incident correction, use the smallest context capable of changing and disproving the claim.
+
+- **Tech Lead compiles context; implementer codes.** The handoff must provide current base SHA, exact failure/claim, exact starting symbols/files, locked invariants, targeted proof, and stop conditions.
+- **No broad rediscovery by default.** Do not reread Notion, historical chats/handoffs, repository-wide architecture, unrelated tests, or Git history unless a concrete unresolved dependency requires it.
+- **Start from the failure path.** For production incidents, inspect the exact stack/call path first and expand one dependency at a time only when necessary.
+- **Targeted tests during diagnosis.** Run the reproducing regression and directly affected tests only. Full-suite proof belongs at the landing/integration gate, not every diagnostic iteration.
+- **Do not spend implementation-agent context on coordination evidence** that the Tech Lead can inspect directly: PR metadata, CI status, ownership, current coordination state, merge status, or long architecture-compliance narratives.
+- **Reuse established context.** Within one active incident/package, do not re-bootstrap unchanged canon or accepted behavior on every run.
+- **Compact handoff.** Ordinary correction output is limited to `ROOT CAUSE | FIX | FILES | TEST | RERUN READY`. Longer reports require a material architecture/safety issue or explicit Tech Lead request.
+- **One failure at a time.** Do not investigate later hypothetical defects while an earlier concrete production failure remains unresolved.
+- **Unexpected context expansion is a stop signal.** If the bounded assignment cannot be executed without broad repository/domain rediscovery, stop and return the missing dependency to the Tech Lead rather than consuming the wider context autonomously.
+
+The goal is not fewer proofs; it is to spend expensive implementation context only on evidence that can change the code or falsify the current claim.
+
 ## 5. Fast path
 
 1. Define the user-visible outcome.
