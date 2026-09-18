@@ -7,6 +7,7 @@ All identifiers, senders, subjects, and URLs below are synthetic.
 from __future__ import annotations
 
 import base64
+import inspect
 import json
 import os
 import tempfile
@@ -17,6 +18,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import lifeos.integrations.gmail as gmail_module
 from lifeos.core.http import HttpClient, HttpResponse
+from lifeos.core.runtime import RunContext
 from lifeos.jobs.identity import stable_job_key
 from lifeos.jobs.models import Company, Job, WorkMode
 from lifeos.jobs.us_remote_acquisition import AcquisitionResult, SourceHealth
@@ -82,6 +84,19 @@ def _b64(raw: str) -> str:
 
 def _epoch(dt: datetime) -> int:
     return int(dt.timestamp())
+
+
+def _admit_only_remaining_seconds(values: list[float]):
+    readings = list(values)
+
+    def _remaining(self):
+        if any(frame.function == "_admit_message" for frame in inspect.stack()):
+            if readings:
+                return readings.pop(0)
+            return values[-1]
+        return 45.0
+
+    return _remaining
 
 
 def _synthetic_web_observation() -> SourceVacancyObservation:
@@ -565,8 +580,16 @@ class HistoricalInboxRecoveryTests(unittest.TestCase):
 
     def test_healthy_partial_backlog_reports_mail_pass_with_pending_health(self) -> None:
         backend = HistoricalInboxBackend(extra_staged_job_alerts=3)
+        threshold = (
+            gmail_module.BACKLOG_MESSAGE_RUNTIME_RESERVE_SECONDS
+            + gmail_module.BACKLOG_PER_MESSAGE_ADMISSION_SECONDS
+        )
 
-        with patch.object(gmail_module, "BACKLOG_BATCH_SIZE", 2):
+        with patch.object(
+            RunContext,
+            "remaining_seconds",
+            _admit_only_remaining_seconds([threshold + 1.0, threshold + 1.0, threshold]),
+        ):
             exit_code, summary = self._run_capturing_summary(backend)
 
         self.assertEqual(exit_code, 1)
@@ -583,11 +606,29 @@ class HistoricalInboxRecoveryTests(unittest.TestCase):
 
     def test_final_drain_and_immediate_replay_report_empty_healthy_backlog(self) -> None:
         backend = HistoricalInboxBackend(extra_staged_job_alerts=3)
+        threshold = (
+            gmail_module.BACKLOG_MESSAGE_RUNTIME_RESERVE_SECONDS
+            + gmail_module.BACKLOG_PER_MESSAGE_ADMISSION_SECONDS
+        )
 
-        with patch.object(gmail_module, "BACKLOG_BATCH_SIZE", 2):
+        with patch.object(
+            RunContext,
+            "remaining_seconds",
+            _admit_only_remaining_seconds([threshold + 1.0, threshold + 1.0, threshold]),
+        ):
             self._run_capturing_summary(backend)
+        with patch.object(
+            RunContext,
+            "remaining_seconds",
+            _admit_only_remaining_seconds([threshold + 1.0, threshold]),
+        ):
             exit_code_2, summary_2 = self._run_capturing_summary(backend)
             processed_after_drain = tuple(backend.processed_ids)
+        with patch.object(
+            RunContext,
+            "remaining_seconds",
+            _admit_only_remaining_seconds([threshold]),
+        ):
             exit_code_3, summary_3 = self._run_capturing_summary(backend)
 
         self.assertEqual(exit_code_2, 1)

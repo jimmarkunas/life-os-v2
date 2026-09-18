@@ -267,7 +267,7 @@ class GmailMailboxTransport(Generic[T]):
 
         consume_bounded_backlog(
             enumerate_backlog=lambda: self.enumerate_unprocessed_ids(boundary_name),
-            batch_size=BACKLOG_BATCH_SIZE,
+            batch_size=None,
             process_batch=_hydrate_selected,
             mark_complete=lambda _message_id: None,
             admit_item=_admit_message,

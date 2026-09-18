@@ -8,7 +8,6 @@ import lifeos.integrations.gmail as gmail_module
 from lifeos.core.backlog import consume_bounded_backlog
 from lifeos.core.runtime import RunContext
 from lifeos.integrations.gmail import (
-    BACKLOG_BATCH_SIZE,
     BACKLOG_MESSAGE_RUNTIME_RESERVE_SECONDS,
     BACKLOG_PER_MESSAGE_ADMISSION_SECONDS,
     GmailMailboxTransport,
@@ -57,7 +56,7 @@ class BoundedBacklogHttp:
         raise AssertionError((method, url, kwargs))
 
 
-def test_fetch_unprocessed_enumerates_complete_backlog_but_hydrates_only_oldest_batch(monkeypatch) -> None:
+def test_fetch_unprocessed_admits_more_than_ten_when_deadline_reserve_allows(monkeypatch) -> None:
     monkeypatch.setattr(gmail_module, "sleep", lambda _seconds: None)
     http = BoundedBacklogHttp()
     mailbox = GmailMailboxTransport(
@@ -73,10 +72,11 @@ def test_fetch_unprocessed_enumerates_complete_backlog_but_hydrates_only_oldest_
     messages = mailbox.fetch_unprocessed(start, end, "J Newsletters")
 
     assert http.list_calls == 1
-    assert len(messages) == BACKLOG_BATCH_SIZE
-    assert http.detail_ids == [f"msg-{index:02d}" for index in range(1, BACKLOG_BATCH_SIZE + 1)]
+    assert len(messages) > 10
+    assert len(messages) == 25
+    assert http.detail_ids == [f"msg-{index:02d}" for index in range(1, 26)]
     assert [message.message_id for message in messages] == [
-        f"msg-{index:02d}" for index in range(1, BACKLOG_BATCH_SIZE + 1)
+        f"msg-{index:02d}" for index in range(1, 26)
     ]
 
 
