@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
+import lifeos.integrations.gmail as gmail_module
 from lifeos.core.http import HttpClient, HttpResponse
 from lifeos.jobs.identity import stable_job_key
 from lifeos.jobs.models import Company, Job, WorkMode
@@ -105,7 +106,12 @@ class HistoricalInboxBackend:
     so normal vs. historical-recovery windows are proven by the real query
     boundary, not by test-side bookkeeping."""
 
-    def __init__(self, *, existing_stable_key: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        existing_stable_key: str | None = None,
+        extra_staged_job_alerts: int = 0,
+    ) -> None:
         now = datetime.now(timezone.utc)
         old_job_alert_at = now - timedelta(hours=48)  # older than the 24h normal staging window
         self._messages = {
@@ -141,6 +147,20 @@ class HistoricalInboxBackend:
         self.metadata_fetch_ids: list[str] = []
         self.pages: dict[str, dict] = {}
         self._next_page = 1
+        for index in range(extra_staged_job_alerts):
+            message_id = f"msg-staged-job-alert-{index + 1}"
+            self._messages[message_id] = {
+                "sender": "alerts@jobright.example.invalid",
+                "subject": "Jobright daily jobs for you",
+                "received_at": old_job_alert_at + timedelta(minutes=index + 1),
+                "list_unsubscribe": True,
+                "body": _b64(
+                    "[Synthetic Labs\n90%\nSynthetic Historical Engineer\n"
+                    f"Remote](https://jobright.ai/jobs/info/historical-1)\nView more opportunities"
+                ),
+            }
+            self.routed_ids.insert(0, message_id)
+            self.inbox_removed_ids.append(message_id)
         if existing_stable_key:
             page_id = "page-existing-1"
             self.pages[page_id] = {
@@ -542,6 +562,73 @@ class HistoricalInboxRecoveryTests(unittest.TestCase):
         self.assertEqual(summary["jobs"]["dispositions"]["created"], 1)
         self.assertEqual(backend.processed_ids, ["msg-old-job-alert"])
         self.assertEqual(len(backend.pages), 1)
+
+    def test_healthy_partial_backlog_reports_mail_pass_with_pending_health(self) -> None:
+        backend = HistoricalInboxBackend(extra_staged_job_alerts=3)
+
+        with patch.object(gmail_module, "BACKLOG_BATCH_SIZE", 2):
+            exit_code, summary = self._run_capturing_summary(backend)
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(summary["status"], "DEGRADED")
+        self.assertEqual(summary["mail"]["status"], "PASS")
+        self.assertEqual(summary["mail"]["pending_source_messages"], 1)
+        self.assertGreater(summary["mail"]["oldest_pending_age_seconds"], 0)
+        self.assertEqual(summary["mail"]["processed"], 2)
+        self.assertEqual(summary["mail"]["processed_observations"], 2)
+        self.assertEqual(summary["mail"]["progress_messages"], 2)
+        self.assertTrue(summary["mail"]["cleanup_safe"])
+        self.assertEqual(summary["mail"]["backlog_error_codes"], [])
+        self.assertEqual(set(backend.processed_ids), {"msg-staged-job-alert-1", "msg-staged-job-alert-2"})
+
+    def test_final_drain_and_immediate_replay_report_empty_healthy_backlog(self) -> None:
+        backend = HistoricalInboxBackend(extra_staged_job_alerts=3)
+
+        with patch.object(gmail_module, "BACKLOG_BATCH_SIZE", 2):
+            self._run_capturing_summary(backend)
+            exit_code_2, summary_2 = self._run_capturing_summary(backend)
+            processed_after_drain = tuple(backend.processed_ids)
+            exit_code_3, summary_3 = self._run_capturing_summary(backend)
+
+        self.assertEqual(exit_code_2, 1)
+        self.assertEqual(summary_2["mail"]["status"], "PASS")
+        self.assertEqual(summary_2["mail"]["pending_source_messages"], 0)
+        self.assertIsNone(summary_2["mail"]["oldest_pending_age_seconds"])
+        self.assertEqual(summary_2["mail"]["processed"], 1)
+        self.assertTrue(summary_2["mail"]["cleanup_safe"])
+        self.assertEqual(set(backend.processed_ids), {
+            "msg-staged-job-alert-1",
+            "msg-staged-job-alert-2",
+            "msg-staged-job-alert-3",
+        })
+
+        self.assertEqual(exit_code_3, 1)
+        self.assertEqual(summary_3["mail"]["status"], "PASS")
+        self.assertEqual(summary_3["mail"]["pending_source_messages"], 0)
+        self.assertEqual(summary_3["mail"]["processed"], 0)
+        self.assertTrue(all(count == 0 for count in summary_3["jobs"]["dispositions"].values()))
+        self.assertEqual(tuple(backend.processed_ids), processed_after_drain)
+
+    def test_pending_backlog_with_cleanup_failure_reports_mail_degraded(self) -> None:
+        class ProcessedFailureBackend(HistoricalInboxBackend):
+            def _gmail(self, method, url, body) -> HttpResponse:
+                if method == "POST" and url.endswith("/modify"):
+                    payload = json.loads(body.decode("utf-8")) if body else {}
+                    if "label-processed" in (payload.get("addLabelIds") or []):
+                        return HttpResponse(500, {}, b'{"error":{"message":"synthetic processed failure"}}')
+                return super()._gmail(method, url, body)
+
+        backend = ProcessedFailureBackend(extra_staged_job_alerts=1)
+
+        exit_code, summary = self._run_capturing_summary(backend)
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(summary["mail"]["status"], "DEGRADED")
+        self.assertEqual(summary["mail"]["processed"], 0)
+        self.assertEqual(summary["mail"]["processed_errors"], 1)
+        self.assertEqual(summary["mail"]["pending_source_messages"], 1)
+        self.assertFalse(summary["mail"]["cleanup_safe"])
+        self.assertEqual(backend.processed_ids, [])
 
     def test_recovery_hours_must_be_bounded(self) -> None:
         backend = HistoricalInboxBackend()

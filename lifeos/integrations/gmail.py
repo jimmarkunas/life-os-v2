@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from threading import Lock
 from time import sleep
@@ -49,6 +50,12 @@ INBOX_METADATA_HEADERS = (
     "X-LifeOS-Source-Adapter",
     "X-LifeOS-Job-Source",
 )
+
+
+@dataclass(frozen=True, slots=True)
+class GmailNewsletterBacklogSnapshot:
+    pending_source_messages: int
+    oldest_pending_age_seconds: int | None
 # scan_window bounds concurrency (max_workers in-flight requests) but that
 # alone does not bound the per-minute call RATE against Gmail's 6,000
 # quota-units/min per-user ceiling: fast responses at even modest concurrency
@@ -187,6 +194,17 @@ class GmailMailboxTransport(Generic[T]):
             exclude_label_name=processed_label or None,
         )
         return tuple(reversed(ids))
+
+    def newsletter_backlog_snapshot(self, boundary_name: str, *, now: datetime) -> GmailNewsletterBacklogSnapshot:
+        if now.tzinfo is None:
+            raise ValueError("snapshot timestamp must be timezone-aware")
+        ids = self.enumerate_unprocessed_ids(boundary_name)
+        if not ids:
+            return GmailNewsletterBacklogSnapshot(0, None)
+        oldest = self._fetch_message_metadata_fields(ids[0])
+        received_at = oldest["received_at"]
+        age = max(0, int((now - received_at).total_seconds()))
+        return GmailNewsletterBacklogSnapshot(len(ids), age)
 
     def hydrate_messages(self, message_ids: Sequence[str]) -> tuple[RoutedNewsletterMessage, ...]:
         """Hydrate exactly the given (already-selected) message IDs. Never
