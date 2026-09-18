@@ -95,7 +95,7 @@ def _admit_only_remaining_seconds(values: list[float]):
             if readings:
                 return readings.pop(0)
             return values[-1]
-        return 45.0
+        return 285.0
 
     return _remaining
 
