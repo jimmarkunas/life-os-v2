@@ -20,9 +20,16 @@ from lifeos.integrations.gmail import GmailMailboxTransport
 from lifeos.integrations.notion import NotionTransport
 from lifeos.jobs.newsletter_adapter import HttpClientFetcher, NewsletterAdapterConfig, NewsletterJobsAdapter
 from lifeos.jobs.newsletter_feature import _adapt_all
+from lifeos.jobs.us_remote_runtime import browser_evidence, fallback_fetcher, load_registry, partition_observations
 from lifeos.mail.models import MailMessage
 from lifeos.newsletter.processor import NewsletterProcessor
 from scripts import run_us_remote_production as prod
+from scripts.run_newsletter_production import (
+    _exchange_gmail_access_token,
+    _load_private_policy,
+    _load_private_policy_from_notion,
+    _require_env,
+)
 
 
 def _args(argv: list[str]) -> argparse.Namespace:
@@ -46,20 +53,20 @@ def main(argv: list[str] | None = None) -> int:
     http = HttpClient()
     timings: dict[str, float] = {}
     try:
-        env = prod._require_env()
-        registry = prod._load_registry()
+        env = _require_env()
+        registry = load_registry()
         notion = NotionTransport(context=context, http=http, access_token=env["NOTION_API_TOKEN"])
         fixture = os.getenv("NEWSLETTER_PRIVATE_POLICY_PATH")
         if fixture:
-            lane, _lane_priority, fit_profile, market, newsletter_source_lane = prod._load_private_policy(fixture)
+            lane, _lane_priority, fit_profile, market, newsletter_source_lane = _load_private_policy(fixture)
         else:
-            lane, _lane_priority, fit_profile, market, newsletter_source_lane = prod._load_private_policy_from_notion(
+            lane, _lane_priority, fit_profile, market, newsletter_source_lane = _load_private_policy_from_notion(
                 context,
                 http,
                 notion,
                 notion_token=env["NOTION_API_TOKEN"],
             )
-        gmail_token = prod._exchange_gmail_access_token(
+        gmail_token = _exchange_gmail_access_token(
             context,
             http,
             client_id=env["GMAIL_OAUTH_CLIENT_ID"],
@@ -72,8 +79,8 @@ def main(argv: list[str] | None = None) -> int:
             access_token=gmail_token,
             message_factory=MailMessage,
         )
-        browser_evidence = prod._browser_evidence()
-        fallback_fetcher = prod._fallback_fetcher(context, browser_evidence)
+        browser_evidence_payload = browser_evidence()
+        fallback = fallback_fetcher(context, browser_evidence_payload)
         end = datetime.now(timezone.utc)
 
         started = perf_counter()
@@ -92,10 +99,10 @@ def main(argv: list[str] | None = None) -> int:
         web_result = prod.USRemoteAcquirer(
             context=context,
             http=http,
-            fallback_fetcher=fallback_fetcher,
+            fallback_fetcher=fallback,
         ).acquire(
             registry,
-            browser_evidence=browser_evidence,
+            browser_evidence=browser_evidence_payload,
             since=end - timedelta(hours=24),
             full_sweep=False,
             now=end,
@@ -103,12 +110,12 @@ def main(argv: list[str] | None = None) -> int:
         timings["web_acquire"] = round(perf_counter() - started, 3)
 
         started = perf_counter()
-        newsletter_to_resolve, newsletter_preexcluded = prod._partition_observations(
+        newsletter_to_resolve, newsletter_preexcluded = partition_observations(
             newsletter_observations,
             lane=lane,
             fit_profile=fit_profile,
         )
-        web_to_resolve, web_preexcluded = prod._partition_observations(
+        web_to_resolve, web_preexcluded = partition_observations(
             web_result.observations,
             lane=lane,
             fit_profile=fit_profile,
@@ -120,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
         newsletter_adapter = NewsletterJobsAdapter(
             NewsletterAdapterConfig(
                 fetcher=http_fetcher,
-                fallback_fetcher=fallback_fetcher,
+                fallback_fetcher=fallback,
                 fit_profile=fit_profile,
                 market=market,
                 source_lane=newsletter_source_lane,
@@ -129,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
         web_adapter = NewsletterJobsAdapter(
             NewsletterAdapterConfig(
                 fetcher=http_fetcher,
-                fallback_fetcher=fallback_fetcher,
+                fallback_fetcher=fallback,
                 fit_profile=fit_profile,
                 market=market,
                 source_lane="US Web",
@@ -164,7 +171,7 @@ def main(argv: list[str] | None = None) -> int:
             "web_preexcluded": len(web_preexcluded),
             "web_terminal_attempts": len(web_to_resolve),
             "web_candidates": len(web_candidates),
-            "browser_fallback_available": fallback_fetcher is not None,
+            "browser_fallback_available": fallback is not None,
             "timings": timings,
             "writes": 0,
         }, sort_keys=True))

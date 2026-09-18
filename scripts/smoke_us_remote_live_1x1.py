@@ -16,11 +16,18 @@ from lifeos.jobs.newsletter_adapter import HttpClientFetcher, NewsletterAdapterC
 from lifeos.jobs.newsletter_contract import Disposition, ingest
 from lifeos.jobs.newsletter_feature import _adapt_all
 from lifeos.jobs.notion_repository import NotionCareerRepository, NotionCareerRepositoryConfig
+from lifeos.jobs.us_remote_runtime import browser_evidence, counts, fallback_fetcher, load_registry, partition_observations
 from lifeos.mail.classifier import DeterministicMailClassifier
 from lifeos.mail.models import MailClass, MailMessage
 from lifeos.newsletter.models import ParseState
 from lifeos.newsletter.parsers import parse_message
 from scripts import run_us_remote_production as prod
+from scripts.run_newsletter_production import (
+    _exchange_gmail_access_token,
+    _load_private_policy,
+    _load_private_policy_from_notion,
+    _require_env,
+)
 
 
 class Live1x1Diagnostic(RuntimeError):
@@ -69,18 +76,18 @@ def main() -> int:
     phase = "bootstrap"
     try:
         phase = "bootstrap"
-        env = prod._require_env()
-        registry = prod._load_registry()
+        env = _require_env()
+        registry = load_registry()
         notion = NotionTransport(context=context, http=http, access_token=env["NOTION_API_TOKEN"])
         fixture = os.getenv("NEWSLETTER_PRIVATE_POLICY_PATH")
         if fixture:
-            lane, lane_priority, fit_profile, market, newsletter_source_lane = prod._load_private_policy(fixture)
+            lane, lane_priority, fit_profile, market, newsletter_source_lane = _load_private_policy(fixture)
         else:
-            lane, lane_priority, fit_profile, market, newsletter_source_lane = prod._load_private_policy_from_notion(
+            lane, lane_priority, fit_profile, market, newsletter_source_lane = _load_private_policy_from_notion(
                 context, http, notion, notion_token=env["NOTION_API_TOKEN"]
             )
         phase = "gmail-token"
-        gmail_token = prod._exchange_gmail_access_token(
+        gmail_token = _exchange_gmail_access_token(
             context, http,
             client_id=env["GMAIL_OAUTH_CLIENT_ID"],
             client_secret=env["GMAIL_OAUTH_CLIENT_SECRET"],
@@ -89,8 +96,8 @@ def main() -> int:
         gmail = GmailMailboxTransport(context=context, http=http, access_token=gmail_token, message_factory=MailMessage)
         end = datetime.now(timezone.utc)
         inbox_start = end - timedelta(hours=prod.MAX_INBOX_STAGING_HOURS)
-        browser_evidence = prod._browser_evidence()
-        fallback_fetcher = prod._fallback_fetcher(context, browser_evidence)
+        browser_evidence_payload = browser_evidence()
+        fallback = fallback_fetcher(context, browser_evidence_payload)
 
         started = perf_counter()
         phase = "newsletter-inbox-acquire"
@@ -104,19 +111,19 @@ def main() -> int:
 
         started = perf_counter()
         phase = "web-acquire"
-        web_result = prod.USRemoteAcquirer(context=context, http=http, fallback_fetcher=fallback_fetcher).acquire(
+        web_result = prod.USRemoteAcquirer(context=context, http=http, fallback_fetcher=fallback).acquire(
             registry,
-            browser_evidence=browser_evidence,
+            browser_evidence=browser_evidence_payload,
             since=end - timedelta(hours=24),
             full_sweep=False,
             now=end,
         )
         timings["web_acquire"] = round(perf_counter() - started, 3)
 
-        newsletter_to_resolve, newsletter_preexcluded = prod._partition_observations(
+        newsletter_to_resolve, newsletter_preexcluded = partition_observations(
             newsletter_observations, lane=lane, fit_profile=fit_profile
         )
-        web_to_resolve, _ = prod._partition_observations(web_result.observations, lane=lane, fit_profile=fit_profile)
+        web_to_resolve, _ = partition_observations(web_result.observations, lane=lane, fit_profile=fit_profile)
         if not web_to_resolve:
             raise RuntimeError("no eligible Web candidate available for 1x1 proof")
         web_to_resolve = web_to_resolve[:1]
@@ -127,11 +134,11 @@ def main() -> int:
         )
         http_fetcher = HttpClientFetcher(http=http, context=context)
         newsletter_adapter = NewsletterJobsAdapter(NewsletterAdapterConfig(
-            fetcher=http_fetcher, fallback_fetcher=fallback_fetcher, fit_profile=fit_profile,
+            fetcher=http_fetcher, fallback_fetcher=fallback, fit_profile=fit_profile,
             market=market, source_lane=newsletter_source_lane,
         ))
         web_adapter = NewsletterJobsAdapter(NewsletterAdapterConfig(
-            fetcher=http_fetcher, fallback_fetcher=fallback_fetcher, fit_profile=fit_profile,
+            fetcher=http_fetcher, fallback_fetcher=fallback, fit_profile=fit_profile,
             market=market, source_lane="US Web",
         ))
 
@@ -181,7 +188,7 @@ def main() -> int:
             "newsletter_processed": processed,
             "web_candidates": 1,
             "durable_job_writes_read_back": durable,
-            "dispositions": prod._counts(newsletter_results + web_results),
+            "dispositions": counts(newsletter_results + web_results),
             "timings": timings,
         }, sort_keys=True))
         return 0 if status == "PASS" else 1

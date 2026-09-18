@@ -150,18 +150,18 @@ def install_common(monkeypatch):
         fake_gmail_box["gmail"] = fake
         return fake
 
-    monkeypatch.setattr(smoke.prod, "_require_env", lambda: {
+    monkeypatch.setattr(smoke, "_require_env", lambda: {
         "NOTION_API_TOKEN": "synthetic-token",
         "GMAIL_OAUTH_CLIENT_ID": "synthetic-client",
         "GMAIL_OAUTH_CLIENT_SECRET": "synthetic-secret",
         "GMAIL_OAUTH_REFRESH_TOKEN": "synthetic-refresh",
         "NOTION_JOB_LEDGER_DATA_SOURCE_ID": "synthetic-data-source",
     })
-    monkeypatch.setattr(smoke.prod, "_load_registry", lambda: {})
-    monkeypatch.setattr(smoke.prod, "_browser_evidence", lambda: None)
-    monkeypatch.setattr(smoke.prod, "_fallback_fetcher", lambda context, evidence: None)
-    monkeypatch.setattr(smoke.prod, "_load_private_policy_from_notion", lambda *args, **kwargs: (object(), {}, object(), "US", "Newsletter"))
-    monkeypatch.setattr(smoke.prod, "_exchange_gmail_access_token", lambda *args, **kwargs: "synthetic-access")
+    monkeypatch.setattr(smoke, "load_registry", lambda: {})
+    monkeypatch.setattr(smoke, "browser_evidence", lambda: None)
+    monkeypatch.setattr(smoke, "fallback_fetcher", lambda context, evidence: None)
+    monkeypatch.setattr(smoke, "_load_private_policy_from_notion", lambda *args, **kwargs: (object(), {}, object(), "US", "Newsletter"))
+    monkeypatch.setattr(smoke, "_exchange_gmail_access_token", lambda *args, **kwargs: "synthetic-access")
     monkeypatch.setattr(smoke, "NotionTransport", lambda **kwargs: object())
     monkeypatch.setattr(smoke, "GmailMailboxTransport", gmail_factory)
     monkeypatch.setattr(smoke.prod, "USRemoteAcquirer", FakeAcquirer)
@@ -170,7 +170,7 @@ def install_common(monkeypatch):
     monkeypatch.setattr(smoke, "HttpClientFetcher", lambda **kwargs: object())
     monkeypatch.setattr(smoke, "NewsletterJobsAdapter", lambda config: object())
     monkeypatch.setattr(smoke, "NewsletterAdapterConfig", lambda **kwargs: object())
-    monkeypatch.setattr(smoke.prod, "_partition_observations", lambda observations, **kwargs: (list(observations), []))
+    monkeypatch.setattr(smoke, "partition_observations", lambda observations, **kwargs: (list(observations), []))
     monkeypatch.setattr(smoke, "_adapt_all", lambda observations, **kwargs: list(observations))
     return fake_gmail_box
 
