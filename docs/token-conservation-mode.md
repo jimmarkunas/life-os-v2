@@ -1,0 +1,1 @@
+Canonical rules are in `docs/life-os-development-policy.md` §4.2. This pointer exists only to make the new mode discoverable in this policy PR and should be removed before merge if redundant.
