@@ -2,12 +2,12 @@
 
 MIGRATE/REFACTOR from v1 `jobs/ledger_core.py`. The append-only, human-state-
 preserving merge semantics are proven and reused: absence never deletes,
-closure requires exact evidence, and human-owned fields (applied,
-applied_on, first_surfaced) are never overwritten by a re-run. v1's
+closure requires exact evidence, and first_surfaced is never overwritten by a
+re-run. v1's
 duplicated per-lane RoutePolicy constants (SCALE_UP/SKILLED_WORKER/...) are
 retired here -- that was Jim-specific production policy hardcoded into a
-public-shaped module. The state machine itself (New -> Review -> Apply ->
-Applied -> Historical -> Expired) is source-agnostic and kept.
+public-shaped module. The state machine itself (New -> Review -> Historical ->
+Expired) is source-agnostic and kept.
 """
 from __future__ import annotations
 
@@ -21,8 +21,6 @@ from lifeos.jobs.models import AdmissionStatus, Company, FitAuthority, Job, JobO
 class LifecycleStatus(str, Enum):
     NEW = "new"
     REVIEW = "review"
-    APPLY = "apply"
-    APPLIED = "applied"
     HISTORICAL = "historical"
     EXPIRED = "expired"
 
@@ -36,8 +34,6 @@ class JobLedgerRecord:
 
     job: Job
     status: LifecycleStatus
-    applied: bool
-    applied_on: date | None
     first_surfaced: date
     review_ready_on: date
     last_seen: date
@@ -50,8 +46,6 @@ def new_record(job: Job, *, run_date: date) -> JobLedgerRecord:
     return JobLedgerRecord(
         job=job,
         status=status,
-        applied=False,
-        applied_on=None,
         first_surfaced=run_date,
         review_ready_on=run_date + timedelta(days=1),
         last_seen=run_date,
@@ -127,8 +121,8 @@ def merge_canonical_observation(existing: Job, incoming: Job) -> Job:
 
 def apply_observation(existing: JobLedgerRecord, job: Job, *, run_date: date) -> JobLedgerRecord:
     """Merge a new observation of the same stable_job_key into an existing
-    record. Human-owned fields (applied, applied_on, first_surfaced) are
-    never overwritten by this call -- only Career-owned fields (the
+    record. Human-owned first_surfaced is never overwritten by this call --
+    only Career-owned fields (the
     canonical Job snapshot, last_seen, live, and status derived from
     admission) advance."""
     if existing.job.stable_job_key != job.stable_job_key:
@@ -137,11 +131,7 @@ def apply_observation(existing: JobLedgerRecord, job: Job, *, run_date: date) ->
     job = merge_canonical_observation(existing.job, job)
     live = job.admission_status != AdmissionStatus.EXCLUDED
 
-    if existing.applied:
-        status = LifecycleStatus.APPLIED
-    elif existing.status == LifecycleStatus.APPLY and live:
-        status = LifecycleStatus.APPLY
-    elif live:
+    if live:
         status = LifecycleStatus.REVIEW if run_date >= existing.review_ready_on else LifecycleStatus.NEW
     else:
         status = LifecycleStatus.HISTORICAL
@@ -161,16 +151,5 @@ def close_definitively(record: JobLedgerRecord) -> JobLedgerRecord:
     return replace(
         record,
         live=False,
-        status=LifecycleStatus.APPLIED if record.applied else LifecycleStatus.EXPIRED,
-    )
-
-
-def mark_applied(record: JobLedgerRecord, *, run_date: date) -> JobLedgerRecord:
-    """The Applied flag is submission authority: once set, it is preserved
-    across every future merge regardless of admission status."""
-    return replace(
-        record,
-        applied=True,
-        applied_on=record.applied_on or run_date,
-        status=LifecycleStatus.APPLIED,
+        status=LifecycleStatus.EXPIRED,
     )

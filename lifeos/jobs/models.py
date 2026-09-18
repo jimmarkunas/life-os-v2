@@ -2,8 +2,7 @@
 
 Wave 1 scope: Company, JobObservation, and the normalized candidate a discovery
 source produces before it reaches identity/dedupe/qualification. Job,
-Application, Interview, Offer, and Employment are declared now as the shape
-future waves extend, but carry no persistence/lifecycle logic yet.
+Future pursuit models belong to later Career packages, not Jobs discovery.
 
 This module owns *shape* only. Identity, qualification, and lifecycle policy
 live in their own modules (identity.py, qualification.py, lifecycle.py) so a
@@ -137,38 +136,3 @@ class Job:
     fit_authority: FitAuthority = FitAuthority.NON_AUTHORITATIVE
     source_providers: tuple[str, ...] = field(default_factory=tuple)
     source_types: tuple[str, ...] = field(default_factory=tuple)
-
-
-@dataclass(frozen=True)
-class Application:
-    """Declared for future-wave shape stability. No lifecycle logic here yet."""
-
-    opportunity_key: str
-    applied_on: date | None
-    applied: bool = False
-
-
-@dataclass(frozen=True)
-class Interview:
-    """Declared for future-wave shape stability."""
-
-    opportunity_key: str
-    round_label: str
-    scheduled_on: date | None
-
-
-@dataclass(frozen=True)
-class OfferDecision:
-    """Declared for future-wave shape stability."""
-
-    opportunity_key: str
-    outcome: str | None
-    decided_on: date | None
-
-
-@dataclass(frozen=True)
-class Employment:
-    """Declared for future-wave shape stability."""
-
-    opportunity_key: str
-    started_on: date | None

@@ -219,18 +219,15 @@ def test_admission_status_and_work_mode_use_canonical_labels():
     assert props["Work Mode"]["select"]["name"] == "Remote"
 
 
-def test_applied_state_survives_upsert_read_back():
-    from lifeos.jobs.lifecycle import mark_applied
-
+def test_jobs_writes_omit_pursuit_state():
     context = RunContext.start(timeout_seconds=45.0, now=datetime.now(timezone.utc))
     http = StrictSchemaNotionHttp()
     transport = NotionTransport(context=context, http=http, access_token="synthetic-token")
     repo = NotionCareerRepository(transport=transport, config=NotionCareerRepositoryConfig(data_source_id="synthetic-ds"))
     job = Job(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED, fit=80, fit_authority=FitAuthority.AUTHORITATIVE)
-    record = mark_applied(new_record(job, run_date=RUN_DATE), run_date=RUN_DATE)
-    persisted = repo.upsert(record)
-    assert persisted.applied is True
-    assert persisted.applied_on == RUN_DATE
+    props = _record_to_properties(new_record(job, run_date=RUN_DATE))
+    assert "Applied" not in props
+    assert "Applied On" not in props
 
 
 # --- BLOCKER 2: >50 keys chunked, no full scan -------------------------------
