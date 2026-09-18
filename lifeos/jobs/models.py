@@ -1,8 +1,9 @@
 """Shared Career/Jobs domain model.
 
 Wave 1 scope: Company, JobObservation, and the normalized candidate a discovery
-source produces before it reaches identity/dedupe/qualification. Job,
-Future pursuit models belong to later Career packages, not Jobs discovery.
+source produces before it reaches identity/dedupe/qualification. Job is the
+canonical deduplicated Jobs model. Only future pursuit models belong to later
+Career packages, not Jobs discovery.
 
 This module owns *shape* only. Identity, qualification, and lifecycle policy
 live in their own modules (identity.py, qualification.py, lifecycle.py) so a

@@ -103,7 +103,12 @@ def reconcile(
         source_types = tuple(sorted({source_type for o in group for source_type in o.source_types}))
         eligible_lanes = tuple(
             sorted(
-                {lane for o in group for lane in o.eligible_lanes},
+                {
+                    lane
+                    for o in group
+                    if o.admission_status != AdmissionStatus.EXCLUDED
+                    for lane in o.eligible_lanes
+                },
                 key=lambda lane: (lane_priority[lane], lane),
             )
         )

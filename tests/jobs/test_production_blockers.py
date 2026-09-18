@@ -97,6 +97,7 @@ CANONICAL_LEDGER_PROPERTY_TYPES = {
     "Source Provider": "rich_text",
     "Source Types": "multi_select",
     "Eligible Lanes": "multi_select",
+    "Visible Lane": "select",
     "Applied": "checkbox",
     "Applied On": "date",
     "First Surfaced": "date",
@@ -146,6 +147,8 @@ class StrictSchemaNotionHttp:
             expected_type = CANONICAL_LEDGER_PROPERTY_TYPES[name]
             actual_type = next(iter(value.keys()))
             assert actual_type == expected_type, f"{name}: expected {expected_type}, got {actual_type}"
+            if actual_type == "select" and isinstance(value["select"], dict):
+                assert value["select"]["name"] is not None, f"{name}: select name must not be null"
             if name == "Admission Status":
                 label = value["select"]["name"]
                 assert label in CANONICAL_ADMISSION_LABELS, f"non-canonical Admission Status label: {label!r}"
@@ -190,6 +193,7 @@ def test_no_emitted_property_is_outside_canonical_schema():
     record = new_record(Job(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED, fit=80, fit_authority=FitAuthority.AUTHORITATIVE), run_date=RUN_DATE)
     props = _record_to_properties(record)
     assert set(props) <= set(CANONICAL_LEDGER_PROPERTY_TYPES)
+    assert props["Visible Lane"] == {"select": None}
     # Blocker 1's originally-invented properties must never appear.
     for invented in ("Compensation Minimum", "Source Lane", "Provider Job ID", "Description",
                       "Source Lanes", "Aliases", "Lifecycle Status", "Review Ready On", "Live"):

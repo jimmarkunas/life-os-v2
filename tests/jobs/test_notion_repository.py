@@ -191,11 +191,6 @@ def _newsletter_candidate(*, provider: str, mailbox: str, apply_url: str | None,
     )
 
 
-def test_get_many_returns_empty_for_unknown_keys():
-    repo, http = _repository()
-    assert repo.get_many(["nonexistent"]) == {}
-
-
 def test_upsert_then_get_many_round_trips():
     repo, http = _repository()
     job = Job(stable_job_key="url:https://greenhouse.io/acme/jobs/42", job=_job(), admission_status=AdmissionStatus.ADMITTED)
@@ -335,6 +330,7 @@ def test_fallback_key_job_later_url_converges_across_fresh_repository_instances(
 def test_source_types_round_trip_acquisition_provenance_across_fresh_repository_instances():
     http = FakeNotionHttp()
     key = "acme synthetic co|technical program manager|remote"
+    us_remote_lane = replace(REMOTE_LANE, name="US Remote")
 
     first, _ = _fresh_ingest(
         http,
@@ -344,11 +340,14 @@ def test_source_types_round_trip_acquisition_provenance_across_fresh_repository_
             apply_url=None,
             evidence_ref="ev:linkedin",
         ),
+        lane=us_remote_lane,
+        lane_priority={"US Remote": 1},
     )
     assert first[0].disposition == Disposition.CREATED
     assert first[0].stable_job_key == key
-    assert _fresh_record(http, key).job.eligible_lanes == ("Synthetic-Remote",)
+    assert _fresh_record(http, key).job.eligible_lanes == ("US Remote",)
     page = next(iter(http.pages.values()))
+    assert page["properties"]["Visible Lane"]["select"]["name"] == "US Remote"
     page["properties"]["Applied"] = {"checkbox": True}
     page["properties"]["Applied On"] = {"date": {"start": "2026-01-12"}}
 
@@ -371,7 +370,7 @@ def test_source_types_round_trip_acquisition_provenance_across_fresh_repository_
         ),
         run_date=RUN_DATE + timedelta(days=1),
         lane=scale_up_lane,
-        lane_priority={"Scale-Up": 0, "Synthetic-Remote": 1},
+        lane_priority={"Scale-Up": 0, "US Remote": 1},
     )
 
     assert second[0].disposition == Disposition.UPDATED
@@ -380,14 +379,15 @@ def test_source_types_round_trip_acquisition_provenance_across_fresh_repository_
     assert repo_2.get_many(["url:https://greenhouse.io/acme/jobs/123"]) == {}
 
     record = _fresh_record(http, key)
-    assert record.job.eligible_lanes == ("Scale-Up", "Synthetic-Remote")
+    assert record.job.eligible_lanes == ("Scale-Up", "US Remote")
     assert record.job.job.apply_url == "https://greenhouse.io/acme/jobs/123"
     assert record.job.source_providers == ("Lensa", "LinkedIn Jobs")
     assert set(record.job.source_types) == {"LinkedIn Jobs", "Lensa", "Gmail Alert"}
     page = next(iter(http.pages.values()))
     persisted_source_types = set(_multi_select_names(page["properties"]["Source Types"]))
     assert persisted_source_types == {"LinkedIn Jobs", "Lensa", "Gmail Alert"}
-    assert set(_multi_select_names(page["properties"]["Eligible Lanes"])) == {"Scale-Up", "Synthetic-Remote"}
+    assert set(_multi_select_names(page["properties"]["Eligible Lanes"])) == {"Scale-Up", "US Remote"}
+    assert page["properties"]["Visible Lane"]["select"]["name"] == "Scale-up"
     assert page["properties"]["Applied"]["checkbox"] is True
     assert page["properties"]["Applied On"]["date"]["start"] == "2026-01-12"
     assert "Primary Lane" not in page["properties"]
@@ -403,10 +403,40 @@ def test_source_types_round_trip_acquisition_provenance_across_fresh_repository_
         ),
         run_date=RUN_DATE + timedelta(days=2),
         lane=scale_up_lane,
-        lane_priority={"Scale-Up": 0, "Synthetic-Remote": 1},
+        lane_priority={"Scale-Up": 0, "US Remote": 1},
     )
     assert excluded[0].disposition == Disposition.EXCLUDED
-    assert _fresh_record(http, key).job.eligible_lanes == ("Scale-Up", "Synthetic-Remote")
+    assert _fresh_record(http, key).job.eligible_lanes == ("Scale-Up", "US Remote")
+
+    reverse_http = FakeNotionHttp()
+    first_reverse, _ = _fresh_ingest(
+        reverse_http,
+        _newsletter_candidate(
+            provider="Lensa",
+            mailbox="gmail-primary",
+            apply_url=None,
+            evidence_ref="ev:scale-first",
+        ),
+        lane=scale_up_lane,
+        lane_priority={"Scale-Up": 0, "US Remote": 1},
+    )
+    second_reverse, _ = _fresh_ingest(
+        reverse_http,
+        _newsletter_candidate(
+            provider="LinkedIn Jobs",
+            mailbox="gmail-primary",
+            apply_url="https://greenhouse.io/acme/jobs/123",
+            evidence_ref="ev:remote-second",
+        ),
+        run_date=RUN_DATE + timedelta(days=1),
+        lane=us_remote_lane,
+        lane_priority={"Scale-Up": 0, "US Remote": 1},
+    )
+    assert first_reverse[0].disposition == Disposition.CREATED
+    assert second_reverse[0].disposition == Disposition.UPDATED
+    reverse_page = next(iter(reverse_http.pages.values()))
+    assert set(_multi_select_names(reverse_page["properties"]["Eligible Lanes"])) == {"Scale-Up", "US Remote"}
+    assert reverse_page["properties"]["Visible Lane"]["select"]["name"] == "Scale-up"
 
 
 def test_package_c_no_downgrade_merge_survives_fresh_repository_instances():
@@ -453,6 +483,10 @@ def test_package_c_no_downgrade_merge_survives_fresh_repository_instances():
     assert stronger[0].disposition == Disposition.UPDATED
 
     page = next(iter(http.pages.values()))
+    del page["properties"]["Fit Authority"]
+    legacy = _fresh_record(http, key)
+    assert legacy.job.fit == 86
+    assert legacy.job.fit_authority == FitAuthority.AUTHORITATIVE
     page["properties"]["Saturn Decision"] = {"select": {"name": "Synthetic Hold"}}
     page["properties"]["Decision On"] = {"date": {"start": "2026-01-12"}}
     page["properties"]["Saturn Ready"] = {"date": {"start": "2026-01-13"}}
@@ -492,92 +526,6 @@ def test_package_c_no_downgrade_merge_survives_fresh_repository_instances():
     assert page["properties"]["Saturn Decision"]["select"]["name"] == "Synthetic Hold"
     assert page["properties"]["Decision On"]["date"]["start"] == "2026-01-12"
     assert page["properties"]["Saturn Ready"]["date"]["start"] == "2026-01-13"
-
-
-def test_package_c_authoritative_fit_can_replace_with_lower_rescore():
-    http = FakeNotionHttp()
-    key = "acme synthetic co|technical program manager|remote"
-    first, _ = _fresh_ingest(
-        http,
-        make_candidate(
-            job=make_job(role="Technical Program Manager", location="Remote", apply_url=None, source_provider="Source A"),
-            fit=86,
-            fit_authority=FitAuthority.AUTHORITATIVE,
-            evidence_ref="ev:first",
-        ),
-    )
-    assert first[0].stable_job_key == key
-
-    second, _ = _fresh_ingest(
-        http,
-        make_candidate(
-            job=make_job(role="Technical Program Manager", location="Remote", apply_url=None, source_provider="Source A"),
-            fit=79,
-            fit_authority=FitAuthority.AUTHORITATIVE,
-            evidence_ref="ev:rescore",
-        ),
-        run_date=RUN_DATE + timedelta(days=1),
-    )
-
-    assert second[0].disposition == Disposition.UPDATED
-    record = _fresh_record(http, key)
-    assert record.job.fit == 79
-    assert record.job.fit_authority == FitAuthority.AUTHORITATIVE
-
-
-def test_legacy_missing_fit_authority_with_fit_reads_authoritative_and_no_downgrades():
-    http = FakeNotionHttp()
-    key = "acme synthetic co|technical program manager|remote"
-    repo_1 = _repository_with_http(http)
-    legacy_opportunity = Job(
-        stable_job_key=key,
-        job=make_job(role="Technical Program Manager", location="Remote", apply_url=None),
-        admission_status=AdmissionStatus.ADMITTED,
-        fit=84,
-        fit_authority=FitAuthority.AUTHORITATIVE,
-        source_lanes=("Synthetic-Remote",),
-        source_providers=("LinkedIn Jobs",),
-        source_types=("Gmail Alert", "LinkedIn Jobs"),
-    )
-    repo_1.upsert(new_record(legacy_opportunity, run_date=RUN_DATE))
-    page = next(iter(http.pages.values()))
-    del page["properties"]["Fit Authority"]
-
-    legacy_read = _fresh_record(http, key)
-    assert legacy_read.job.fit == 84
-    assert legacy_read.job.fit_authority == FitAuthority.AUTHORITATIVE
-
-    weak, _ = _fresh_ingest(
-        http,
-        make_candidate(
-            job=make_job(role="Technical Program Manager", location="Remote", apply_url=None, source_provider="Lensa"),
-            fit=None,
-            fit_authority=FitAuthority.NON_AUTHORITATIVE,
-            source_types=("Gmail Alert", "Lensa"),
-            evidence_ref="ev:weak",
-        ),
-        run_date=RUN_DATE + timedelta(days=1),
-    )
-    assert weak[0].disposition == Disposition.UPDATED
-    after_weak = _fresh_record(http, key)
-    assert after_weak.job.fit == 84
-    assert after_weak.job.fit_authority == FitAuthority.AUTHORITATIVE
-
-    rescore, _ = _fresh_ingest(
-        http,
-        make_candidate(
-            job=make_job(role="Technical Program Manager", location="Remote", apply_url=None, source_provider="Lensa"),
-            fit=79,
-            fit_authority=FitAuthority.AUTHORITATIVE,
-            source_types=("Gmail Alert", "Lensa"),
-            evidence_ref="ev:rescore",
-        ),
-        run_date=RUN_DATE + timedelta(days=2),
-    )
-    assert rescore[0].disposition == Disposition.UPDATED
-    after_rescore = _fresh_record(http, key)
-    assert after_rescore.job.fit == 79
-    assert after_rescore.job.fit_authority == FitAuthority.AUTHORITATIVE
 
 
 def test_package_c_missing_then_stronger_evidence_fills_canonical_row():

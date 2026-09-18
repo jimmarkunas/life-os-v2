@@ -170,7 +170,9 @@ def ingest(
                 fit=candidate.fit,
                 fit_authority=candidate.fit_authority,
                 source_types=candidate.source_types,
-                eligible_lanes=(lane.name,),
+                eligible_lanes=(lane.name,)
+                if qualification.admission_status != AdmissionStatus.EXCLUDED
+                else (),
                 admission_status=qualification.admission_status,
             )
         )

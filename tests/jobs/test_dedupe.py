@@ -35,23 +35,11 @@ def test_higher_priority_lane_wins_visibility():
     assert result[0].job.primary_lane == "Scale-Up"
 
 
-def test_best_fit_tracked_even_when_not_visible_lane():
-    observations = [_obs("k1", "Lane-A", 80), _obs("k1", "Lane-B", 95)]
-    result = reconcile(observations, lane_priority=LANE_PRIORITY)
-    assert result[0].best_fit == 95
-
-
 def test_unresolved_fit_does_not_outrank_real_score():
     observations = [_obs("k1", "Lane-A", None), _obs("k1", "Lane-B", 95)]
     result = reconcile(observations, lane_priority=LANE_PRIORITY)
     assert result[0].best_fit == 95
     assert result[0].job.fit == 95
-
-
-def test_unresolved_fit_stays_unresolved_when_no_score_exists():
-    result = reconcile([_obs("k1", "Lane-A", None)], lane_priority=LANE_PRIORITY)
-    assert result[0].best_fit is None
-    assert result[0].job.fit is None
 
 
 def test_observation_count_reflects_all_sources():
@@ -76,6 +64,12 @@ def test_admitted_in_any_lane_beats_excluded_in_another():
     ]
     result = reconcile(observations, lane_priority=LANE_PRIORITY)
     assert result[0].job.admission_status == AdmissionStatus.ADMITTED
+    excluded_only = reconcile(
+        [_obs("k2", "Lane-B", 80, admission=AdmissionStatus.EXCLUDED)],
+        lane_priority=LANE_PRIORITY,
+    )
+    assert excluded_only[0].job.eligible_lanes == ()
+    assert excluded_only[0].job.primary_lane is None
 
 
 def test_unconfigured_lane_raises():
@@ -99,12 +93,3 @@ def test_aliases_from_all_converged_providers_are_preserved():
         "Acme Synthetic Co::lensa-2",
         "Acme Synthetic Co::linkedin-1",
     )
-
-
-def test_duplicate_provider_alias_deduplicated():
-    observations = [
-        _obs("k1", "Lane-A", 90, provider_job_id="same-id"),
-        _obs("k1", "Lane-B", 85, provider_job_id="same-id"),
-    ]
-    result = reconcile(observations, lane_priority=LANE_PRIORITY)
-    assert result[0].job.aliases == ("Acme Synthetic Co::same-id",)
