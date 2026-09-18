@@ -10,14 +10,14 @@ that is Jim-specific production policy. Lane priority is now caller-supplied.
 
 This module does not qualify or score. It receives observations that have
 already passed qualify() (see qualification.py) for their own lane and
-collapses same-identity observations into one canonical Opportunity.
+collapses same-identity observations into one canonical Job.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
 from lifeos.jobs.identity import provider_alias
-from lifeos.jobs.models import AdmissionStatus, FitAuthority, Job, Opportunity
+from lifeos.jobs.models import AdmissionStatus, FitAuthority, Job, JobObservation
 
 
 @dataclass(frozen=True)
@@ -26,7 +26,7 @@ class LaneObservation:
 
     stable_job_key: str
     lane: str
-    job: Job
+    job_observation: JobObservation
     fit: int | None
     admission_status: AdmissionStatus
     fit_authority: FitAuthority = FitAuthority.NON_AUTHORITATIVE
@@ -34,8 +34,8 @@ class LaneObservation:
 
 
 @dataclass(frozen=True)
-class ReconciledOpportunity:
-    opportunity: Opportunity
+class ReconciledJob:
+    job: Job
     source_lanes: tuple[str, ...]
     observation_count: int
     best_fit: int | None
@@ -47,8 +47,8 @@ def _fit_rank(fit: int | None) -> int:
 
 def _strongest_url(observations: list[LaneObservation]) -> str | None:
     for obs in observations:
-        if obs.job.apply_url:
-            return obs.job.apply_url
+        if obs.job_observation.apply_url:
+            return obs.job_observation.apply_url
     return None
 
 
@@ -67,8 +67,8 @@ def _best_fit(observations: list[LaneObservation]) -> tuple[int | None, FitAutho
 
 def reconcile(
     observations: list[LaneObservation], *, lane_priority: dict[str, int]
-) -> list[ReconciledOpportunity]:
-    """Converge same-identity observations into one Opportunity per key.
+) -> list[ReconciledJob]:
+    """Converge same-identity observations into one Job per key.
 
     `lane_priority` is caller-supplied (lower sorts first / becomes visible)
     so this module carries no hardcoded product policy. Every input
@@ -83,31 +83,31 @@ def reconcile(
             raise ValueError(f"observation lane has no configured priority: {obs.lane}")
         grouped.setdefault(obs.stable_job_key, []).append(obs)
 
-    reconciled: list[ReconciledOpportunity] = []
+    reconciled: list[ReconciledJob] = []
     for key, group in grouped.items():
         ordered = sorted(group, key=lambda o: (lane_priority[o.lane], -_fit_rank(o.fit), o.lane))
         visible = ordered[0]
         best_fit, fit_authority = _best_fit(ordered)
         source_lanes = tuple(sorted({o.lane for o in group}, key=lambda lane: (lane_priority[lane], lane)))
 
-        merged_job = visible.job
+        merged_job_observation = visible.job_observation
         strongest_url = _strongest_url(ordered)
-        if strongest_url and strongest_url != merged_job.apply_url:
+        if strongest_url and strongest_url != merged_job_observation.apply_url:
             from dataclasses import replace as _replace
 
-            merged_job = _replace(merged_job, apply_url=strongest_url)
+            merged_job_observation = _replace(merged_job_observation, apply_url=strongest_url)
 
         # Cross-provider aliases: every observation in the group may carry a
         # different provider_job_id for what is now proven to be the same
         # canonical vacancy. Preserve all of them as provenance rather than
         # letting convergence silently discard the losing provider's ID.
-        aliases = tuple(sorted({alias for o in group if (alias := provider_alias(o.job)) is not None}))
-        source_providers = tuple(sorted({o.job.source_provider for o in group if o.job.source_provider}))
+        aliases = tuple(sorted({alias for o in group if (alias := provider_alias(o.job_observation)) is not None}))
+        source_providers = tuple(sorted({o.job_observation.source_provider for o in group if o.job_observation.source_provider}))
         source_types = tuple(sorted({source_type for o in group for source_type in o.source_types}))
 
-        opportunity = Opportunity(
+        job = Job(
             stable_job_key=key,
-            job=merged_job,
+            job=merged_job_observation,
             admission_status=_best_admission(group),
             source_lanes=source_lanes,
             aliases=aliases,
@@ -117,8 +117,8 @@ def reconcile(
             source_types=source_types,
         )
         reconciled.append(
-            ReconciledOpportunity(
-                opportunity=opportunity,
+            ReconciledJob(
+                job=job,
                 source_lanes=source_lanes,
                 observation_count=len(group),
                 best_fit=best_fit,
@@ -127,5 +127,5 @@ def reconcile(
 
     return sorted(
         reconciled,
-        key=lambda r: (lane_priority[r.source_lanes[0]], -_fit_rank(r.best_fit), r.opportunity.stable_job_key),
+        key=lambda r: (lane_priority[r.source_lanes[0]], -_fit_rank(r.best_fit), r.job.stable_job_key),
     )
