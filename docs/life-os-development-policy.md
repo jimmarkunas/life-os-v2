@@ -57,9 +57,22 @@ Use the smallest live context that owns the question:
 7. v1 repository only as a selective reference for proven algorithms, schemas, and production semantics explicitly being migrated.
 8. Historical chats, old handoffs, retired QA artifacts, and prior phase documents are background only.
 
-Ordinary bootstrap is limited to this policy, the relevant product canon, and the exact affected implementation surface/direct callers.
+Ordinary bootstrap is limited to this policy, the relevant product canon, and the exact affected implementation surface/direct callers. For pre-scoped implementation, prefer exact symbols/direct callers over whole-file reads; file length or file count is never itself a required bootstrap scope.
 
 Do not perform repository-wide audits or historical archaeology unless a concrete dependency makes one necessary.
+
+### 4.1 Compiled implementation handoffs
+
+For a pre-scoped package, the Tech Lead owns architecture/context compilation. The implementer should not need to rediscover the architecture before coding.
+
+- Handoffs specify the changed claim, exact symbols/direct callers, allowed mutation surface, required proof, and stop conditions.
+- Inspect at symbol/function level. Do not read whole files when only bounded sections are relevant.
+- Reuse already-established context during an active package; do not reread unchanged canonical sources without a concrete ambiguity.
+- Accepted packages are regression boundaries, not research assignments.
+- One implementer owns one package by default. Do not run parallel rediscovery of the same implementation surface.
+- State the expected mutation surface and proof before coding. Unexpected production-file expansion requires STOP and Tech Lead review.
+- Targeted proof first; affected regression once; full suite once before landing.
+- If an implementer must rediscover broad architecture to execute a pre-scoped package, treat the handoff as defective and return to the Tech Lead rather than expanding context.
 
 ## 5. Fast path
 
