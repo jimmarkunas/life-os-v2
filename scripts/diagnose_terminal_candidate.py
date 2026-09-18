@@ -25,7 +25,9 @@ from lifeos.jobs.terminal_evidence import (
     acquire_terminal_vacancy_evidence,
     is_provider_intermediary_source,
 )
+from lifeos.jobs.us_remote_runtime import browser_evidence, fallback_fetcher, load_registry, partition_observations
 from scripts import run_us_remote_production as prod
+from scripts.run_newsletter_production import _load_private_policy, _load_private_policy_from_notion, _require_env
 
 
 def _host(url: str | None) -> str | None:
@@ -73,34 +75,34 @@ class TracingFetcher(Fetcher):
 def main() -> int:
     context = RunContext.start(timeout_seconds=120)
     http = HttpClient()
-    env = prod._require_env()
-    registry = prod._load_registry()
-    browser_evidence = prod._browser_evidence()
+    env = _require_env()
+    registry = load_registry()
+    browser_evidence_payload = browser_evidence()
     notion = NotionTransport(context=context, http=http, access_token=env["NOTION_API_TOKEN"])
 
     fixture = os.getenv("NEWSLETTER_PRIVATE_POLICY_PATH")
     if fixture:
-        lane, _lane_priority, fit_profile, _market, _newsletter_source_lane = prod._load_private_policy(fixture)
+        lane, _lane_priority, fit_profile, _market, _newsletter_source_lane = _load_private_policy(fixture)
     else:
-        lane, _lane_priority, fit_profile, _market, _newsletter_source_lane = prod._load_private_policy_from_notion(
+        lane, _lane_priority, fit_profile, _market, _newsletter_source_lane = _load_private_policy_from_notion(
             context, http, notion, notion_token=env["NOTION_API_TOKEN"]
         )
 
     end = datetime.now(timezone.utc)
-    fallback = prod._fallback_fetcher(context, browser_evidence)
+    fallback = fallback_fetcher(context, browser_evidence_payload)
     web_result = prod.USRemoteAcquirer(
         context=context,
         http=http,
         fallback_fetcher=fallback,
     ).acquire(
         registry,
-        browser_evidence=browser_evidence,
+        browser_evidence=browser_evidence_payload,
         since=end - timedelta(hours=24),
         full_sweep=False,
         now=end,
     )
 
-    web_to_resolve, _ = prod._partition_observations(
+    web_to_resolve, _ = partition_observations(
         web_result.observations,
         lane=lane,
         fit_profile=fit_profile,

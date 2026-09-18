@@ -4,7 +4,8 @@ from lifeos.jobs.fit_scoring import FitProfile, RoleFamily, ScopeCategory
 from lifeos.jobs.newsletter_contract import Disposition
 from lifeos.jobs.qualification import LaneConfig
 from lifeos.newsletter.models import SourceVacancyObservation
-from scripts.run_us_remote_production import MAX_INBOX_STAGING_HOURS, _fit_ceiling, _preexclude
+from lifeos.jobs.us_remote_runtime import _fit_ceiling, _preexclude
+from scripts.run_us_remote_production import MAX_INBOX_STAGING_HOURS
 
 
 def _profile() -> FitProfile:

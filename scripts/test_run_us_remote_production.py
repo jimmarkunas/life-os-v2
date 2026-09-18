@@ -19,6 +19,7 @@ from lifeos.core.http import HttpClient, HttpResponse
 from lifeos.jobs.identity import stable_job_key
 from lifeos.jobs.models import Company, Job, WorkMode
 
+from lifeos.jobs import us_remote_runtime as runtime
 from scripts import run_us_remote_production as entry
 from scripts.run_newsletter_production import _GOOGLE_TOKEN_URL
 
@@ -325,7 +326,7 @@ class HistoricalInboxRecoveryTests(unittest.TestCase):
         fake_client = HttpClient(backend=backend)
         with patch.dict(os.environ, self._env, clear=True), patch.object(
             entry, "HttpClient", return_value=fake_client
-        ), patch.object(entry, "_load_registry", return_value=EMPTY_REGISTRY):
+        ), patch.object(entry, "load_registry", return_value=EMPTY_REGISTRY):
             exit_code = entry.main(list(cli_args) + ["--timeout-seconds", "60"])
         return exit_code
 
@@ -337,7 +338,7 @@ class HistoricalInboxRecoveryTests(unittest.TestCase):
         stdout = io.StringIO()
         with patch.dict(os.environ, self._env, clear=True), patch.object(
             entry, "HttpClient", return_value=fake_client
-        ), patch.object(entry, "_load_registry", return_value=EMPTY_REGISTRY), contextlib.redirect_stdout(stdout):
+        ), patch.object(entry, "load_registry", return_value=EMPTY_REGISTRY), contextlib.redirect_stdout(stdout):
             exit_code = entry.main(list(cli_args) + ["--timeout-seconds", "60"])
         return exit_code, json.loads(stdout.getvalue())
 
@@ -440,8 +441,8 @@ class HistoricalInboxRecoveryNegativeControlTests(unittest.TestCase):
         fake_client = HttpClient(backend=backend)
         with patch.dict(os.environ, self._env, clear=True), patch.object(
             entry, "HttpClient", return_value=fake_client
-        ), patch.object(entry, "_load_registry", return_value=EMPTY_REGISTRY), patch.object(
-            entry, "NotionCareerRepository", side_effect=lambda *a, **k: FailingRepository()
+        ), patch.object(entry, "load_registry", return_value=EMPTY_REGISTRY), patch.object(
+            runtime, "NotionCareerRepository", side_effect=lambda *a, **k: FailingRepository()
         ):
             exit_code = entry.main(
                 ["--historical-inbox-recovery-hours", "72", "--timeout-seconds", "60"]
