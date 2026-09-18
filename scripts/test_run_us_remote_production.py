@@ -122,7 +122,7 @@ class NewsletterWorkloadAdmissionTests(unittest.TestCase):
 
         capacity = runtime._terminal_resolution_capacity(context, web_terminal_count=4)
 
-        self.assertEqual(capacity, 20)
+        self.assertEqual(capacity, 4)
 
     def test_message_selection_is_whole_message_and_defers_costly_tail(self) -> None:
         obs_a = tuple(SimpleNamespace(evidence_ref=f"a:{index}") for index in range(12))
@@ -143,9 +143,9 @@ class NewsletterWorkloadAdmissionTests(unittest.TestCase):
             web_terminal_count=4,
         )
 
-        self.assertEqual(budget, 20)
-        self.assertEqual(admitted, 12)
-        self.assertEqual(selected, {"msg-a", "msg-zero"})
+        self.assertEqual(budget, 4)
+        self.assertEqual(admitted, 0)
+        self.assertEqual(selected, {"msg-zero"})
         self.assertNotIn("msg-b", selected)
 
 
@@ -416,7 +416,7 @@ class HistoricalInboxRecoveryTests(unittest.TestCase):
         with patch.dict(os.environ, self._env, clear=True), patch.object(
             entry, "HttpClient", return_value=fake_client
         ), patch.object(entry, "load_registry", return_value=EMPTY_REGISTRY):
-            exit_code = entry.main(list(cli_args) + ["--timeout-seconds", "60"])
+            exit_code = entry.main(list(cli_args) + ["--timeout-seconds", "120"])
         return exit_code
 
     def _run_capturing_summary(self, backend, *cli_args):
@@ -428,7 +428,7 @@ class HistoricalInboxRecoveryTests(unittest.TestCase):
         with patch.dict(os.environ, self._env, clear=True), patch.object(
             entry, "HttpClient", return_value=fake_client
         ), patch.object(entry, "load_registry", return_value=EMPTY_REGISTRY), contextlib.redirect_stdout(stdout):
-            exit_code = entry.main(list(cli_args) + ["--timeout-seconds", "60"])
+            exit_code = entry.main(list(cli_args) + ["--timeout-seconds", "120"])
         return exit_code, json.loads(stdout.getvalue())
 
     def test_normal_production_does_not_acquire_old_inbox_job_alert(self) -> None:
@@ -547,7 +547,7 @@ class HistoricalInboxRecoveryTests(unittest.TestCase):
         ), patch.object(
             runtime, "USRemoteAcquirer", CompleteWebAcquirer
         ), contextlib.redirect_stdout(stdout):
-            exit_code = entry.main(["--timeout-seconds", "60"])
+            exit_code = entry.main(["--timeout-seconds", "120"])
 
         summary = json.loads(stdout.getvalue())
         self.assertEqual(exit_code, 1)
@@ -598,7 +598,7 @@ class HistoricalInboxRecoveryTests(unittest.TestCase):
         ), patch.object(entry, "load_registry", return_value=EMPTY_REGISTRY), patch.object(
             runtime, "MailRouter", DegradedMailRouter
         ), contextlib.redirect_stdout(stdout):
-            exit_code = entry.main(["--timeout-seconds", "60"])
+            exit_code = entry.main(["--timeout-seconds", "120"])
 
         summary = json.loads(stdout.getvalue())
         self.assertEqual(exit_code, 1)
@@ -632,7 +632,7 @@ class HistoricalInboxRecoveryTests(unittest.TestCase):
         ), patch.object(entry, "load_registry", return_value=EMPTY_REGISTRY), patch.object(
             runtime, "USRemoteAcquirer", RuntimeErrorWebAcquirer
         ), contextlib.redirect_stdout(stdout):
-            exit_code = entry.main(["--timeout-seconds", "60"])
+            exit_code = entry.main(["--timeout-seconds", "120"])
 
         summary = json.loads(stdout.getvalue())
         self.assertEqual(exit_code, 1)
@@ -797,7 +797,7 @@ class HistoricalInboxRecoveryNegativeControlTests(unittest.TestCase):
             runtime, "NotionCareerRepository", side_effect=lambda *a, **k: FailingRepository()
         ):
             exit_code = entry.main(
-                ["--historical-inbox-recovery-hours", "72", "--timeout-seconds", "60"]
+                ["--historical-inbox-recovery-hours", "72", "--timeout-seconds", "120"]
             )
 
         self.assertEqual(exit_code, 1)

@@ -28,8 +28,8 @@ from scripts.run_newsletter_production import NEWSLETTER_BOUNDARY, ProductionCon
 
 _SOURCE_REGISTRY = Path(__file__).resolve().parents[2] / "contracts" / "us_remote_sources.json"
 _TERMINAL_RESOLUTION_WORKERS = 8
-_TERMINAL_RESOLUTION_SLOT_SECONDS = 24.0
-_TERMINAL_FINALIZE_RESERVE_SECONDS = 30.0
+_TERMINAL_RESOLUTION_SLOT_SECONDS = 30.0
+_TERMINAL_FINALIZE_RESERVE_SECONDS = 60.0
 
 
 def load_registry() -> dict:
