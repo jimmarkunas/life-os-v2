@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from urllib.parse import urlparse
 
+from lifeos.core.http import HttpError, HttpErrorKind
 from lifeos.jobs.newsletter_contract import Disposition, IngestResult
 from lifeos.mail.models import MailMessage
 from lifeos.newsletter.models import MessageParseResult, ParseState, RoutedNewsletterMessage, SourceVacancyObservation
@@ -24,21 +24,9 @@ class FakeAcquirer:
         return FakeWebResult((observation("web-1", source_message_id="web"),))
 
 
-class FakeHttp:
-    def __init__(self, gmail: "FakeGmail") -> None:
-        self.gmail = gmail
-
-    def request_json(self, context, method, url, **kwargs):
-        message_id = urlparse(url).path.rsplit("/", 1)[-1]
-        return {"labelIds": sorted(self.gmail.labels.get(message_id, set()))}
-
-
 class FakeGmail:
     def __init__(self, *, context, http, access_token, message_factory) -> None:
         now = datetime(2026, 1, 15, 12, 0, tzinfo=timezone.utc)
-        self._context = context
-        self._user_id = "me"
-        self._http = FakeHttp(self)
         self.messages = [
             MailMessage(
                 provider="gmail",
@@ -48,6 +36,15 @@ class FakeGmail:
                 subject="Daily job alert: archived role",
                 body_text="Synthetic role",
                 headers={"List-Unsubscribe": "<https://example.invalid/unsub>"},
+            ),
+            MailMessage(
+                provider="gmail",
+                message_id="synthetic-human",
+                received_at=now,
+                sender="person@example.invalid",
+                subject="Lunch?",
+                body_text="Human mail in Inbox",
+                headers={},
             ),
             MailMessage(
                 provider="gmail",
@@ -70,24 +67,27 @@ class FakeGmail:
         ]
         self.labels = {
             "synthetic-non-inbox-job": {"J Newsletters"},
+            "synthetic-human": {"INBOX"},
             "synthetic-inbox-job": {"INBOX"},
             "synthetic-unrelated": {"INBOX"},
         }
+        self.inbox_scanned = False
         self.staged: list[str] = []
         self.processed: list[str] = []
 
-    def _headers(self):
-        return {"Authorization": "Bearer synthetic-access", "Accept": "application/json"}
-
-    def scan_window(self, start, end):
-        return tuple(self.messages)
+    def scan_inbox_window(self, start, end):
+        self.inbox_scanned = True
+        return tuple(message for message in self.messages if "INBOX" in self.labels.get(message.message_id, set()))
 
     def route_to_newsletters(self, message_id: str, boundary_name: str) -> None:
         self.staged.append(message_id)
         self.labels.setdefault(message_id, set()).discard("INBOX")
         self.labels.setdefault(message_id, set()).add(boundary_name)
 
-    def _fetch_routed_message(self, message_id: str) -> RoutedNewsletterMessage:
+    def hydrate_messages(self, message_ids) -> tuple[RoutedNewsletterMessage, ...]:
+        return tuple(self._routed_message(message_id) for message_id in message_ids)
+
+    def _routed_message(self, message_id: str) -> RoutedNewsletterMessage:
         if message_id not in self.staged:
             raise AssertionError("message was parsed before staging")
         return RoutedNewsletterMessage(
@@ -195,10 +195,12 @@ def test_live_1x1_stages_one_fresh_inbox_message_before_processing(monkeypatch, 
     assert output["newsletter_staged_from_inbox"] is True
     assert output["newsletter_processed"] is True
     assert output["web_candidates"] == 1
+    assert gmail.inbox_scanned is True
     assert gmail.staged == ["synthetic-inbox-job"]
     assert gmail.processed == ["synthetic-inbox-job"]
     assert gmail.labels["synthetic-non-inbox-job"] == {"J Newsletters"}
     assert gmail.labels["synthetic-inbox-job"] == {"J Newsletters", "J Newsletters/Processed"}
+    assert gmail.labels["synthetic-human"] == {"INBOX"}
     assert gmail.labels["synthetic-unrelated"] == {"INBOX"}
 
 
@@ -212,6 +214,7 @@ def test_live_1x1_parse_failure_does_not_mark_processed(monkeypatch, capsys) -> 
     gmail = fake_gmail_box["gmail"]
     assert output["status"] == "DEGRADED"
     assert output["reason"] == "selected-newsletter-parse-failed"
+    assert output["phase"] == "newsletter-parse"
     assert gmail.staged == ["synthetic-inbox-job"]
     assert gmail.processed == []
 
@@ -223,6 +226,9 @@ def test_live_1x1_no_current_candidate_reports_sanitized_diagnostic(monkeypatch,
         def __init__(self, **kwargs) -> None:
             super().__init__(**kwargs)
             self.labels["synthetic-inbox-job"] = {"J Newsletters"}
+            self.messages = [
+                message for message in self.messages if message.message_id != "synthetic-inbox-job"
+            ]
 
     def gmail_factory(**kwargs):
         fake = NoCandidateGmail(**kwargs)
@@ -237,5 +243,60 @@ def test_live_1x1_no_current_candidate_reports_sanitized_diagnostic(monkeypatch,
     gmail = fake_gmail_box["gmail"]
     assert output["status"] == "DEGRADED"
     assert output["reason"] == "no-current-newsletter-candidate"
+    assert output["phase"] == "newsletter-inbox-acquire"
+    assert gmail.inbox_scanned is True
     assert gmail.staged == []
+    assert gmail.processed == []
+
+
+def test_live_1x1_inbox_acquisition_http_failure_is_sanitized(monkeypatch, capsys) -> None:
+    fake_gmail_box = install_common(monkeypatch)
+
+    class FailingInboxGmail(FakeGmail):
+        def scan_inbox_window(self, start, end):
+            raise HttpError(HttpErrorKind.HTTP_STATUS, status_code=503, api_message="synthetic-token gmail.googleapis.com synthetic-inbox-job")
+
+    def gmail_factory(**kwargs):
+        fake = FailingInboxGmail(**kwargs)
+        fake_gmail_box["gmail"] = fake
+        return fake
+
+    monkeypatch.setattr(smoke, "GmailMailboxTransport", gmail_factory)
+
+    assert smoke.main() == 1
+
+    raw_output = capsys.readouterr().out
+    output = json.loads(raw_output)
+    gmail = fake_gmail_box["gmail"]
+    assert output["status"] == "DEGRADED"
+    assert output["reason"] == "HttpError"
+    assert output["phase"] == "newsletter-inbox-acquire"
+    assert output["http_kind"] == "http_status"
+    assert output["http_status"] == 503
+    assert gmail.staged == []
+    assert gmail.processed == []
+    assert "gmail.googleapis.com" not in raw_output
+    assert "synthetic-token" not in raw_output
+    assert "synthetic-inbox-job" not in raw_output
+
+
+def test_live_1x1_accounting_failure_does_not_mark_processed(monkeypatch, capsys) -> None:
+    fake_gmail_box = install_common(monkeypatch)
+    monkeypatch.setattr(smoke, "parse_message", parsed_message)
+    monkeypatch.setattr(
+        smoke,
+        "ingest",
+        lambda candidates, **kwargs: [
+            IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, None, "synthetic accounting failure")
+            for candidate in candidates
+        ],
+    )
+
+    assert smoke.main() == 1
+
+    output = json.loads(capsys.readouterr().out)
+    gmail = fake_gmail_box["gmail"]
+    assert output["status"] == "DEGRADED"
+    assert output["newsletter_processed"] is False
+    assert gmail.staged == ["synthetic-inbox-job"]
     assert gmail.processed == []

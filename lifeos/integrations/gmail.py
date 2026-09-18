@@ -99,8 +99,14 @@ class GmailMailboxTransport(Generic[T]):
         return self.provider
 
     def scan_window(self, start: datetime, end: datetime) -> tuple[T, ...]:
+        return self._scan_window(start, end)
+
+    def scan_inbox_window(self, start: datetime, end: datetime) -> tuple[T, ...]:
+        return self._scan_window(start, end, label_id="INBOX")
+
+    def _scan_window(self, start: datetime, end: datetime, *, label_id: str | None = None) -> tuple[T, ...]:
         _validate_window(start, end)
-        ids = self._list_message_ids(start, end)
+        ids = self._list_message_ids(start, end, label_id=label_id)
         if not ids:
             return ()
 
