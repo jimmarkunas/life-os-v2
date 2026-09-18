@@ -136,3 +136,5 @@ class Job:
     fit_authority: FitAuthority = FitAuthority.NON_AUTHORITATIVE
     source_providers: tuple[str, ...] = field(default_factory=tuple)
     source_types: tuple[str, ...] = field(default_factory=tuple)
+    eligible_lanes: tuple[str, ...] = field(default_factory=tuple)
+    primary_lane: str | None = None

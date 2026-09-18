@@ -31,6 +31,7 @@ class LaneObservation:
     admission_status: AdmissionStatus
     fit_authority: FitAuthority = FitAuthority.NON_AUTHORITATIVE
     source_types: tuple[str, ...] = field(default_factory=tuple)
+    eligible_lanes: tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -100,6 +101,12 @@ def reconcile(
         aliases = tuple(sorted({alias for o in group if (alias := provider_alias(o.job_observation)) is not None}))
         source_providers = tuple(sorted({o.job_observation.source_provider for o in group if o.job_observation.source_provider}))
         source_types = tuple(sorted({source_type for o in group for source_type in o.source_types}))
+        eligible_lanes = tuple(
+            sorted(
+                {lane for o in group for lane in o.eligible_lanes},
+                key=lambda lane: (lane_priority[lane], lane),
+            )
+        )
 
         job = Job(
             stable_job_key=key,
@@ -111,6 +118,8 @@ def reconcile(
             fit_authority=fit_authority,
             source_providers=source_providers,
             source_types=source_types,
+            eligible_lanes=eligible_lanes,
+            primary_lane=eligible_lanes[0] if eligible_lanes else None,
         )
         reconciled.append(
             ReconciledJob(
