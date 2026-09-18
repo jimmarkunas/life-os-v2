@@ -8,7 +8,7 @@ from lifeos.core.runtime import RunContext
 from lifeos.integrations.notion import NotionTransport
 from lifeos.jobs.fit_scoring import FitProfile, RoleFamily
 from lifeos.jobs.lifecycle import mark_applied, new_record
-from lifeos.jobs.models import AdmissionStatus, Company, FitAuthority, Job, Opportunity, WorkMode
+from lifeos.jobs.models import AdmissionStatus, Company, FitAuthority, Job, JobObservation, WorkMode
 from lifeos.jobs.newsletter_adapter import NewsletterAdapterConfig, NewsletterJobsAdapter
 from lifeos.jobs.newsletter_contract import Disposition, ingest
 from lifeos.jobs.notion_repository import NotionCareerRepository, NotionCareerRepositoryConfig
@@ -27,7 +27,7 @@ FAKE_PROFILE = FitProfile(
 )
 
 
-def _job(**overrides) -> Job:
+def _job(**overrides) -> JobObservation:
     base = dict(
         company=Company(name="Acme Synthetic Co"),
         role="Synthetic Engineer",
@@ -42,7 +42,7 @@ def _job(**overrides) -> Job:
         description_text="Synthetic description.",
     )
     base.update(overrides)
-    return Job(**base)
+    return JobObservation(**base)
 
 
 class FakeNotionHttp:
@@ -190,29 +190,29 @@ def test_get_many_returns_empty_for_unknown_keys():
 
 def test_upsert_then_get_many_round_trips():
     repo, http = _repository()
-    opportunity = Opportunity(stable_job_key="url:https://greenhouse.io/acme/jobs/42", job=_job(), admission_status=AdmissionStatus.ADMITTED)
-    record = new_record(opportunity, run_date=RUN_DATE)
+    job = Job(stable_job_key="url:https://greenhouse.io/acme/jobs/42", job=_job(), admission_status=AdmissionStatus.ADMITTED)
+    record = new_record(job, run_date=RUN_DATE)
     persisted = repo.upsert(record)
-    assert persisted.opportunity.stable_job_key == opportunity.stable_job_key
+    assert persisted.job.stable_job_key == job.stable_job_key
 
-    found = repo.get_many([opportunity.stable_job_key])
-    assert opportunity.stable_job_key in found
-    assert found[opportunity.stable_job_key].opportunity.job.role == "Synthetic Engineer"
+    found = repo.get_many([job.stable_job_key])
+    assert job.stable_job_key in found
+    assert found[job.stable_job_key].job.job.role == "Synthetic Engineer"
 
 
 def test_second_upsert_updates_same_page_not_a_new_one():
     repo, http = _repository()
-    opportunity = Opportunity(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED)
-    record = new_record(opportunity, run_date=RUN_DATE)
+    job = Job(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED)
+    record = new_record(job, run_date=RUN_DATE)
     repo.upsert(record)
     assert len(http.pages) == 1
 
-    updated_job = _job(compensation_text="$130,000+")
-    updated_opportunity = Opportunity(stable_job_key="k1", job=updated_job, admission_status=AdmissionStatus.ADMITTED)
+    updated_job_observation = _job(compensation_text="$130,000+")
+    updated_job = Job(stable_job_key="k1", job=updated_job_observation, admission_status=AdmissionStatus.ADMITTED)
     from lifeos.jobs.lifecycle import apply_observation
 
     existing = repo.get_many(["k1"])["k1"]
-    merged = apply_observation(existing, updated_opportunity, run_date=RUN_DATE)
+    merged = apply_observation(existing, updated_job, run_date=RUN_DATE)
     repo.upsert(merged)
     assert len(http.pages) == 1  # still one page -- update, not a second create
 
@@ -220,8 +220,8 @@ def test_second_upsert_updates_same_page_not_a_new_one():
 def test_get_many_issues_exactly_one_query_call_never_a_full_scan():
     repo, http = _repository()
     for i in range(5):
-        opportunity = Opportunity(stable_job_key=f"k{i}", job=_job(), admission_status=AdmissionStatus.ADMITTED)
-        repo.upsert(new_record(opportunity, run_date=RUN_DATE))
+        job = Job(stable_job_key=f"k{i}", job=_job(), admission_status=AdmissionStatus.ADMITTED)
+        repo.upsert(new_record(job, run_date=RUN_DATE))
 
     http.query_calls.clear()
     repo.get_many(["k2", "k4"])
@@ -233,18 +233,18 @@ def test_get_many_issues_exactly_one_query_call_never_a_full_scan():
 
 def test_get_by_apply_urls_uses_bounded_url_property_query():
     repo, http = _repository()
-    opportunity = Opportunity(
+    job = Job(
         stable_job_key="acme|synthetic engineer|remote",
         job=_job(apply_url="https://greenhouse.io/acme/jobs/42"),
         admission_status=AdmissionStatus.ADMITTED,
     )
-    repo.upsert(new_record(opportunity, run_date=RUN_DATE))
+    repo.upsert(new_record(job, run_date=RUN_DATE))
 
     http.query_calls.clear()
     found = repo.get_by_apply_urls(["https://greenhouse.io/acme/jobs/42"])
 
     assert set(found) == {"https://greenhouse.io/acme/jobs/42"}
-    assert found["https://greenhouse.io/acme/jobs/42"].opportunity.stable_job_key == "acme|synthetic engineer|remote"
+    assert found["https://greenhouse.io/acme/jobs/42"].job.stable_job_key == "acme|synthetic engineer|remote"
     assert len(http.query_calls) == 1
     filter_payload = http.query_calls[0]["filter"]
     assert filter_payload["property"] == "Apply URL"
@@ -297,7 +297,7 @@ def test_fallback_key_job_later_url_converges_across_fresh_repository_instances(
     assert second[0].stable_job_key == fallback_key
     assert len(http.pages) == 1
     persisted = repo_2.get_many([fallback_key])[fallback_key]
-    assert persisted.opportunity.job.apply_url == "https://greenhouse.io/acme/jobs/123"
+    assert persisted.job.job.apply_url == "https://greenhouse.io/acme/jobs/123"
 
     repo_3 = _repository_with_http(http)
     assert repo_3._page_ids == {}
@@ -341,8 +341,8 @@ def test_source_types_round_trip_acquisition_provenance_across_fresh_repository_
     assert first[0].stable_job_key == key
 
     first_record = _fresh_record(http, key)
-    assert first_record.opportunity.source_providers == ("LinkedIn Jobs",)
-    assert set(first_record.opportunity.source_types) == {"LinkedIn Jobs", "Gmail Alert"}
+    assert first_record.job.source_providers == ("LinkedIn Jobs",)
+    assert set(first_record.job.source_types) == {"LinkedIn Jobs", "Gmail Alert"}
     page = next(iter(http.pages.values()))
     assert set(_multi_select_names(page["properties"]["Source Types"])) == {"LinkedIn Jobs", "Gmail Alert"}
     assert "Synthetic-Remote" not in _multi_select_names(page["properties"]["Source Types"])
@@ -365,9 +365,9 @@ def test_source_types_round_trip_acquisition_provenance_across_fresh_repository_
     assert repo_2.get_many(["url:https://greenhouse.io/acme/jobs/123"]) == {}
 
     record = _fresh_record(http, key)
-    assert record.opportunity.job.apply_url == "https://greenhouse.io/acme/jobs/123"
-    assert record.opportunity.source_providers == ("Lensa", "LinkedIn Jobs")
-    assert set(record.opportunity.source_types) == {"LinkedIn Jobs", "Lensa", "Gmail Alert"}
+    assert record.job.job.apply_url == "https://greenhouse.io/acme/jobs/123"
+    assert record.job.source_providers == ("Lensa", "LinkedIn Jobs")
+    assert set(record.job.source_types) == {"LinkedIn Jobs", "Lensa", "Gmail Alert"}
     page = next(iter(http.pages.values()))
     persisted_source_types = set(_multi_select_names(page["properties"]["Source Types"]))
     assert persisted_source_types == {"LinkedIn Jobs", "Lensa", "Gmail Alert"}
@@ -446,15 +446,15 @@ def test_package_c_no_downgrade_merge_survives_fresh_repository_instances():
 
     record = _fresh_record(http, key)
     assert len(http.pages) == 1
-    assert record.opportunity.job.apply_url == "https://greenhouse.io/acme/jobs/123"
-    assert record.opportunity.job.posting_date == date(2026, 1, 10)
-    assert record.opportunity.job.compensation_text == "$100,000 - $120,000"
-    assert record.opportunity.fit == 86
-    assert record.opportunity.fit_authority == FitAuthority.AUTHORITATIVE
-    assert record.opportunity.source_providers == ("Source A", "Source B")
+    assert record.job.job.apply_url == "https://greenhouse.io/acme/jobs/123"
+    assert record.job.job.posting_date == date(2026, 1, 10)
+    assert record.job.job.compensation_text == "$100,000 - $120,000"
+    assert record.job.fit == 86
+    assert record.job.fit_authority == FitAuthority.AUTHORITATIVE
+    assert record.job.source_providers == ("Source A", "Source B")
     assert record.first_surfaced == first_date
     assert record.last_seen == third_date
-    assert record.opportunity.admission_status == AdmissionStatus.ADMITTED
+    assert record.job.admission_status == AdmissionStatus.ADMITTED
     assert page["properties"]["Saturn Decision"]["select"]["name"] == "Synthetic Hold"
     assert page["properties"]["Decision On"]["date"]["start"] == "2026-01-12"
     assert page["properties"]["Saturn Ready"]["date"]["start"] == "2026-01-13"
@@ -487,15 +487,15 @@ def test_package_c_authoritative_fit_can_replace_with_lower_rescore():
 
     assert second[0].disposition == Disposition.UPDATED
     record = _fresh_record(http, key)
-    assert record.opportunity.fit == 79
-    assert record.opportunity.fit_authority == FitAuthority.AUTHORITATIVE
+    assert record.job.fit == 79
+    assert record.job.fit_authority == FitAuthority.AUTHORITATIVE
 
 
 def test_legacy_missing_fit_authority_with_fit_reads_authoritative_and_no_downgrades():
     http = FakeNotionHttp()
     key = "acme synthetic co|technical program manager|remote"
     repo_1 = _repository_with_http(http)
-    legacy_opportunity = Opportunity(
+    legacy_job = Job(
         stable_job_key=key,
         job=make_job(role="Technical Program Manager", location="Remote", apply_url=None),
         admission_status=AdmissionStatus.ADMITTED,
@@ -505,13 +505,13 @@ def test_legacy_missing_fit_authority_with_fit_reads_authoritative_and_no_downgr
         source_providers=("LinkedIn Jobs",),
         source_types=("Gmail Alert", "LinkedIn Jobs"),
     )
-    repo_1.upsert(new_record(legacy_opportunity, run_date=RUN_DATE))
+    repo_1.upsert(new_record(legacy_job, run_date=RUN_DATE))
     page = next(iter(http.pages.values()))
     del page["properties"]["Fit Authority"]
 
     legacy_read = _fresh_record(http, key)
-    assert legacy_read.opportunity.fit == 84
-    assert legacy_read.opportunity.fit_authority == FitAuthority.AUTHORITATIVE
+    assert legacy_read.job.fit == 84
+    assert legacy_read.job.fit_authority == FitAuthority.AUTHORITATIVE
 
     weak, _ = _fresh_ingest(
         http,
@@ -526,8 +526,8 @@ def test_legacy_missing_fit_authority_with_fit_reads_authoritative_and_no_downgr
     )
     assert weak[0].disposition == Disposition.UPDATED
     after_weak = _fresh_record(http, key)
-    assert after_weak.opportunity.fit == 84
-    assert after_weak.opportunity.fit_authority == FitAuthority.AUTHORITATIVE
+    assert after_weak.job.fit == 84
+    assert after_weak.job.fit_authority == FitAuthority.AUTHORITATIVE
 
     rescore, _ = _fresh_ingest(
         http,
@@ -542,15 +542,15 @@ def test_legacy_missing_fit_authority_with_fit_reads_authoritative_and_no_downgr
     )
     assert rescore[0].disposition == Disposition.UPDATED
     after_rescore = _fresh_record(http, key)
-    assert after_rescore.opportunity.fit == 79
-    assert after_rescore.opportunity.fit_authority == FitAuthority.AUTHORITATIVE
+    assert after_rescore.job.fit == 79
+    assert after_rescore.job.fit_authority == FitAuthority.AUTHORITATIVE
 
 
 def test_package_c_human_state_survives_automated_refresh_across_fresh_repository_instances():
     http = FakeNotionHttp()
     key = "acme synthetic co|technical program manager|remote"
     repo_1 = _repository_with_http(http)
-    opportunity = Opportunity(
+    job = Job(
         stable_job_key=key,
         job=make_job(role="Technical Program Manager", location="Remote", apply_url=None, source_provider="Source A"),
         admission_status=AdmissionStatus.ADMITTED,
@@ -559,7 +559,7 @@ def test_package_c_human_state_survives_automated_refresh_across_fresh_repositor
         source_lanes=("Synthetic-Remote",),
         source_providers=("Source A",),
     )
-    applied = mark_applied(new_record(opportunity, run_date=RUN_DATE), run_date=RUN_DATE + timedelta(days=3))
+    applied = mark_applied(new_record(job, run_date=RUN_DATE), run_date=RUN_DATE + timedelta(days=3))
     repo_1.upsert(applied)
 
     refresh, _ = _fresh_ingest(
@@ -578,7 +578,7 @@ def test_package_c_human_state_survives_automated_refresh_across_fresh_repositor
     assert record.applied_on == RUN_DATE + timedelta(days=3)
     assert record.first_surfaced == RUN_DATE
     assert record.status.value == "applied"
-    assert record.opportunity.fit == 86
+    assert record.job.fit == 86
 
 
 def test_package_c_missing_then_stronger_evidence_fills_canonical_row():
@@ -613,17 +613,17 @@ def test_package_c_missing_then_stronger_evidence_fills_canonical_row():
     )
     assert second[0].disposition == Disposition.UPDATED
     record = _fresh_record(http, key)
-    assert record.opportunity.job.apply_url == "https://greenhouse.io/acme/jobs/123"
-    assert record.opportunity.job.posting_date == date(2026, 1, 10)
-    assert record.opportunity.fit == 86
-    assert record.opportunity.fit_authority == FitAuthority.AUTHORITATIVE
-    assert record.opportunity.source_providers == ("Source A", "Source B")
+    assert record.job.job.apply_url == "https://greenhouse.io/acme/jobs/123"
+    assert record.job.job.posting_date == date(2026, 1, 10)
+    assert record.job.fit == 86
+    assert record.job.fit_authority == FitAuthority.AUTHORITATIVE
+    assert record.job.source_providers == ("Source A", "Source B")
 
 
 def test_read_back_mismatch_raised_when_persisted_page_diverges():
     repo, http = _repository()
-    opportunity = Opportunity(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED)
-    record = new_record(opportunity, run_date=RUN_DATE)
+    job = Job(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED)
+    record = new_record(job, run_date=RUN_DATE)
 
     original_get_page = repo._transport.get_page
 
@@ -646,8 +646,8 @@ def test_human_owned_state_preserved_across_reupsert():
     test proves the whole path (get_many -> apply_observation -> upsert)
     together."""
     repo, http = _repository()
-    opportunity = Opportunity(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED)
-    record = new_record(opportunity, run_date=RUN_DATE)
+    job = Job(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED)
+    record = new_record(job, run_date=RUN_DATE)
     repo.upsert(record)
 
     from lifeos.jobs.lifecycle import mark_applied
@@ -661,8 +661,8 @@ def test_human_owned_state_preserved_across_reupsert():
     existing_after_apply = repo.get_many(["k1"])["k1"]
     assert existing_after_apply.applied is True
 
-    reobserved_opportunity = Opportunity(stable_job_key="k1", job=_job(compensation_text="$999,000"), admission_status=AdmissionStatus.ADMITTED)
-    merged = apply_observation(existing_after_apply, reobserved_opportunity, run_date=RUN_DATE)
+    reobserved_job = Job(stable_job_key="k1", job=_job(compensation_text="$999,000"), admission_status=AdmissionStatus.ADMITTED)
+    merged = apply_observation(existing_after_apply, reobserved_job, run_date=RUN_DATE)
     persisted = repo.upsert(merged)
     assert persisted.applied is True
     assert persisted.applied_on == RUN_DATE
