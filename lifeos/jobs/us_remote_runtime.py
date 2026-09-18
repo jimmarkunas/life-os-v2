@@ -30,12 +30,6 @@ from lifeos.jobs.fit_scoring import FitProfile
 from lifeos.jobs.newsletter_adapter import HttpClientFetcher, NewsletterAdapterConfig, NewsletterJobsAdapter
 from lifeos.jobs.newsletter_contract import Disposition, IngestResult, ingest
 from lifeos.jobs.newsletter_feature import _adapt_all
-from lifeos.jobs.newsletter_reliability import (
-    MemoizingFetcher,
-    drain_newsletter_backlog,
-    oldest_pending_age_seconds,
-    prepare_newsletter_candidates,
-)
 from lifeos.jobs.notion_repository import NotionCareerRepository, NotionCareerRepositoryConfig
 from lifeos.jobs.qualification import LaneConfig
 from lifeos.jobs.terminal_evidence import FetchResponse, Fetcher
@@ -325,14 +319,9 @@ def execute_us_remote(
         timings["mail_stage"] = round(perf_counter() - stage_started, 3)
 
         stage_started = perf_counter()
-        newsletter_processor = NewsletterProcessor(boundary_name=NEWSLETTER_BOUNDARY)
-        newsletter_drain = drain_newsletter_backlog(
-            gmail,
-            processor=newsletter_processor,
-            boundary_name=NEWSLETTER_BOUNDARY,
-            context=context,
+        newsletter_result = NewsletterProcessor(boundary_name=NEWSLETTER_BOUNDARY).process_window(
+            [gmail], start, end
         )
-        newsletter_result = newsletter_drain.process_result
         timings["newsletter_fetch_parse"] = round(perf_counter() - stage_started, 3)
 
         stage_started = perf_counter()
@@ -383,7 +372,7 @@ def execute_us_remote(
             transport=notion,
             config=NotionCareerRepositoryConfig(data_source_id=notion_job_ledger_data_source_id),
         )
-        http_fetcher = MemoizingFetcher(HttpClientFetcher(http=http, context=context))
+        http_fetcher = HttpClientFetcher(http=http, context=context)
         newsletter_adapter = NewsletterJobsAdapter(
             NewsletterAdapterConfig(
                 fetcher=http_fetcher,
@@ -404,16 +393,12 @@ def execute_us_remote(
         )
 
         stage_started = perf_counter()
-        newsletter_preparation = prepare_newsletter_candidates(
+        newsletter_candidates = _adapt_all(
             tuple(newsletter_to_resolve),
             adapter=newsletter_adapter,
-            repository=repository,
             context=context,
-            market=market,
-            source_lane=newsletter_source_lane,
             max_workers=8,
         )
-        newsletter_candidates = list(newsletter_preparation.candidates)
         web_candidates = _adapt_all(
             tuple(web_to_resolve),
             adapter=web_adapter,
@@ -458,42 +443,15 @@ def execute_us_remote(
                 processed_count += 1
         timings["newsletter_mark_processed"] = round(perf_counter() - stage_started, 3)
 
-        backlog_errors: list[str] = []
-        pending_ids_after: tuple[str, ...] = ()
-        oldest_pending_age: float | None = None
-        try:
-            pending_ids_after = tuple(gmail.enumerate_unprocessed_ids(NEWSLETTER_BOUNDARY))
-            if pending_ids_after:
-                oldest_pending_age = oldest_pending_age_seconds(
-                    gmail,
-                    pending_ids_after,
-                    known_messages=newsletter_result.messages,
-                    now=end,
-                )
-        except Exception as exc:
-            backlog_errors.append(type(exc).__name__)
-
-        progress_made = not pending_ids_after or processed_count > 0
-        cleanup_safe = (
-            newsletter_ok
+        mail_lane_pass = (
+            staging_ok
+            and newsletter_ok
             and newsletter_fully_accounted
             and not newsletter_unresolved
             and not processed_errors
         )
-        backlog_healthy = not backlog_errors and progress_made
-        mail_lane_pass = staging_ok and cleanup_safe and backlog_healthy
         web_lane_pass = web_result.complete and web_fully_accounted and not web_unresolved
         pass_run = mail_lane_pass and web_lane_pass
-
-        newsletter_work_seconds = max(
-            0.001,
-            timings.get("newsletter_fetch_parse", 0.0)
-            + timings.get("terminal_resolution", 0.0)
-            + timings.get("reconcile_persist", 0.0)
-            + timings.get("newsletter_mark_processed", 0.0),
-        )
-        newsletter_throughput = round(len(newsletter_results) / newsletter_work_seconds, 3)
-
         body = {
             "status": "PASS" if pass_run else "DEGRADED",
             "elapsed_seconds": round(context.elapsed_seconds(), 3),
@@ -513,20 +471,8 @@ def execute_us_remote(
                 "observations": len(newsletter_result.observations),
                 "preexcluded": len(newsletter_preexcluded),
                 "terminal_resolution_required": len(newsletter_to_resolve),
-                "canonical_reuse": newsletter_preparation.canonical_reuse_count,
                 "state": newsletter_result.state.value,
                 "error_codes": _error_codes(newsletter_result.errors),
-                "pending_source_messages": len(pending_ids_after),
-                "oldest_pending_age_seconds": (
-                    round(oldest_pending_age, 3) if oldest_pending_age is not None else None
-                ),
-                "messages_admitted_this_run": len(newsletter_drain.admitted_message_ids),
-                "messages_processed_this_run": processed_count,
-                "observations_processed_this_run": len(newsletter_results),
-                "throughput_observations_per_second": newsletter_throughput,
-                "progress_made": progress_made,
-                "cleanup_safe": cleanup_safe,
-                "backlog_error_codes": backlog_errors,
             },
             "web": {
                 "status": "PASS" if web_lane_pass else "DEGRADED",
