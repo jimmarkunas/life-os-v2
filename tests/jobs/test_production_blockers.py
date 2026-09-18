@@ -10,7 +10,7 @@ from lifeos.core.runtime import RunContext
 from lifeos.integrations.notion import NotionTransport
 from lifeos.jobs.fit_scoring import FitProfile, RoleFamily
 from lifeos.jobs.lifecycle import new_record
-from lifeos.jobs.models import AdmissionStatus, Company, FitAuthority, Job, Opportunity, WorkMode
+from lifeos.jobs.models import AdmissionStatus, Company, FitAuthority, Job, JobObservation, WorkMode
 from lifeos.jobs.newsletter_adapter import HttpClientFetcher, NewsletterAdapterConfig, NewsletterJobsAdapter
 from lifeos.jobs.newsletter_contract import Disposition, ingest
 from lifeos.jobs.notion_repository import (
@@ -43,14 +43,14 @@ JOBPOSTING_HTML = """
 """
 
 
-def _job(**overrides) -> Job:
+def _job(**overrides) -> JobObservation:
     base = dict(
         company=Company(name="Acme Synthetic Co"), role="Synthetic Engineer", location="Remote",
         work_mode=WorkMode.REMOTE, compensation_text="$100k", compensation_minimum=100_000,
         posting_date=RUN_DATE, apply_url="https://greenhouse.io/acme/jobs/1", source_lane="Newsletter",
     )
     base.update(overrides)
-    return Job(**base)
+    return JobObservation(**base)
 
 
 def _observation(**overrides) -> SourceVacancyObservation:
@@ -159,7 +159,7 @@ class StrictSchemaNotionHttp:
 
 
 def test_title_property_is_job_not_role():
-    record = new_record(Opportunity(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED, fit=80), run_date=RUN_DATE)
+    record = new_record(Job(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED, fit=80), run_date=RUN_DATE)
     props = _record_to_properties(record)
     assert "title" in props["Job"]
     assert props["Job"]["title"][0]["text"]["content"] == "Acme Synthetic Co — Synthetic Engineer"
@@ -167,8 +167,8 @@ def test_title_property_is_job_not_role():
 
 
 def test_fit_and_provider_score_persisted_with_canonical_names():
-    job = _job(provider_score=91)
-    record = new_record(Opportunity(stable_job_key="k1", job=job, admission_status=AdmissionStatus.ADMITTED, fit=85, fit_authority=FitAuthority.AUTHORITATIVE), run_date=RUN_DATE)
+    job_observation = _job(provider_score=91)
+    record = new_record(Job(stable_job_key="k1", job=job_observation, admission_status=AdmissionStatus.ADMITTED, fit=85, fit_authority=FitAuthority.AUTHORITATIVE), run_date=RUN_DATE)
     props = _record_to_properties(record)
     assert props["LIFE OS Fit"]["number"] == 85
     assert props["Provider Score"]["number"] == 91
@@ -180,16 +180,15 @@ def test_strict_schema_fixture_rejects_invented_property_types():
     http = StrictSchemaNotionHttp()
     transport = NotionTransport(context=context, http=http, access_token="synthetic-token")
     repo = NotionCareerRepository(transport=transport, config=NotionCareerRepositoryConfig(data_source_id="synthetic-ds"))
-    opportunity = Opportunity(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED, fit=80, fit_authority=FitAuthority.AUTHORITATIVE)
-    persisted = repo.upsert(new_record(opportunity, run_date=RUN_DATE))
-    assert persisted.opportunity.fit == 80
+    job = Job(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED, fit=80, fit_authority=FitAuthority.AUTHORITATIVE)
+    persisted = repo.upsert(new_record(job, run_date=RUN_DATE))
+    assert persisted.job.fit == 80
 
 
 def test_no_emitted_property_is_outside_canonical_schema():
-    record = new_record(Opportunity(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED, fit=80, fit_authority=FitAuthority.AUTHORITATIVE), run_date=RUN_DATE)
+    record = new_record(Job(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED, fit=80, fit_authority=FitAuthority.AUTHORITATIVE), run_date=RUN_DATE)
     props = _record_to_properties(record)
     assert set(props) <= set(CANONICAL_LEDGER_PROPERTY_TYPES)
-    # Blocker 1's originally-invented properties must never appear.
     for invented in ("Compensation Minimum", "Source Lane", "Provider Job ID", "Description",
                       "Source Lanes", "Aliases", "Lifecycle Status", "Review Ready On", "Live"):
         assert invented not in props
@@ -211,7 +210,7 @@ def test_internal_enum_wire_values_fail_strict_schema_fixture():
 
 def test_admission_status_and_work_mode_use_canonical_labels():
     record = new_record(
-        Opportunity(stable_job_key="k1", job=_job(work_mode=WorkMode.REMOTE), admission_status=AdmissionStatus.ADMITTED, fit=80),
+        Job(stable_job_key="k1", job=_job(work_mode=WorkMode.REMOTE), admission_status=AdmissionStatus.ADMITTED, fit=80),
         run_date=RUN_DATE,
     )
     props = _record_to_properties(record)
@@ -226,8 +225,8 @@ def test_applied_state_survives_upsert_read_back():
     http = StrictSchemaNotionHttp()
     transport = NotionTransport(context=context, http=http, access_token="synthetic-token")
     repo = NotionCareerRepository(transport=transport, config=NotionCareerRepositoryConfig(data_source_id="synthetic-ds"))
-    opportunity = Opportunity(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED, fit=80, fit_authority=FitAuthority.AUTHORITATIVE)
-    record = mark_applied(new_record(opportunity, run_date=RUN_DATE), run_date=RUN_DATE)
+    job = Job(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED, fit=80, fit_authority=FitAuthority.AUTHORITATIVE)
+    record = mark_applied(new_record(job, run_date=RUN_DATE), run_date=RUN_DATE)
     persisted = repo.upsert(record)
     assert persisted.applied is True
     assert persisted.applied_on == RUN_DATE
@@ -246,11 +245,11 @@ def test_63_vacancies_chunked_correctly():
     for i in range(63):
         key = f"k{i}"
         keys.append(key)
-        opportunity = Opportunity(stable_job_key=key, job=_job(apply_url=f"https://greenhouse.io/acme/jobs/{i}"), admission_status=AdmissionStatus.ADMITTED, fit=80, fit_authority=FitAuthority.AUTHORITATIVE)
-        repo.upsert(new_record(opportunity, run_date=RUN_DATE))
+        job = Job(stable_job_key=key, job=_job(apply_url=f"https://greenhouse.io/acme/jobs/{i}"), admission_status=AdmissionStatus.ADMITTED, fit=80, fit_authority=FitAuthority.AUTHORITATIVE)
+        repo.upsert(new_record(job, run_date=RUN_DATE))
 
     found = repo.get_many(keys)
-    assert len(found) == 63  # complete accounting, no exception at the 50-key boundary
+    assert len(found) == 63
 
 
 def test_get_many_chunk_size_never_exceeds_notion_identity_query_cap():
@@ -347,7 +346,6 @@ class RedirectingFetcher:
 
     def get(self, url: str) -> FetchResponse:
         self.calls.append(url)
-        # Both tracking URLs land on the same canonical employer page.
         return FetchResponse(final_url="https://greenhouse.io/acme/jobs/99", body=JOBPOSTING_HTML)
 
 
@@ -359,9 +357,6 @@ def test_http_response_exposes_final_url():
 def test_two_tracking_urls_redirecting_to_same_employer_url_converge():
     class TrackingFetcher:
         def get(self, url: str) -> FetchResponse:
-            # A non-canonicalizable tracking URL forces the resolver's
-            # single-fetch redirect branch, whose result must reflect the
-            # actual final_url, not the originally requested tracking URL.
             return FetchResponse(final_url="https://greenhouse.io/acme/jobs/99", body=JOBPOSTING_HTML)
 
     fetcher = TrackingFetcher()
@@ -380,17 +375,7 @@ def test_two_tracking_urls_redirecting_to_same_employer_url_converge():
     assert len({r.stable_job_key for r in results}) == 1
 
 
-# --- BLOCKER 2 (Tech Lead 2 re-review): job-looking tracking URLs on an ----
-# --- unknown host must not fork one vacancy --------------------------------
-
-
 def test_two_job_looking_tracking_urls_on_unknown_host_converge_via_verified_redirect():
-    """Both https://track.example/apply?id=aaa and .../apply?id=bbb have a
-    path that matches JOB_PATH_HINTS ("/apply") on a host that is neither a
-    known discovery intermediary nor a trusted ATS host. Neither may become
-    canonical on path shape alone -- both must be verified via a single
-    bounded fetch and converge on the actual HTTP-redirected ATS URL."""
-
     class TrackingRedirectFetcher:
         def __init__(self):
             self.calls: list[str] = []
@@ -406,25 +391,19 @@ def test_two_job_looking_tracking_urls_on_unknown_host_converge_via_verified_red
 
     assert candidate_a.unresolved_reason is None
     assert candidate_b.unresolved_reason is None
-    # Neither tracking URL itself became canonical identity.
     assert candidate_a.job.apply_url == "https://greenhouse.io/acme/jobs/99"
     assert candidate_b.job.apply_url == "https://greenhouse.io/acme/jobs/99"
     assert candidate_a.job.apply_url == candidate_b.job.apply_url
-    # A verification fetch was actually performed for each tracking URL.
     assert "https://track.example/apply?id=aaa" in fetcher.calls
     assert "https://track.example/apply?id=bbb" in fetcher.calls
 
     repo = InMemoryCareerRepository()
     results = ingest([candidate_a, candidate_b], lane=LANE, lane_priority=LANE_PRIORITY, repository=repo, run_date=RUN_DATE)
     assert {r.disposition for r in results} == {Disposition.CREATED, Disposition.DUPLICATE}
-    assert len({r.stable_job_key for r in results}) == 1  # exactly one canonical mutation
+    assert len({r.stable_job_key for r in results}) == 1
 
 
 def test_job_looking_path_on_unknown_host_fails_closed_without_verified_redirect():
-    """An unknown host whose path merely looks job-like must never resolve
-    to itself as canonical merely because no distinct, trusted terminal
-    destination was verified."""
-
     class SameHostFetcher:
         def get(self, url: str) -> FetchResponse:
             return FetchResponse(final_url=url, body="<html></html>")
