@@ -6,6 +6,7 @@ import json
 import os
 from datetime import datetime, timedelta, timezone
 from time import perf_counter
+from urllib.parse import quote
 
 from lifeos.core.http import HttpClient
 from lifeos.core.runtime import DeadlineExceeded, RunContext
@@ -21,6 +22,8 @@ from lifeos.newsletter.models import ParseState
 from lifeos.newsletter.parsers import parse_message
 from scripts import run_us_remote_production as prod
 
+_GMAIL_API = "https://gmail.googleapis.com/gmail/v1"
+
 
 class Live1x1Diagnostic(RuntimeError):
     """Sanitized diagnostic for expected live-acceptance preconditions."""
@@ -30,6 +33,22 @@ class Live1x1Diagnostic(RuntimeError):
         super().__init__(code)
 
 
+def _message_has_inbox_label(gmail, message_id: str) -> bool:
+    url = (
+        f"{_GMAIL_API}/users/{quote(gmail._user_id, safe='')}/messages/"
+        f"{quote(message_id, safe='')}?format=metadata&fields=labelIds"
+    )
+    payload = gmail._http.request_json(
+        gmail._context,
+        "GET",
+        url,
+        headers=gmail._headers(),
+        timeout_seconds=10.0,
+    )
+    labels = payload.get("labelIds") if isinstance(payload, dict) else None
+    return isinstance(labels, list) and "INBOX" in {str(label) for label in labels}
+
+
 def _select_fresh_newsletter_candidate(gmail, start: datetime, end: datetime):
     """Stage exactly one current Inbox message using existing classification."""
     classifier = DeterministicMailClassifier()
@@ -37,6 +56,8 @@ def _select_fresh_newsletter_candidate(gmail, start: datetime, end: datetime):
     for message in messages:
         classification = classifier.classify(message)
         if classification.mail_class is not MailClass.AUTOMATED_JOB_SOURCE:
+            continue
+        if not _message_has_inbox_label(gmail, message.message_id):
             continue
         gmail.route_to_newsletters(message.message_id, prod.NEWSLETTER_BOUNDARY)
         return message.message_id
