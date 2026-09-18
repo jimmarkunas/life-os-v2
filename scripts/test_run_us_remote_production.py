@@ -578,6 +578,38 @@ class HistoricalInboxRecoveryTests(unittest.TestCase):
         self.assertEqual(backend.processed_ids, ["msg-old-job-alert"])
         self.assertEqual(len(backend.pages), 1)
 
+    def test_runtime_error_returns_fail_closed_without_processed_cleanup(self) -> None:
+        backend = HistoricalInboxBackend(extra_staged_job_alerts=1)
+
+        class RuntimeErrorWebAcquirer:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+            def acquire(self, *args, **kwargs) -> AcquisitionResult:
+                raise RuntimeError("synthetic browser fallback failure")
+
+        fake_client = HttpClient(backend=backend)
+        import contextlib
+        import io
+
+        stdout = io.StringIO()
+        with patch.dict(os.environ, self._env, clear=True), patch.object(
+            entry, "HttpClient", return_value=fake_client
+        ), patch.object(entry, "load_registry", return_value=EMPTY_REGISTRY), patch.object(
+            runtime, "USRemoteAcquirer", RuntimeErrorWebAcquirer
+        ), contextlib.redirect_stdout(stdout):
+            exit_code = entry.main(["--timeout-seconds", "60"])
+
+        summary = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(summary["status"], "DEGRADED")
+        self.assertEqual(summary["reason"], "RuntimeError")
+        self.assertIn("newsletter_fetch_parse", summary["timings"])
+        self.assertNotIn("reconcile_persist", summary["timings"])
+        self.assertEqual(backend.processed_ids, [])
+        self.assertEqual(backend.routed_ids, ["msg-staged-job-alert-1"])
+        self.assertEqual(len(backend.pages), 0)
+
     def test_healthy_partial_backlog_reports_mail_pass_with_pending_health(self) -> None:
         backend = HistoricalInboxBackend(extra_staged_job_alerts=3)
         threshold = (

@@ -525,3 +525,11 @@ def execute_us_remote(
             "timings": timings,
         }
         return UsRemoteResult(body=body, indent=None, exit_code=1)
+    except RuntimeError as exc:
+        body = {
+            "status": "DEGRADED",
+            "reason": type(exc).__name__,
+            "elapsed_seconds": round(context.elapsed_seconds(), 3),
+            "timings": timings,
+        }
+        return UsRemoteResult(body=body, indent=None, exit_code=1)
