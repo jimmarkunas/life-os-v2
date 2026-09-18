@@ -19,6 +19,7 @@ from lifeos.core.runtime import DeadlineExceeded, RunContext
 from lifeos.integrations.gmail import GmailMailboxTransport
 from lifeos.integrations.notion import NotionTransport, NotionTransportError
 from lifeos.jobs.newsletter_runtime import execute_newsletter
+from lifeos.jobs.us_remote_acquisition import USRemoteAcquirer
 from lifeos.jobs.us_remote_runtime import browser_evidence, execute_us_remote, load_registry
 from lifeos.mail.models import MailMessage
 
