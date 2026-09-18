@@ -74,6 +74,21 @@ For a pre-scoped package, the Tech Lead owns architecture/context compilation. T
 - Targeted proof first; affected regression once; full suite once before landing.
 - If an implementer must rediscover broad architecture to execute a pre-scoped package, treat the handoff as defective and return to the Tech Lead rather than expanding context.
 
+### 4.2 Metered coding-agent prompt discipline
+
+Codex and other metered coding agents are execution resources, not architecture-discovery resources. The Tech Lead/ChatGPT must do the architecture investigation and code-path identification before delegating whenever that work can be done without consuming the metered coding-agent allowance.
+
+For a pre-scoped Codex or equivalent handoff, default to roughly 100–200 words and provide:
+
+`exact repo/base → exact files/symbols → exact mutation → exact proof → stop`
+
+- Do not send open-ended prompts such as “inspect the repo,” “read relevant requirements,” “determine the architecture,” or broad codebase exploration when the Tech Lead can compile that context first.
+- Do not repeat governance already owned by this policy unless a specific rule is material to the mutation.
+- The Tech Lead should identify the existing integration/client/presentation path and mutation surface before spending coding-agent credits.
+- Codex should primarily edit and prove, not rediscover LIFE OS.
+- If exact files/symbols cannot yet be named, keep the investigation with the Tech Lead until they can, unless Jim explicitly approves metered discovery.
+- If a coding-agent prompt is materially longer or broader than necessary, stop and rescope it before execution.
+
 ## 5. Fast path
 
 1. Define the user-visible outcome.
