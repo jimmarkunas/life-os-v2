@@ -462,7 +462,7 @@ def execute_us_remote(
             and not newsletter_unresolved
             and not processed_errors
             and not backlog_errors
-            and (pending_source_messages == 0 or processed_count > 0 or not newsletter_result.messages)
+            and (pending_source_messages == 0 or processed_count > 0)
         )
         web_lane_pass = web_result.complete and web_fully_accounted and not web_unresolved
         pass_run = mail_lane_pass and web_lane_pass
