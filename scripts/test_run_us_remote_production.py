@@ -612,15 +612,17 @@ class HistoricalInboxRecoveryTests(unittest.TestCase):
 
     def test_healthy_partial_backlog_reports_mail_pass_with_pending_health(self) -> None:
         backend = HistoricalInboxBackend(extra_staged_job_alerts=3)
-        threshold = (
-            gmail_module.BACKLOG_MESSAGE_RUNTIME_RESERVE_SECONDS
-            + gmail_module.BACKLOG_PER_MESSAGE_ADMISSION_SECONDS
-        )
+        reserve = gmail_module.BACKLOG_MESSAGE_RUNTIME_RESERVE_SECONDS
+        per_message = gmail_module.BACKLOG_PER_MESSAGE_ADMISSION_SECONDS
 
         with patch.object(
             RunContext,
             "remaining_seconds",
-            _admit_only_remaining_seconds([threshold + 1.0, threshold + 1.0, threshold]),
+            _admit_only_remaining_seconds([
+                reserve + per_message + 1.0,
+                reserve + (per_message * 2) + 1.0,
+                reserve + (per_message * 3),
+            ]),
         ):
             exit_code, summary = self._run_capturing_summary(backend)
 
@@ -636,9 +638,9 @@ class HistoricalInboxRecoveryTests(unittest.TestCase):
         self.assertEqual(summary["mail"]["backlog_error_codes"], [])
         self.assertEqual(set(backend.processed_ids), {"msg-staged-job-alert-1", "msg-staged-job-alert-2"})
 
-    def test_final_drain_and_immediate_replay_report_empty_healthy_backlog(self) -> None:
-        backend = HistoricalInboxBackend(extra_staged_job_alerts=3)
-        threshold = (
+    def test_pending_backlog_with_zero_progress_reports_mail_degraded(self) -> None:
+        backend = HistoricalInboxBackend(extra_staged_job_alerts=1)
+        first_required = (
             gmail_module.BACKLOG_MESSAGE_RUNTIME_RESERVE_SECONDS
             + gmail_module.BACKLOG_PER_MESSAGE_ADMISSION_SECONDS
         )
@@ -646,20 +648,43 @@ class HistoricalInboxRecoveryTests(unittest.TestCase):
         with patch.object(
             RunContext,
             "remaining_seconds",
-            _admit_only_remaining_seconds([threshold + 1.0, threshold + 1.0, threshold]),
+            _admit_only_remaining_seconds([first_required]),
+        ):
+            exit_code, summary = self._run_capturing_summary(backend)
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(summary["mail"]["status"], "DEGRADED")
+        self.assertEqual(summary["mail"]["pending_source_messages"], 1)
+        self.assertEqual(summary["mail"]["processed"], 0)
+        self.assertEqual(summary["mail"]["progress_messages"], 0)
+        self.assertEqual(backend.processed_ids, [])
+
+    def test_final_drain_and_immediate_replay_report_empty_healthy_backlog(self) -> None:
+        backend = HistoricalInboxBackend(extra_staged_job_alerts=3)
+        reserve = gmail_module.BACKLOG_MESSAGE_RUNTIME_RESERVE_SECONDS
+        per_message = gmail_module.BACKLOG_PER_MESSAGE_ADMISSION_SECONDS
+
+        with patch.object(
+            RunContext,
+            "remaining_seconds",
+            _admit_only_remaining_seconds([
+                reserve + per_message + 1.0,
+                reserve + (per_message * 2) + 1.0,
+                reserve + (per_message * 3),
+            ]),
         ):
             self._run_capturing_summary(backend)
         with patch.object(
             RunContext,
             "remaining_seconds",
-            _admit_only_remaining_seconds([threshold + 1.0, threshold]),
+            _admit_only_remaining_seconds([reserve + per_message + 1.0]),
         ):
             exit_code_2, summary_2 = self._run_capturing_summary(backend)
             processed_after_drain = tuple(backend.processed_ids)
         with patch.object(
             RunContext,
             "remaining_seconds",
-            _admit_only_remaining_seconds([threshold]),
+            _admit_only_remaining_seconds([reserve + per_message]),
         ):
             exit_code_3, summary_3 = self._run_capturing_summary(backend)
 
