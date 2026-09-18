@@ -433,10 +433,7 @@ def execute_us_remote(
         processed_errors: list[str] = []
         processed_count = 0
         stage_started = perf_counter()
-        if staging_ok and newsletter_ok and newsletter_fully_accounted and not newsletter_unresolved:
-            accepted_message_ids = _accepted_newsletter_message_ids(newsletter_result, newsletter_results)
-        else:
-            accepted_message_ids = ()
+        accepted_message_ids = _accepted_newsletter_message_ids(newsletter_result, newsletter_results)
         for message_id in accepted_message_ids:
             try:
                 gmail.mark_newsletter_processed(message_id, NEWSLETTER_BOUNDARY)

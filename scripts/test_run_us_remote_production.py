@@ -495,6 +495,54 @@ class HistoricalInboxRecoveryTests(unittest.TestCase):
         self.assertEqual(backend.routed_ids, [])
         self.assertEqual(len(backend.pages), 1)
 
+    def test_staging_failure_does_not_block_safe_already_staged_message_completion(self) -> None:
+        backend = HistoricalInboxBackend()
+        backend.routed_ids.append("msg-old-job-alert")
+        backend.inbox_removed_ids.append("msg-old-job-alert")
+
+        class DegradedMailRouter:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+            def route_window(self, *args, **kwargs) -> MailRouteResult:
+                return MailRouteResult(
+                    state=MailExecutionState.DEGRADED,
+                    provider_scans=(ProviderScan("gmail", False, 0, "synthetic-scan-error"),),
+                    records=(),
+                    errors=(
+                        RoutingError(
+                            MailRef("gmail", "synthetic-message"),
+                            "scan",
+                            "synthetic-scan-error",
+                        ),
+                    ),
+                    timings=RoutingTimings(0.0, 0.0, 0.0, 0.0),
+                )
+
+        fake_client = HttpClient(backend=backend)
+        import contextlib
+        import io
+
+        stdout = io.StringIO()
+        with patch.dict(os.environ, self._env, clear=True), patch.object(
+            entry, "HttpClient", return_value=fake_client
+        ), patch.object(entry, "load_registry", return_value=EMPTY_REGISTRY), patch.object(
+            runtime, "MailRouter", DegradedMailRouter
+        ), contextlib.redirect_stdout(stdout):
+            exit_code = entry.main(["--timeout-seconds", "60"])
+
+        summary = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(summary["status"], "DEGRADED")
+        self.assertEqual(summary["mail"]["status"], "DEGRADED")
+        self.assertFalse(summary["mail"]["staging_safe"])
+        self.assertEqual(summary["mail"]["processed"], 1)
+        self.assertEqual(summary["mail"]["processed_errors"], 0)
+        self.assertEqual(summary["newsletter"]["state"], "PASS")
+        self.assertEqual(summary["jobs"]["dispositions"]["created"], 1)
+        self.assertEqual(backend.processed_ids, ["msg-old-job-alert"])
+        self.assertEqual(len(backend.pages), 1)
+
     def test_recovery_hours_must_be_bounded(self) -> None:
         backend = HistoricalInboxBackend()
         exit_code = self._run(backend, "--historical-inbox-recovery-hours", "10000")
