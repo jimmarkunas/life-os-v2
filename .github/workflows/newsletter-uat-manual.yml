@@ -45,16 +45,16 @@ jobs:
       - name: Newsletter production run
         run: >
           PYTHONPATH="$GITHUB_WORKSPACE" python3.12
-          scripts/run_newsletter_production.py
+          scripts/run_us_remote_production.py
           --timeout-seconds 300
           --window-hours 24
-          --skip-mail-router
+          --web-lookback-hours 24
 
       - name: Newsletter production replay (idempotency proof)
         if: ${{ inputs.replay_idempotency }}
         run: >
           PYTHONPATH="$GITHUB_WORKSPACE" python3.12
-          scripts/run_newsletter_production.py
+          scripts/run_us_remote_production.py
           --timeout-seconds 300
           --window-hours 24
-          --skip-mail-router
+          --web-lookback-hours 24

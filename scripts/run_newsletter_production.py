@@ -328,6 +328,16 @@ def _safe_summary(
             "dispositions": disposition_counts,
             "cleanup_safe": feature_result.cleanup_safe,
         }
+        review_degraded = [
+            {
+                "evidence_ref": result.evidence_ref,
+                "detail": result.detail,
+            }
+            for result in feature_result.ingest_results
+            if result.disposition is Disposition.REVIEW_DEGRADED
+        ]
+        if review_degraded:
+            summary["jobs"]["review_degraded"] = review_degraded
     return summary
 
 

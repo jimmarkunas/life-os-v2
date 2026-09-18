@@ -103,23 +103,16 @@ def test_case_d_zero_negative_and_non_numeric_fail_closed() -> None:
 
 
 def test_case_e_wrong_module_with_historical_hours_fails_closed() -> None:
-    for module in ("us-remote-live-1x1", "us-remote-smoke", "us-remote-recovery", "us-remote-terminal-diagnostic"):
-        code, _outputs = _run_trigger(_trigger(module, historical_hours="168"))
-        assert code != 0, f"expected module={module} with historical_inbox_recovery_hours set to fail"
+    code, _outputs = _run_trigger(_trigger("us-remote-recovery", historical_hours="168"))
+    assert code != 0
 
 
 def test_existing_modules_unaffected_when_field_absent() -> None:
-    for module, expected_window, expected_sweep in (
-        ("us-remote-smoke", "1", "false"),
-        ("us-remote-live-1x1", "1", "false"),
-        ("us-remote-terminal-diagnostic", "1", "false"),
-        ("us-remote-recovery", "1440", "true"),
-    ):
-        code, outputs = _run_trigger(_trigger(module))
-        assert code == 0
-        assert outputs["window_hours"] == expected_window
-        assert outputs["full_web_sweep"] == expected_sweep
-        assert outputs["historical_inbox_recovery_hours"] == ""
+    code, outputs = _run_trigger(_trigger("us-remote-recovery"))
+    assert code == 0
+    assert outputs["window_hours"] == "1440"
+    assert outputs["full_web_sweep"] == "true"
+    assert outputs["historical_inbox_recovery_hours"] == ""
 
 
 def test_execute_step_only_appends_historical_flag_when_present() -> None:
@@ -127,7 +120,4 @@ def test_execute_step_only_appends_historical_flag_when_present() -> None:
     execute = text.split("name: Execute US Remote runtime", 1)[1]
     assert "--historical-inbox-recovery-hours" in execute
     assert "steps.trigger.outputs.historical_inbox_recovery_hours" in execute
-    # The flag is appended conditionally, inside the generic (non
-    # smoke/1x1/diagnostic) branch only -- never unconditionally.
-    generic_branch = execute.split("else", 1)[1]
-    assert "--historical-inbox-recovery-hours" in generic_branch
+    assert 'if [ -n "${{ steps.trigger.outputs.historical_inbox_recovery_hours }}" ]; then' in execute

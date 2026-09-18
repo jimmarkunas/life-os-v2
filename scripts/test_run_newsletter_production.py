@@ -8,6 +8,9 @@ from unittest.mock import patch
 from urllib.parse import parse_qs
 
 from lifeos.core.http import HttpClient, HttpResponse
+from lifeos.core.runtime import ExecutionResult
+from lifeos.jobs.newsletter_contract import Disposition, IngestResult
+from lifeos.jobs.newsletter_feature import NewsletterFeatureResult
 from lifeos.newsletter.processor import NewsletterError, NewsletterExecutionState, NewsletterProcessResult, NewsletterTimings
 
 from . import run_newsletter_production as entry
@@ -298,6 +301,35 @@ class MainEntryPointTests(unittest.TestCase):
         self.assertEqual(summary["newsletter_parse"]["error_details"][0]["mailbox"], "gmail")
         self.assertEqual(summary["newsletter_parse"]["error_details"][0]["operation"], "fetch")
         self.assertIn("msg-stuck:TimeoutError:synthetic", summary["newsletter_parse"]["error_details"][0]["detail"])
+
+    def test_summary_preserves_review_degraded_observation_detail(self) -> None:
+        feature_result = NewsletterFeatureResult(
+            execution=ExecutionResult.degraded(code="not-cleanup-safe"),
+            ingest_results=(
+                IngestResult(
+                    "gmail:msg-1#0",
+                    Disposition.REVIEW_DEGRADED,
+                    None,
+                    "cannot derive stable Job identity without canonical_identity, a canonical apply URL, or company+role+location",
+                ),
+            ),
+            cleanup_safe=False,
+        )
+
+        summary = entry._safe_summary(
+            dry_run=False,
+            elapsed_seconds=0.1,
+            mail_preview=None,
+            mail_result=None,
+            process_result=None,
+            feature_result=feature_result,
+            processed_count=0,
+            processed_errors=0,
+        )
+
+        self.assertEqual(summary["jobs"]["dispositions"]["review_degraded"], 1)
+        self.assertEqual(summary["jobs"]["review_degraded"][0]["evidence_ref"], "gmail:msg-1#0")
+        self.assertIn("cannot derive stable Job identity", summary["jobs"]["review_degraded"][0]["detail"])
 
 
 def _jobright_body(vacancy_id: str) -> str:
