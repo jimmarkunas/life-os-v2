@@ -18,7 +18,7 @@ from lifeos.core.http import HttpClient, HttpError
 from lifeos.core.runtime import DeadlineExceeded, RunContext
 from lifeos.integrations.gmail import GmailMailboxTransport
 from lifeos.integrations.notion import NotionTransport, NotionTransportError
-from lifeos.jobs.us_remote_acquisition import USRemoteAcquirer
+from lifeos.jobs.newsletter_runtime import execute_newsletter
 from lifeos.jobs.us_remote_runtime import browser_evidence, execute_us_remote, load_registry
 from lifeos.mail.models import MailMessage
 
@@ -36,11 +36,6 @@ MAX_TIMEOUT_SECONDS = 300.0
 DEFAULT_WINDOW_HOURS = 24.0
 DEFAULT_WEB_LOOKBACK_HOURS = 24.0
 MAX_INBOX_STAGING_HOURS = 24.0
-# Explicit, opt-in, bounded historical Inbox recovery mode only -- never the
-# default. Normal scheduled production always uses MAX_INBOX_STAGING_HOURS;
-# this only widens the Mail Router's Inbox scan window when a caller
-# explicitly asks for a one-off bounded recovery execution. 90 days is a
-# concrete finite cap, not an "arbitrary historical scan" allowance.
 MAX_HISTORICAL_INBOX_RECOVERY_HOURS = 24.0 * 90
 
 
@@ -51,6 +46,11 @@ def _args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--web-lookback-hours", type=float, default=DEFAULT_WEB_LOOKBACK_HOURS)
     parser.add_argument("--full-web-sweep", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--newsletter-only",
+        action="store_true",
+        help="Run only the extracted Newsletter runtime; intended for controlled manual UAT before production cutover.",
+    )
     parser.add_argument(
         "--historical-inbox-recovery-hours",
         type=float,
@@ -125,38 +125,54 @@ def main(argv: list[str] | None = None) -> int:
     end = datetime.now(timezone.utc)
     start = end - timedelta(hours=args.window_hours)
     if args.historical_inbox_recovery_hours is not None:
-        # Explicit bounded historical recovery: widen only the Inbox
-        # staging scan. Everything downstream (classification, routing,
-        # Newsletter parse, Jobs reconciliation, cleanup) is the exact
-        # existing production path -- unchanged.
         inbox_start = end - timedelta(hours=args.historical_inbox_recovery_hours)
         inbox_mode = "historical_recovery"
     else:
         inbox_start = max(start, end - timedelta(hours=MAX_INBOX_STAGING_HOURS))
         inbox_mode = "normal"
-    web_since = end - timedelta(hours=args.web_lookback_hours)
 
-    result = execute_us_remote(
-        context=context,
-        http=http,
-        notion=notion,
-        gmail=gmail,
-        registry=registry,
-        browser_evidence=browser_evidence_payload,
-        lane=lane,
-        lane_priority=lane_priority,
-        fit_profile=fit_profile,
-        market=market,
-        newsletter_source_lane=newsletter_source_lane,
-        notion_job_ledger_data_source_id=env["NOTION_JOB_LEDGER_DATA_SOURCE_ID"],
-        inbox_start=inbox_start,
-        inbox_mode=inbox_mode,
-        start=start,
-        end=end,
-        web_since=web_since,
-        dry_run=args.dry_run,
-        full_web_sweep=args.full_web_sweep,
-    )
+    if args.newsletter_only:
+        result = execute_newsletter(
+            context=context,
+            http=http,
+            notion=notion,
+            gmail=gmail,
+            browser_evidence=browser_evidence_payload,
+            lane=lane,
+            lane_priority=lane_priority,
+            fit_profile=fit_profile,
+            market=market,
+            newsletter_source_lane=newsletter_source_lane,
+            notion_job_ledger_data_source_id=env["NOTION_JOB_LEDGER_DATA_SOURCE_ID"],
+            inbox_start=inbox_start,
+            inbox_mode=inbox_mode,
+            start=start,
+            end=end,
+            dry_run=args.dry_run,
+        )
+    else:
+        web_since = end - timedelta(hours=args.web_lookback_hours)
+        result = execute_us_remote(
+            context=context,
+            http=http,
+            notion=notion,
+            gmail=gmail,
+            registry=registry,
+            browser_evidence=browser_evidence_payload,
+            lane=lane,
+            lane_priority=lane_priority,
+            fit_profile=fit_profile,
+            market=market,
+            newsletter_source_lane=newsletter_source_lane,
+            notion_job_ledger_data_source_id=env["NOTION_JOB_LEDGER_DATA_SOURCE_ID"],
+            inbox_start=inbox_start,
+            inbox_mode=inbox_mode,
+            start=start,
+            end=end,
+            web_since=web_since,
+            dry_run=args.dry_run,
+            full_web_sweep=args.full_web_sweep,
+        )
     print(json.dumps(result.body, indent=result.indent, sort_keys=True))
     return result.exit_code
 
