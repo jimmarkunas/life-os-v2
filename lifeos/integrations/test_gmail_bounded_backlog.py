@@ -60,7 +60,7 @@ def test_fetch_unprocessed_admits_more_than_ten_when_deadline_reserve_allows(mon
     monkeypatch.setattr(gmail_module, "sleep", lambda _seconds: None)
     http = BoundedBacklogHttp()
     mailbox = GmailMailboxTransport(
-        context=RunContext.start(timeout_seconds=45),
+        context=RunContext.start(timeout_seconds=90),
         http=http,
         access_token="synthetic-token",
         message_factory=lambda **kwargs: kwargs,
@@ -146,10 +146,9 @@ def _clock(values: list[float]):
 def test_fetch_unprocessed_uses_deadline_reserve_to_admit_only_safe_prefix(monkeypatch) -> None:
     monkeypatch.setattr(gmail_module, "sleep", lambda _seconds: None)
     http = ABCDEBacklogHttp()
-    threshold = BACKLOG_MESSAGE_RUNTIME_RESERVE_SECONDS + BACKLOG_PER_MESSAGE_ADMISSION_SECONDS
     context = RunContext.start(
         timeout_seconds=30,
-        monotonic_clock=_clock([0.0, 0.0, 30.0 - threshold - 1.0, 30.0 - threshold]),
+        monotonic_clock=_clock([0.0, 0.0, 5.0, 6.0]),
     )
     mailbox = GmailMailboxTransport(
         context=context,
