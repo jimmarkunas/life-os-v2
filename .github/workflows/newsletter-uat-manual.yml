@@ -46,7 +46,7 @@ jobs:
         run: >
           PYTHONPATH="$GITHUB_WORKSPACE" python3.12
           scripts/run_us_remote_production.py
-          --timeout-seconds 300
+          --timeout-seconds 285
           --window-hours 24
           --web-lookback-hours 24
 
@@ -55,6 +55,6 @@ jobs:
         run: >
           PYTHONPATH="$GITHUB_WORKSPACE" python3.12
           scripts/run_us_remote_production.py
-          --timeout-seconds 300
+          --timeout-seconds 285
           --window-hours 24
           --web-lookback-hours 24
