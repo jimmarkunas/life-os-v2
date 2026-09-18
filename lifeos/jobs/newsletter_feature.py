@@ -72,19 +72,17 @@ def _adapt_all(
             results[index] = _unresolved_candidate(observation, f"adapter raised {type(exc).__name__}")
 
     with ThreadPoolExecutor(max_workers=min(workers, len(observations))) as pool:
-        for chunk_start in range(0, len(observations), workers):
-            chunk = observations[chunk_start : chunk_start + workers]
-            futures = {
-                pool.submit(_resolve_one, chunk_start + offset, observation): chunk_start + offset
-                for offset, observation in enumerate(chunk)
-            }
-            for future in as_completed(futures):
-                index = futures[future]
-                try:
-                    future.result()
-                except DeadlineExceeded:
-                    if results[index] is None:
-                        results[index] = _unresolved_candidate(observations[index], "run deadline exhausted")
+        futures = {
+            pool.submit(_resolve_one, index, observation): index
+            for index, observation in enumerate(observations)
+        }
+        for future in as_completed(futures):
+            index = futures[future]
+            try:
+                future.result()
+            except DeadlineExceeded:
+                if results[index] is None:
+                    results[index] = _unresolved_candidate(observations[index], "run deadline exhausted")
 
     return [
         candidate if candidate is not None else _unresolved_candidate(observations[i], "adapter did not complete")
