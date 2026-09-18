@@ -1,7 +1,7 @@
 """Shared Career/Jobs domain model.
 
-Wave 1 scope: Company, Job, and the normalized candidate a discovery source
-produces before it reaches identity/dedupe/qualification. Opportunity,
+Wave 1 scope: Company, JobObservation, and the normalized candidate a discovery
+source produces before it reaches identity/dedupe/qualification. Job,
 Application, Interview, Offer, and Employment are declared now as the shape
 future waves extend, but carry no persistence/lifecycle logic yet.
 
@@ -52,7 +52,7 @@ class Company:
 
 
 @dataclass(frozen=True)
-class Job:
+class JobObservation:
     """A single vacancy as understood by exactly one discovery source
     observation. Not yet deduplicated across sources -- see identity.py /
     dedupe.py for the canonical-Job convergence step."""
@@ -93,7 +93,7 @@ class NormalizedCandidate:
     Mail/Newsletter extracts facts into this shape; Career owns everything
     downstream of it."""
 
-    job: Job
+    job: JobObservation
     fit: int | None
     market: str
     freshness_status: FreshnessStatus
@@ -117,14 +117,13 @@ class NormalizedCandidate:
 
 
 @dataclass(frozen=True)
-class Opportunity:
+class Job:
     """The canonical, deduplicated Job after cross-source convergence. One
-    Opportunity may be backed by multiple source observations (see
-    dedupe.py's ReconciledOpportunity, which this will become in a later
-    wave once persistence lands)."""
+    Job may be backed by multiple source observations (see dedupe.py's
+    ReconciledJob)."""
 
     stable_job_key: str
-    job: Job
+    job: JobObservation
     admission_status: AdmissionStatus
     source_lanes: tuple[str, ...] = field(default_factory=tuple)
     aliases: tuple[str, ...] = field(default_factory=tuple)
@@ -134,7 +133,7 @@ class Opportunity:
     fit: int | None = None
     """Authoritative LIFE OS Fit for this canonical Job (see
     fit_scoring.py). Never a provider-supplied score -- see
-    Job.provider_score for that, kept strictly separate."""
+    JobObservation.provider_score for that, kept strictly separate."""
     fit_authority: FitAuthority = FitAuthority.NON_AUTHORITATIVE
     source_providers: tuple[str, ...] = field(default_factory=tuple)
     source_types: tuple[str, ...] = field(default_factory=tuple)
