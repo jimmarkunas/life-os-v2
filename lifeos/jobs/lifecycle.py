@@ -4,8 +4,8 @@ MIGRATE/REFACTOR from v1 `jobs/ledger_core.py`. The append-only, human-state-
 preserving merge semantics are proven and reused: absence never deletes,
 closure requires exact evidence, and human-owned fields (applied,
 applied_on, first_surfaced) are never overwritten by a re-run. v1's
-duplicated per-lane RoutePolicy constants (SCALE_UP/SKILLED_WORKER/...) are
-retired here -- that was Jim-specific production policy hardcoded into a
+duplicated per-lane RoutePolicy constants (SCALE_UP/SKILLED_WORKER/...)
+are retired here -- that was Jim-specific production policy hardcoded into a
 public-shaped module. The state machine itself (New -> Review -> Apply ->
 Applied -> Historical -> Expired) is source-agnostic and kept.
 """
@@ -15,7 +15,7 @@ from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from enum import Enum
 
-from lifeos.jobs.models import AdmissionStatus, Company, FitAuthority, Job, Opportunity, WorkMode
+from lifeos.jobs.models import AdmissionStatus, Company, FitAuthority, Job, JobObservation, WorkMode
 
 
 class LifecycleStatus(str, Enum):
@@ -28,13 +28,13 @@ class LifecycleStatus(str, Enum):
 
 
 @dataclass(frozen=True)
-class LifecycleRecord:
-    """The persisted, human-augmentable state for one Opportunity. This is
+class JobLedgerRecord:
+    """The persisted, human-augmentable state for one canonical Job. This is
     the shape a repository (see repository.py) reads and writes; Career
     never reconstructs it from scratch on a re-run -- see
     apply_observation()'s preservation rules."""
 
-    opportunity: Opportunity
+    job: Job
     status: LifecycleStatus
     applied: bool
     applied_on: date | None
@@ -44,11 +44,11 @@ class LifecycleRecord:
     live: bool
 
 
-def new_record(opportunity: Opportunity, *, run_date: date) -> LifecycleRecord:
-    live = opportunity.admission_status != AdmissionStatus.EXCLUDED
+def new_record(job: Job, *, run_date: date) -> JobLedgerRecord:
+    live = job.admission_status != AdmissionStatus.EXCLUDED
     status = LifecycleStatus.NEW if live else LifecycleStatus.HISTORICAL
-    return LifecycleRecord(
-        opportunity=opportunity,
+    return JobLedgerRecord(
+        job=job,
         status=status,
         applied=False,
         applied_on=None,
@@ -67,7 +67,7 @@ def _prefer_work_mode(incoming: WorkMode, existing: WorkMode) -> WorkMode:
     return incoming if incoming != WorkMode.UNKNOWN else existing
 
 
-def _merge_fit(existing: Opportunity, incoming: Opportunity) -> tuple[int | None, FitAuthority]:
+def _merge_fit(existing: Job, incoming: Job) -> tuple[int | None, FitAuthority]:
     if incoming.fit is not None and incoming.fit_authority == FitAuthority.AUTHORITATIVE:
         return incoming.fit, FitAuthority.AUTHORITATIVE
     if existing.fit is not None and existing.fit_authority == FitAuthority.AUTHORITATIVE:
@@ -77,7 +77,7 @@ def _merge_fit(existing: Opportunity, incoming: Opportunity) -> tuple[int | None
     return existing.fit, existing.fit_authority
 
 
-def merge_canonical_observation(existing: Opportunity, incoming: Opportunity) -> Opportunity:
+def merge_canonical_observation(existing: Job, incoming: Job) -> Job:
     """Apply canonical no-downgrade merge policy for one stable Job.
 
     Repositories serialize state; this function owns Jobs-domain precedence
@@ -88,7 +88,7 @@ def merge_canonical_observation(existing: Opportunity, incoming: Opportunity) ->
 
     existing_job = existing.job
     incoming_job = incoming.job
-    merged_job = Job(
+    merged_job = JobObservation(
         company=Company(
             name=_prefer_text(incoming_job.company.name, existing_job.company.name) or "",
             domain=_prefer_text(incoming_job.company.domain, existing_job.company.domain),
@@ -125,17 +125,17 @@ def merge_canonical_observation(existing: Opportunity, incoming: Opportunity) ->
     )
 
 
-def apply_observation(existing: LifecycleRecord, opportunity: Opportunity, *, run_date: date) -> LifecycleRecord:
+def apply_observation(existing: JobLedgerRecord, job: Job, *, run_date: date) -> JobLedgerRecord:
     """Merge a new observation of the same stable_job_key into an existing
     record. Human-owned fields (applied, applied_on, first_surfaced) are
     never overwritten by this call -- only Career-owned fields (the
-    opportunity snapshot, last_seen, live, and status derived from
+    canonical Job snapshot, last_seen, live, and status derived from
     admission) advance."""
-    if existing.opportunity.stable_job_key != opportunity.stable_job_key:
+    if existing.job.stable_job_key != job.stable_job_key:
         raise ValueError("cannot merge observations for different stable_job_key values")
 
-    opportunity = merge_canonical_observation(existing.opportunity, opportunity)
-    live = opportunity.admission_status != AdmissionStatus.EXCLUDED
+    job = merge_canonical_observation(existing.job, job)
+    live = job.admission_status != AdmissionStatus.EXCLUDED
 
     if existing.applied:
         status = LifecycleStatus.APPLIED
@@ -148,14 +148,14 @@ def apply_observation(existing: LifecycleRecord, opportunity: Opportunity, *, ru
 
     return replace(
         existing,
-        opportunity=opportunity,
+        job=job,
         status=status,
         live=live,
         last_seen=run_date,
     )
 
 
-def close_definitively(record: LifecycleRecord) -> LifecycleRecord:
+def close_definitively(record: JobLedgerRecord) -> JobLedgerRecord:
     """Explicit-evidence closure only. Never called on mere absence from a
     new source scan -- absence is not evidence of closure."""
     return replace(
@@ -165,7 +165,7 @@ def close_definitively(record: LifecycleRecord) -> LifecycleRecord:
     )
 
 
-def mark_applied(record: LifecycleRecord, *, run_date: date) -> LifecycleRecord:
+def mark_applied(record: JobLedgerRecord, *, run_date: date) -> JobLedgerRecord:
     """The Applied flag is submission authority: once set, it is preserved
     across every future merge regardless of admission status."""
     return replace(
