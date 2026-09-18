@@ -178,16 +178,23 @@ class NewsletterJobsAdapter:
         )
 
     def _terminal_evidence_for(self, source_apply_url: str) -> TerminalVacancyEvidence | None:
+        # Protect only cache access. Holding this lock across network/browser
+        # resolution serialized every distinct job URL and defeated _adapt_all's
+        # worker pool under large Newsletter batches.
         with self._terminal_evidence_lock:
             if source_apply_url in self._terminal_evidence_cache:
                 return self._terminal_evidence_cache[source_apply_url]
-            try:
-                evidence = acquire_terminal_vacancy_evidence(
-                    source_apply_url,
-                    fetcher=self._config.fetcher,
-                    fallback_fetcher=self._config.fallback_fetcher,
-                )
-            except Exception:
-                evidence = None
-            self._terminal_evidence_cache[source_apply_url] = evidence
-            return evidence
+
+        try:
+            evidence = acquire_terminal_vacancy_evidence(
+                source_apply_url,
+                fetcher=self._config.fetcher,
+                fallback_fetcher=self._config.fallback_fetcher,
+            )
+        except Exception:
+            evidence = None
+
+        with self._terminal_evidence_lock:
+            # A concurrent duplicate URL may have completed first. Preserve the
+            # first cached result while allowing distinct URLs to resolve in parallel.
+            return self._terminal_evidence_cache.setdefault(source_apply_url, evidence)
