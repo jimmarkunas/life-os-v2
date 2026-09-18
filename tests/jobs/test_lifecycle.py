@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, timedelta
 
 import pytest
@@ -34,6 +35,24 @@ def test_apply_observation_preserves_first_surfaced():
     updated = apply_observation(original, _opportunity(), run_date=later)
     assert updated.first_surfaced == RUN_DATE
     assert updated.last_seen == later
+
+    remote = replace(_opportunity(), eligible_lanes=("US Remote",), primary_lane="US Remote")
+    scale_up = replace(_opportunity(), eligible_lanes=("Scale-Up",), primary_lane="Scale-Up")
+    priority = {"Scale-Up": 0, "US Remote": 1}
+    remote_first = apply_observation(
+        new_record(remote, run_date=RUN_DATE),
+        scale_up,
+        run_date=later,
+        lane_priority=priority,
+    )
+    scale_up_first = apply_observation(
+        new_record(scale_up, run_date=RUN_DATE),
+        remote,
+        run_date=later,
+        lane_priority=priority,
+    )
+    assert remote_first.job.eligible_lanes == scale_up_first.job.eligible_lanes == ("Scale-Up", "US Remote")
+    assert remote_first.job.primary_lane == scale_up_first.job.primary_lane == "Scale-Up"
 
 
 def test_review_transition_after_ready_date():

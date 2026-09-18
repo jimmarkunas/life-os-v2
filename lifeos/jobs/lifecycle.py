@@ -71,7 +71,12 @@ def _merge_fit(existing: Job, incoming: Job) -> tuple[int | None, FitAuthority]:
     return existing.fit, existing.fit_authority
 
 
-def merge_canonical_observation(existing: Job, incoming: Job) -> Job:
+def merge_canonical_observation(
+    existing: Job,
+    incoming: Job,
+    *,
+    lane_priority: dict[str, int] | None = None,
+) -> Job:
     """Apply canonical no-downgrade merge policy for one stable Job.
 
     Repositories serialize state; this function owns Jobs-domain precedence
@@ -103,6 +108,11 @@ def merge_canonical_observation(existing: Job, incoming: Job) -> Job:
     )
     fit, fit_authority = _merge_fit(existing, incoming)
     eligible_lanes = tuple(sorted(set(existing.eligible_lanes) | set(incoming.eligible_lanes)))
+    priorities = lane_priority or {}
+    primary_lane = min(
+        eligible_lanes,
+        key=lambda lane: (priorities.get(lane, len(priorities)), lane),
+    ) if eligible_lanes else None
     admission_status = existing.admission_status
     if incoming.admission_status == AdmissionStatus.ADMITTED or existing.admission_status != AdmissionStatus.ADMITTED:
         admission_status = incoming.admission_status
@@ -118,10 +128,17 @@ def merge_canonical_observation(existing: Job, incoming: Job) -> Job:
         source_providers=tuple(sorted(set(existing.source_providers) | set(incoming.source_providers))),
         source_types=tuple(sorted(set(existing.source_types) | set(incoming.source_types))),
         eligible_lanes=eligible_lanes,
+        primary_lane=primary_lane,
     )
 
 
-def apply_observation(existing: JobLedgerRecord, job: Job, *, run_date: date) -> JobLedgerRecord:
+def apply_observation(
+    existing: JobLedgerRecord,
+    job: Job,
+    *,
+    run_date: date,
+    lane_priority: dict[str, int] | None = None,
+) -> JobLedgerRecord:
     """Merge a new observation of the same stable_job_key into an existing
     record. Human-owned first_surfaced is never overwritten by this call --
     only Career-owned fields (the
@@ -130,7 +147,7 @@ def apply_observation(existing: JobLedgerRecord, job: Job, *, run_date: date) ->
     if existing.job.stable_job_key != job.stable_job_key:
         raise ValueError("cannot merge observations for different stable_job_key values")
 
-    job = merge_canonical_observation(existing.job, job)
+    job = merge_canonical_observation(existing.job, job, lane_priority=lane_priority)
     live = job.admission_status != AdmissionStatus.EXCLUDED
 
     if live:

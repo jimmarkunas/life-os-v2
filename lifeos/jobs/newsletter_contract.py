@@ -206,7 +206,12 @@ def ingest(
                 persisted = repository.upsert(record)
                 primary_disposition = Disposition.CREATED
             else:
-                record = apply_observation(existing, reconciled_job.job, run_date=run_date)
+                record = apply_observation(
+                    existing,
+                    reconciled_job.job,
+                    run_date=run_date,
+                    lane_priority=lane_priority,
+                )
                 persisted = repository.upsert(record)
                 primary_disposition = Disposition.UPDATED
         except Exception as exc:
