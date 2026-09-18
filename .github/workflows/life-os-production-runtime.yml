@@ -52,6 +52,7 @@ jobs:
           slot="$(printf '%s\n' "$TRIGGER_BODY" | sed -n 's/^slot=//p' | head -n1)"
           module="$(printf '%s\n' "$TRIGGER_BODY" | sed -n 's/^module=//p' | head -n1)"
           window_hours="$(printf '%s\n' "$TRIGGER_BODY" | sed -n 's/^window_hours=//p' | head -n1)"
+          historical_inbox_recovery_hours="$(printf '%s\n' "$TRIGGER_BODY" | sed -n 's/^historical_inbox_recovery_hours=//p' | head -n1)"
           nonce="$(printf '%s\n' "$TRIGGER_BODY" | sed -n 's/^nonce=//p' | head -n1)"
 
           test -n "$slot"
@@ -93,12 +94,36 @@ jobs:
           if not (0 < value <= 1440):
               raise SystemExit("window_hours must be in (0, 1440]")
           PY
+
+          # Explicit, opt-in bounded historical Inbox recovery (PR #59's
+          # --historical-inbox-recovery-hours). Only module=us-remote may
+          # widen Mail acquisition this way -- it must never implicitly
+          # couple to a Web full sweep (that remains us-remote-recovery's
+          # own separate, unchanged concern), and it must never silently
+          # apply to a smoke/diagnostic/1x1 module that ignores it.
+          if [ -n "$historical_inbox_recovery_hours" ]; then
+            if [ "$module" != "us-remote" ]; then
+              echo "historical_inbox_recovery_hours is only permitted for module=us-remote" >&2
+              exit 2
+            fi
+            python - "$historical_inbox_recovery_hours" <<'PY'
+          import sys
+          try:
+              value = float(sys.argv[1])
+          except ValueError:
+              raise SystemExit("historical_inbox_recovery_hours must be numeric")
+          if not (0 < value <= 2160):
+              raise SystemExit("historical_inbox_recovery_hours must be in (0, 2160]")
+          PY
+          fi
+
           echo "slot=$slot" >> "$GITHUB_OUTPUT"
           echo "module=$module" >> "$GITHUB_OUTPUT"
           echo "window_hours=$window_hours" >> "$GITHUB_OUTPUT"
           echo "web_lookback_hours=$web_lookback_hours" >> "$GITHUB_OUTPUT"
           echo "full_web_sweep=$full_web_sweep" >> "$GITHUB_OUTPUT"
           echo "dry_run=$dry_run" >> "$GITHUB_OUTPUT"
+          echo "historical_inbox_recovery_hours=$historical_inbox_recovery_hours" >> "$GITHUB_OUTPUT"
           echo "nonce=$nonce" >> "$GITHUB_OUTPUT"
 
       - name: Verify headless browser fallback
@@ -133,6 +158,9 @@ jobs:
             fi
             if [ "${{ steps.trigger.outputs.dry_run }}" = "true" ]; then
               extra+=(--dry-run)
+            fi
+            if [ -n "${{ steps.trigger.outputs.historical_inbox_recovery_hours }}" ]; then
+              extra+=(--historical-inbox-recovery-hours "${{ steps.trigger.outputs.historical_inbox_recovery_hours }}")
             fi
             PYTHONPATH="$GITHUB_WORKSPACE" python3.12 scripts/run_us_remote_production.py \
               --timeout-seconds 300 \
