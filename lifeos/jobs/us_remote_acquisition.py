@@ -343,9 +343,17 @@ class USRemoteAcquirer:
         self, source: dict[str, Any], now: datetime, since: datetime | None
     ) -> list[SourceVacancyObservation]:
         base = f"https://api.smartrecruiters.com/v1/companies/{source['slug']}/postings"
-        payload = self._json("GET", f"{base}?limit=100&offset=0")
-        jobs = payload.get("content", []) if isinstance(payload, dict) else []
-        out = []
+        jobs = []; out = []
+        offset = 0
+        while offset < 2000:
+            payload = self._json("GET", f"{base}?limit=100&offset={offset}")
+            batch = payload.get("content", []) if isinstance(payload, dict) else []
+            if not batch: break
+            jobs.extend(batch)
+            offset += len(batch)
+            total_found = payload.get("totalFound") if isinstance(payload, dict) else None
+            if isinstance(total_found, int) and offset >= total_found:
+                break
         for job in jobs:
             if not isinstance(job, dict) or not _recent_payload(
                 job, since, "lastUpdatedDate", "releasedDate"
@@ -376,13 +384,21 @@ class USRemoteAcquirer:
     def _workday_adobe(
         self, source: dict[str, Any], now: datetime, since: datetime | None
     ) -> list[SourceVacancyObservation]:
-        payload = self._json(
-            "POST",
-            source["url"],
-            json_body={"appliedFacets": {}, "limit": 50, "offset": 0, "searchText": ""},
-        )
-        jobs = payload.get("jobPostings", []) if isinstance(payload, dict) else []
-        out = []
+        jobs = []; out = []
+        offset = 0
+        while offset < 2000:
+            payload = self._json(
+                "POST",
+                source["url"],
+                json_body={"appliedFacets": {}, "limit": 20, "offset": offset, "searchText": ""},
+            )
+            batch = payload.get("jobPostings", []) if isinstance(payload, dict) else []
+            if not batch: break
+            jobs.extend(batch)
+            offset += len(batch)
+            total = payload.get("total") if isinstance(payload, dict) else None
+            if isinstance(total, int) and offset >= total:
+                break
         for job in jobs:
             if not isinstance(job, dict) or not _recent_payload(job, since, "postedDate", "startDate"):
                 continue
