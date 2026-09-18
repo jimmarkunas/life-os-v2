@@ -22,8 +22,10 @@ JOBPOSTING_HTML = """
 class FakeFetcher:
     def __init__(self, responses: dict[str, FetchResponse]):
         self._responses = responses
+        self.calls: list[str] = []
 
     def get(self, url: str) -> FetchResponse:
+        self.calls.append(url)
         if url not in self._responses:
             raise RuntimeError(f"no fixture for {url}")
         return self._responses[url]
@@ -141,3 +143,33 @@ def test_provider_score_carried_as_evidence_never_used_for_fit():
     low_provider_score = _adapter(fetcher).to_jobs_candidate(_observation(provider_score=1))
     # Same role/description -> identical computed Fit regardless of provider_score.
     assert high_provider_score.fit == low_provider_score.fit
+
+
+def test_same_source_url_terminal_resolution_is_reused_with_one_fetch():
+    fetcher = FakeFetcher({"https://greenhouse.io/acme/jobs/42": FetchResponse(final_url="https://greenhouse.io/acme/jobs/42", body=JOBPOSTING_HTML)})
+    adapter = _adapter(fetcher)
+
+    first = adapter.to_jobs_candidate(_observation(evidence_ref="ev:1"))
+    second = adapter.to_jobs_candidate(_observation(evidence_ref="ev:2"))
+
+    assert fetcher.calls == ["https://greenhouse.io/acme/jobs/42"]
+    assert first.evidence_ref == "ev:1"
+    assert second.evidence_ref == "ev:2"
+    assert first.job.apply_url == second.job.apply_url == "https://greenhouse.io/acme/jobs/42"
+    assert first.fit == second.fit
+
+
+def test_ambiguous_intermediary_resolution_still_fails_closed_and_is_reused():
+    fetcher = FakeFetcher({"https://linkedin.com/jobs/view/1": FetchResponse(final_url="https://linkedin.com/jobs/view/1", body="<html>no external apply</html>")})
+    adapter = _adapter(fetcher)
+
+    first = adapter.to_jobs_candidate(_observation(evidence_ref="ev:1", source_apply_url="https://linkedin.com/jobs/view/1"))
+    second = adapter.to_jobs_candidate(_observation(evidence_ref="ev:2", source_apply_url="https://linkedin.com/jobs/view/1"))
+
+    assert fetcher.calls == ["https://linkedin.com/jobs/view/1"]
+    assert first.evidence_ref == "ev:1"
+    assert second.evidence_ref == "ev:2"
+    assert first.unresolved_reason is None
+    assert second.unresolved_reason is None
+    assert first.job.apply_url is None
+    assert second.job.apply_url is None
