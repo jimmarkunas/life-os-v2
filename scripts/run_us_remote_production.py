@@ -52,6 +52,12 @@ MAX_TIMEOUT_SECONDS = 300.0
 DEFAULT_WINDOW_HOURS = 24.0
 DEFAULT_WEB_LOOKBACK_HOURS = 24.0
 MAX_INBOX_STAGING_HOURS = 24.0
+# Explicit, opt-in, bounded historical Inbox recovery mode only -- never the
+# default. Normal scheduled production always uses MAX_INBOX_STAGING_HOURS;
+# this only widens the Mail Router's Inbox scan window when a caller
+# explicitly asks for a one-off bounded recovery execution. 90 days is a
+# concrete finite cap, not an "arbitrary historical scan" allowance.
+MAX_HISTORICAL_INBOX_RECOVERY_HOURS = 24.0 * 90
 _SOURCE_REGISTRY = Path(__file__).resolve().parents[1] / "contracts" / "us_remote_sources.json"
 
 
@@ -153,6 +159,17 @@ def _args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--web-lookback-hours", type=float, default=DEFAULT_WEB_LOOKBACK_HOURS)
     parser.add_argument("--full-web-sweep", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--historical-inbox-recovery-hours",
+        type=float,
+        default=None,
+        help=(
+            "Explicit bounded historical Inbox recovery mode: widen the Mail "
+            "Router's Inbox scan to this many hours instead of the normal "
+            f"{MAX_INBOX_STAGING_HOURS:.0f}-hour staging window. Never the "
+            "default; omit for normal production behavior."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -297,6 +314,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.window_hours <= 0 or args.web_lookback_hours <= 0:
         print("BLOCKED: window-hours and web-lookback-hours must be positive", file=sys.stderr)
         return 2
+    if args.historical_inbox_recovery_hours is not None and not (
+        0 < args.historical_inbox_recovery_hours <= MAX_HISTORICAL_INBOX_RECOVERY_HOURS
+    ):
+        print(
+            "BLOCKED: --historical-inbox-recovery-hours must be in "
+            f"(0, {MAX_HISTORICAL_INBOX_RECOVERY_HOURS:.0f}]",
+            file=sys.stderr,
+        )
+        return 2
 
     try:
         env = _require_env()
@@ -339,7 +365,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     end = datetime.now(timezone.utc)
     start = end - timedelta(hours=args.window_hours)
-    inbox_start = max(start, end - timedelta(hours=MAX_INBOX_STAGING_HOURS))
+    if args.historical_inbox_recovery_hours is not None:
+        # Explicit bounded historical recovery: widen only the Inbox
+        # staging scan. Everything downstream (classification, routing,
+        # Newsletter parse, Jobs reconciliation, cleanup) is the exact
+        # existing production path -- unchanged.
+        inbox_start = end - timedelta(hours=args.historical_inbox_recovery_hours)
+        inbox_mode = "historical_recovery"
+    else:
+        inbox_start = max(start, end - timedelta(hours=MAX_INBOX_STAGING_HOURS))
+        inbox_mode = "normal"
     web_since = end - timedelta(hours=args.web_lookback_hours)
     fallback_fetcher = _fallback_fetcher(context, browser_evidence)
     timings: dict[str, float] = {}
@@ -493,6 +528,7 @@ def main(argv: list[str] | None = None) -> int:
             "status": "PASS" if pass_run else "DEGRADED",
             "elapsed_seconds": round(context.elapsed_seconds(), 3),
             "mail": {
+                "mode": inbox_mode,
                 "scan_window_hours": round((end - inbox_start).total_seconds() / 3600.0, 3),
                 "scanned": mail_result.scanned_count if mail_result else 0,
                 "staged": sum(1 for row in mail_result.records if row.routed) if mail_result else 0,
