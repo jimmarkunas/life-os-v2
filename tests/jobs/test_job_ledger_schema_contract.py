@@ -9,15 +9,15 @@ from datetime import date
 from pathlib import Path
 
 from lifeos.jobs.lifecycle import new_record
-from lifeos.jobs.models import AdmissionStatus, Company, FitAuthority, Job, Opportunity, WorkMode
+from lifeos.jobs.models import AdmissionStatus, Company, FitAuthority, Job, JobObservation, WorkMode
 from lifeos.jobs.notion_repository import _record_to_properties
 
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMA = json.loads((ROOT / "contracts" / "job_ledger_schema.json").read_text())
 
 
-def _job(*, work_mode: WorkMode = WorkMode.REMOTE, provider_score: int | None = 87) -> Job:
-    return Job(
+def _job_observation(*, work_mode: WorkMode = WorkMode.REMOTE, provider_score: int | None = 87) -> JobObservation:
+    return JobObservation(
         company=Company(name="Synthetic Company"),
         role="Synthetic Program Manager",
         location="Remote",
@@ -42,16 +42,16 @@ def _properties(
     source_lanes: tuple[str, ...] = (),
     source_types: tuple[str, ...] = (),
 ):
-    opportunity = Opportunity(
+    job = Job(
         stable_job_key="synthetic-key",
-        job=_job(work_mode=work_mode),
+        job=_job_observation(work_mode=work_mode),
         admission_status=admission_status,
         source_lanes=source_lanes,
         fit=fit,
         fit_authority=fit_authority,
         source_types=source_types,
     )
-    return _record_to_properties(new_record(opportunity, run_date=date(2026, 1, 15)))
+    return _record_to_properties(new_record(job, run_date=date(2026, 1, 15)))
 
 
 def test_repository_writes_only_contract_properties_and_types():
