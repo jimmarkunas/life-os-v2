@@ -12,6 +12,7 @@ import json
 import os
 import tempfile
 import unittest
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
@@ -113,6 +114,39 @@ def _synthetic_web_observation() -> SourceVacancyObservation:
         source_apply_url=RESOLVED_APPLY_URL,
         source_received_at=datetime.now(timezone.utc),
     )
+
+
+class NewsletterWorkloadAdmissionTests(unittest.TestCase):
+    def test_terminal_capacity_reserves_web_work_and_finalize_headroom(self) -> None:
+        context = SimpleNamespace(remaining_seconds=lambda: 102.0)
+
+        capacity = runtime._terminal_resolution_capacity(context, web_terminal_count=4)
+
+        self.assertEqual(capacity, 20)
+
+    def test_message_selection_is_whole_message_and_defers_costly_tail(self) -> None:
+        obs_a = tuple(SimpleNamespace(evidence_ref=f"a:{index}") for index in range(12))
+        obs_b = tuple(SimpleNamespace(evidence_ref=f"b:{index}") for index in range(10))
+        process_result = SimpleNamespace(
+            messages=(
+                SimpleNamespace(message_ref="gmail:msg-a", observations=obs_a),
+                SimpleNamespace(message_ref="gmail:msg-b", observations=obs_b),
+                SimpleNamespace(message_ref="gmail:msg-zero", observations=()),
+            )
+        )
+        context = SimpleNamespace(remaining_seconds=lambda: 102.0)
+
+        selected, budget, admitted = runtime._select_newsletter_message_ids(
+            process_result,
+            list(obs_a + obs_b),
+            context=context,
+            web_terminal_count=4,
+        )
+
+        self.assertEqual(budget, 20)
+        self.assertEqual(admitted, 12)
+        self.assertEqual(selected, {"msg-a", "msg-zero"})
+        self.assertNotIn("msg-b", selected)
 
 
 class HistoricalInboxBackend:
