@@ -43,13 +43,6 @@ class _FakeNewsletterProcessor:
         )
 
 
-class _EmptyGmailBacklog:
-    mailbox = "gmail"
-
-    def enumerate_unprocessed_ids(self, _boundary_name):
-        return ()
-
-
 class _FakeWebAcquirer:
     def __init__(self, **_kwargs) -> None:
         pass
@@ -81,7 +74,7 @@ class UsRemoteEntrypointEquivalenceTests(unittest.TestCase):
             patch.object(entry, "browser_evidence", return_value=None),
             patch.object(entry, "HttpClient", return_value=object()),
             patch.object(entry, "NotionTransport", return_value=object()),
-            patch.object(entry, "GmailMailboxTransport", return_value=_EmptyGmailBacklog()),
+            patch.object(entry, "GmailMailboxTransport", return_value=object()),
             patch.object(runtime, "fallback_fetcher", return_value=None),
         )
 
