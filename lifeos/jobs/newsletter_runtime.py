@@ -21,6 +21,8 @@ from lifeos.jobs.qualification import LaneConfig
 from lifeos.jobs.terminal_evidence import fallback_fetcher
 from lifeos.jobs.us_remote_runtime import (
     UsRemoteResult,
+    _TERMINAL_FINALIZE_RESERVE_SECONDS,
+    _TERMINAL_RESOLUTION_SLOT_SECONDS,
     _accepted_newsletter_message_ids,
     _preexclude,
     _select_newsletter_message_ids,
@@ -104,23 +106,6 @@ def execute_newsletter(
             newsletter_to_resolve,
             context=context,
         )
-        selected_refs = {
-            observation.evidence_ref
-            for observation in newsletter_result.observations
-            if observation.source_message_id in selected_message_ids
-        }
-        newsletter_to_resolve = [
-            observation
-            for observation in newsletter_to_resolve
-            if observation.source_message_id in selected_message_ids
-        ]
-        newsletter_preexcluded = [
-            result for result in newsletter_preexcluded if result.evidence_ref in selected_refs
-        ]
-        attempted_observations = len(selected_refs)
-        attempted_messages = len(selected_message_ids)
-        deferred_observations = len(newsletter_result.observations) - attempted_observations
-        deferred_messages = len(newsletter_result.messages) - attempted_messages
         timings["cheap_prefilter"] = round(perf_counter() - stage_started, 3)
 
         repository = NotionCareerRepository(
@@ -137,27 +122,59 @@ def execute_newsletter(
             )
         )
 
-        stage_started = perf_counter()
-        candidates = _adapt_all(
-            tuple(newsletter_to_resolve),
-            adapter=adapter,
-            context=context,
-            max_workers=8,
-        )
-        timings["terminal_resolution"] = round(perf_counter() - stage_started, 3)
+        newsletter_results: list[IngestResult] = []
+        completed_message_ids: set[str] = set()
+        terminal_seconds = 0.0
+        persist_seconds = 0.0
+        for message in newsletter_result.messages:
+            if ":" not in message.message_ref:
+                continue
+            message_id = message.message_ref.split(":", 1)[1]
+            if message_id not in selected_message_ids:
+                continue
+            if context.remaining_seconds() <= (
+                _TERMINAL_FINALIZE_RESERVE_SECONDS + _TERMINAL_RESOLUTION_SLOT_SECONDS
+            ):
+                break
+            refs = {item.evidence_ref for item in message.observations}
+            wave = [item for item in newsletter_to_resolve if item.source_message_id == message_id]
+            preexcluded = [item for item in newsletter_preexcluded if item.evidence_ref in refs]
 
-        stage_started = perf_counter()
-        ingest_results = ingest(
-            candidates,
-            lane=lane,
-            lane_priority=lane_priority,
-            repository=repository,
-            run_date=end.date(),
-            context=context,
-        )
-        timings["reconcile_persist"] = round(perf_counter() - stage_started, 3)
+            stage_started = perf_counter()
+            candidates = _adapt_all(tuple(wave), adapter=adapter, context=context, max_workers=8)
+            terminal_seconds += perf_counter() - stage_started
 
-        newsletter_results = list(newsletter_preexcluded) + ingest_results
+            stage_started = perf_counter()
+            ingest_results = ingest(
+                candidates,
+                lane=lane,
+                lane_priority=lane_priority,
+                repository=repository,
+                run_date=end.date(),
+                context=context,
+            )
+            persist_seconds += perf_counter() - stage_started
+            newsletter_results.extend(preexcluded + ingest_results)
+            completed_message_ids.add(message_id)
+
+        timings["terminal_resolution"] = round(terminal_seconds, 3)
+        timings["reconcile_persist"] = round(persist_seconds, 3)
+        completed_refs = {
+            observation.evidence_ref
+            for observation in newsletter_result.observations
+            if observation.source_message_id in completed_message_ids
+        }
+        attempted_observations = len(completed_refs)
+        attempted_messages = len(completed_message_ids)
+        deferred_observations = len(newsletter_result.observations) - attempted_observations
+        deferred_messages = len(newsletter_result.messages) - attempted_messages
+        terminal_admitted = sum(
+            observation.source_message_id in completed_message_ids
+            for observation in newsletter_to_resolve
+        )
+        newsletter_preexcluded = [
+            result for result in newsletter_preexcluded if result.evidence_ref in completed_refs
+        ]
         fully_accounted = len(newsletter_results) == attempted_observations
         unresolved = any(item.disposition is Disposition.REVIEW_DEGRADED for item in newsletter_results)
         newsletter_ok = newsletter_result.state is NewsletterExecutionState.PASS
@@ -169,7 +186,7 @@ def execute_newsletter(
         accepted_message_ids = _accepted_newsletter_message_ids(
             newsletter_result,
             newsletter_results,
-            allowed_message_ids=selected_message_ids,
+            allowed_message_ids=completed_message_ids,
         )
         for message_id in accepted_message_ids:
             try:
