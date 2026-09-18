@@ -1,6 +1,5 @@
 """Focused equivalence proof for the Newsletter-only runtime extraction."""
 from __future__ import annotations
-
 import ast
 from pathlib import Path
 
