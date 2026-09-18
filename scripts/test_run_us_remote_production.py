@@ -124,13 +124,15 @@ class NewsletterWorkloadAdmissionTests(unittest.TestCase):
 
         self.assertEqual(capacity, 8)
 
-    def test_message_selection_is_whole_message_and_defers_costly_tail(self) -> None:
+    def test_message_selection_skips_oversized_message_and_uses_remaining_capacity(self) -> None:
         obs_a = tuple(SimpleNamespace(evidence_ref=f"a:{index}") for index in range(12))
-        obs_b = tuple(SimpleNamespace(evidence_ref=f"b:{index}") for index in range(10))
+        obs_b = tuple(SimpleNamespace(evidence_ref=f"b:{index}") for index in range(6))
+        obs_c = tuple(SimpleNamespace(evidence_ref=f"c:{index}") for index in range(2))
         process_result = SimpleNamespace(
             messages=(
                 SimpleNamespace(message_ref="gmail:msg-a", observations=obs_a),
                 SimpleNamespace(message_ref="gmail:msg-b", observations=obs_b),
+                SimpleNamespace(message_ref="gmail:msg-c", observations=obs_c),
                 SimpleNamespace(message_ref="gmail:msg-zero", observations=()),
             )
         )
@@ -138,14 +140,15 @@ class NewsletterWorkloadAdmissionTests(unittest.TestCase):
 
         selected, budget, admitted = runtime._select_newsletter_message_ids(
             process_result,
-            list(obs_a + obs_b),
+            list(obs_a + obs_b + obs_c),
             context=context,
         )
 
         self.assertEqual(budget, 8)
-        self.assertEqual(admitted, 0)
-        self.assertEqual(selected, {"msg-zero"})
-        self.assertNotIn("msg-b", selected)
+        self.assertEqual(admitted, 8)
+        self.assertEqual(selected, {"msg-b", "msg-c", "msg-zero"})
+        self.assertNotIn("msg-a", selected)
+
 
 
 class HistoricalInboxBackend:

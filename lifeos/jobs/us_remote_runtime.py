@@ -64,14 +64,13 @@ def _select_newsletter_message_ids(
 
     Selection is message-granular so a selected message can be safely marked
     Processed only after every one of its observations is accounted for. Once
-    the first costly message does not fit, later costly messages remain queued;
-    zero-cost messages may still drain because they require no terminal fetch.
+    costly messages that do not fit remain queued while later messages may
+    use remaining capacity; zero-cost messages may always drain.
     """
     budget = _terminal_resolution_capacity(context)
     terminal_refs = {observation.evidence_ref for observation in terminal_observations}
     selected: set[str] = set()
     admitted = 0
-    blocked = False
     for message in process_result.messages:
         if ":" not in message.message_ref:
             continue
@@ -82,11 +81,9 @@ def _select_newsletter_message_ids(
         if cost == 0:
             selected.add(message_id)
             continue
-        if not blocked and admitted + cost <= budget:
+        if admitted + cost <= budget:
             selected.add(message_id)
             admitted += cost
-        else:
-            blocked = True
     return selected, budget, admitted
 
 
