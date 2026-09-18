@@ -20,6 +20,8 @@ class DeterministicMailClassifier:
         "daily jobs",
         "weekly jobs",
         "open roles",
+        "is hiring",
+        " jobs in ",
     )
     _TRANSACTIONAL_HIRING_SUBJECT_TERMS = (
         "application received",
