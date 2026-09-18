@@ -8,13 +8,20 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import date
+from threading import Lock
 
 from lifeos.core.http import HttpClient, RetryPolicy
 from lifeos.core.runtime import RunContext
 from lifeos.jobs.fit_scoring import FitEvidence, FitProfile
 from lifeos.jobs.fit_scoring import score as score_fit
 from lifeos.jobs.models import Company, FitAuthority, FreshnessStatus, Job, NormalizedCandidate, WorkMode
-from lifeos.jobs.terminal_evidence import Fetcher, FetchResponse, acquire_terminal_vacancy_evidence, parse_posting_date
+from lifeos.jobs.terminal_evidence import (
+    Fetcher,
+    FetchResponse,
+    TerminalVacancyEvidence,
+    acquire_terminal_vacancy_evidence,
+    parse_posting_date,
+)
 from lifeos.newsletter.models import SourceVacancyObservation, fatal_issue_codes
 
 _COMPENSATION_NUMBER = re.compile(r"\$?\s*([\d][\d,]*)(\s*[kK])?")
@@ -92,6 +99,8 @@ class NewsletterAdapterConfig:
 class NewsletterJobsAdapter:
     def __init__(self, config: NewsletterAdapterConfig) -> None:
         self._config = config
+        self._terminal_evidence_cache: dict[str, TerminalVacancyEvidence | None] = {}
+        self._terminal_evidence_lock = Lock()
 
     def to_jobs_candidate(self, observation: SourceVacancyObservation) -> NormalizedCandidate:
         cfg = self._config
@@ -129,14 +138,7 @@ class NewsletterJobsAdapter:
         posting_date: date | None = None
 
         if observation.source_apply_url:
-            try:
-                evidence = acquire_terminal_vacancy_evidence(
-                    observation.source_apply_url,
-                    fetcher=cfg.fetcher,
-                    fallback_fetcher=cfg.fallback_fetcher,
-                )
-            except Exception:
-                evidence = None
+            evidence = self._terminal_evidence_for(observation.source_apply_url)
             if evidence is not None:
                 apply_url = evidence.canonical_url
                 description_text = evidence.description_text
@@ -174,3 +176,18 @@ class NewsletterJobsAdapter:
             fit_authority=fit_authority,
             source_types=source_types,
         )
+
+    def _terminal_evidence_for(self, source_apply_url: str) -> TerminalVacancyEvidence | None:
+        with self._terminal_evidence_lock:
+            if source_apply_url in self._terminal_evidence_cache:
+                return self._terminal_evidence_cache[source_apply_url]
+            try:
+                evidence = acquire_terminal_vacancy_evidence(
+                    source_apply_url,
+                    fetcher=self._config.fetcher,
+                    fallback_fetcher=self._config.fallback_fetcher,
+                )
+            except Exception:
+                evidence = None
+            self._terminal_evidence_cache[source_apply_url] = evidence
+            return evidence

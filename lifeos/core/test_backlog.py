@@ -103,6 +103,36 @@ class ConsumeBoundedBacklogTests(unittest.TestCase):
                 mark_complete=source.mark_complete,
             )
 
+    def test_admission_callback_stops_before_starting_next_item(self) -> None:
+        source = FakeCanonicalSource(("A", "B", "C", "D"))
+        attempted: list[tuple[str, ...]] = []
+
+        batch = consume_bounded_backlog(
+            enumerate_backlog=source.enumerate_backlog,
+            batch_size=4,
+            process_batch=lambda b: attempted.append(tuple(b)) or {item: True for item in b},
+            mark_complete=source.mark_complete,
+            admit_item=lambda _item, index: index < 2,
+        )
+
+        self.assertEqual(batch, ("A", "B"))
+        self.assertEqual(attempted, [("A", "B")])
+        self.assertEqual(source.enumerate_backlog(), ("C", "D"))
+
+    def test_none_batch_size_uses_admission_without_fixed_count_cap(self) -> None:
+        source = FakeCanonicalSource(tuple(str(index) for index in range(12)))
+
+        batch = consume_bounded_backlog(
+            enumerate_backlog=source.enumerate_backlog,
+            batch_size=None,
+            process_batch=lambda b: {item: True for item in b},
+            mark_complete=source.mark_complete,
+            admit_item=lambda _item, index: index < 11,
+        )
+
+        self.assertEqual(len(batch), 11)
+        self.assertEqual(source.enumerate_backlog(), ("11",))
+
 
 if __name__ == "__main__":
     unittest.main()

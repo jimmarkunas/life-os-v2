@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from threading import Lock
 from time import sleep
@@ -33,6 +34,8 @@ GMAIL_ACCESS_TOKEN_FIELD = "GMAIL_API_TOKEN"
 PROCESSED_LABEL_SUFFIX = "Processed"
 BACKLOG_DETAIL_PACING_SECONDS = 0.25
 BACKLOG_BATCH_SIZE = 10
+BACKLOG_MESSAGE_RUNTIME_RESERVE_SECONDS = 20.0
+BACKLOG_PER_MESSAGE_ADMISSION_SECONDS = 2.0
 # Headers sufficient for DeterministicMailClassifier's AUTOMATED_JOB_SOURCE
 # routing decision (sender/subject plus automation/source-adapter headers).
 # That decision does not use body_text, so format=metadata with exactly
@@ -47,6 +50,12 @@ INBOX_METADATA_HEADERS = (
     "X-LifeOS-Source-Adapter",
     "X-LifeOS-Job-Source",
 )
+
+
+@dataclass(frozen=True, slots=True)
+class GmailNewsletterBacklogSnapshot:
+    pending_source_messages: int
+    oldest_pending_age_seconds: int | None
 # scan_window bounds concurrency (max_workers in-flight requests) but that
 # alone does not bound the per-minute call RATE against Gmail's 6,000
 # quota-units/min per-user ceiling: fast responses at even modest concurrency
@@ -186,6 +195,17 @@ class GmailMailboxTransport(Generic[T]):
         )
         return tuple(reversed(ids))
 
+    def newsletter_backlog_snapshot(self, boundary_name: str, *, now: datetime) -> GmailNewsletterBacklogSnapshot:
+        if now.tzinfo is None:
+            raise ValueError("snapshot timestamp must be timezone-aware")
+        ids = self.enumerate_unprocessed_ids(boundary_name)
+        if not ids:
+            return GmailNewsletterBacklogSnapshot(0, None)
+        oldest = self._fetch_message_metadata_fields(ids[0])
+        received_at = oldest["received_at"]
+        age = max(0, int((now - received_at).total_seconds()))
+        return GmailNewsletterBacklogSnapshot(len(ids), age)
+
     def hydrate_messages(self, message_ids: Sequence[str]) -> tuple[RoutedNewsletterMessage, ...]:
         """Hydrate exactly the given (already-selected) message IDs. Never
         enumerates or bounds on its own -- callers choose which references
@@ -239,11 +259,19 @@ class GmailMailboxTransport(Generic[T]):
             hydrated.extend(self.hydrate_messages(batch))
             return {message_id: True for message_id in batch}
 
+        def _admit_message(_message_id: str, index: int) -> bool:
+            required_seconds = (
+                BACKLOG_MESSAGE_RUNTIME_RESERVE_SECONDS
+                + BACKLOG_PER_MESSAGE_ADMISSION_SECONDS * (index + 1)
+            )
+            return self._context.remaining_seconds() > required_seconds
+
         consume_bounded_backlog(
             enumerate_backlog=lambda: self.enumerate_unprocessed_ids(boundary_name),
-            batch_size=BACKLOG_BATCH_SIZE,
+            batch_size=None,
             process_batch=_hydrate_selected,
             mark_complete=lambda _message_id: None,
+            admit_item=_admit_message,
         )
         return tuple(hydrated)
 

@@ -443,12 +443,26 @@ def execute_us_remote(
                 processed_count += 1
         timings["newsletter_mark_processed"] = round(perf_counter() - stage_started, 3)
 
+        stage_started = perf_counter()
+        backlog_errors: list[str] = []
+        try:
+            backlog = gmail.newsletter_backlog_snapshot(NEWSLETTER_BOUNDARY, now=end)
+            pending_source_messages = backlog.pending_source_messages
+            oldest_pending_age_seconds = backlog.oldest_pending_age_seconds
+        except Exception as exc:
+            pending_source_messages = None
+            oldest_pending_age_seconds = None
+            backlog_errors.append(type(exc).__name__)
+        timings["newsletter_backlog_health"] = round(perf_counter() - stage_started, 3)
+
         mail_lane_pass = (
             staging_ok
             and newsletter_ok
             and newsletter_fully_accounted
             and not newsletter_unresolved
             and not processed_errors
+            and not backlog_errors
+            and (pending_source_messages == 0 or processed_count > 0)
         )
         web_lane_pass = web_result.complete and web_fully_accounted and not web_unresolved
         pass_run = mail_lane_pass and web_lane_pass
@@ -464,7 +478,13 @@ def execute_us_remote(
                 "staging_safe": staging_ok,
                 "processed": processed_count,
                 "processed_errors": len(processed_errors),
+                "pending_source_messages": pending_source_messages,
+                "oldest_pending_age_seconds": oldest_pending_age_seconds,
+                "processed_observations": len(newsletter_result.observations),
+                "progress_messages": processed_count,
+                "cleanup_safe": newsletter_ok and newsletter_fully_accounted and not newsletter_unresolved and not processed_errors,
                 "error_codes": _error_codes(mail_result.errors) if mail_result else [],
+                "backlog_error_codes": backlog_errors,
             },
             "newsletter": {
                 "messages": len(newsletter_result.messages),
@@ -501,6 +521,14 @@ def execute_us_remote(
         body = {
             "status": "DEGRADED",
             "reason": "execution-deadline-exhausted",
+            "elapsed_seconds": round(context.elapsed_seconds(), 3),
+            "timings": timings,
+        }
+        return UsRemoteResult(body=body, indent=None, exit_code=1)
+    except RuntimeError as exc:
+        body = {
+            "status": "DEGRADED",
+            "reason": type(exc).__name__,
             "elapsed_seconds": round(context.elapsed_seconds(), 3),
             "timings": timings,
         }

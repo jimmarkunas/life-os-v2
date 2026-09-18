@@ -7,7 +7,11 @@ from urllib.parse import unquote
 import lifeos.integrations.gmail as gmail_module
 from lifeos.core.backlog import consume_bounded_backlog
 from lifeos.core.runtime import RunContext
-from lifeos.integrations.gmail import BACKLOG_BATCH_SIZE, GmailMailboxTransport
+from lifeos.integrations.gmail import (
+    BACKLOG_MESSAGE_RUNTIME_RESERVE_SECONDS,
+    BACKLOG_PER_MESSAGE_ADMISSION_SECONDS,
+    GmailMailboxTransport,
+)
 
 
 class BoundedBacklogHttp:
@@ -52,11 +56,11 @@ class BoundedBacklogHttp:
         raise AssertionError((method, url, kwargs))
 
 
-def test_fetch_unprocessed_enumerates_complete_backlog_but_hydrates_only_oldest_batch(monkeypatch) -> None:
+def test_fetch_unprocessed_admits_more_than_ten_when_deadline_reserve_allows(monkeypatch) -> None:
     monkeypatch.setattr(gmail_module, "sleep", lambda _seconds: None)
     http = BoundedBacklogHttp()
     mailbox = GmailMailboxTransport(
-        context=RunContext.start(timeout_seconds=45),
+        context=RunContext.start(timeout_seconds=90),
         http=http,
         access_token="synthetic-token",
         message_factory=lambda **kwargs: kwargs,
@@ -68,10 +72,11 @@ def test_fetch_unprocessed_enumerates_complete_backlog_but_hydrates_only_oldest_
     messages = mailbox.fetch_unprocessed(start, end, "J Newsletters")
 
     assert http.list_calls == 1
-    assert len(messages) == BACKLOG_BATCH_SIZE
-    assert http.detail_ids == [f"msg-{index:02d}" for index in range(1, BACKLOG_BATCH_SIZE + 1)]
+    assert len(messages) > 10
+    assert len(messages) == 25
+    assert http.detail_ids == [f"msg-{index:02d}" for index in range(1, 26)]
     assert [message.message_id for message in messages] == [
-        f"msg-{index:02d}" for index in range(1, BACKLOG_BATCH_SIZE + 1)
+        f"msg-{index:02d}" for index in range(1, 26)
     ]
 
 
@@ -125,6 +130,94 @@ class ABCDEBacklogHttp:
                 self.processed.add(message_id)
             return {"id": message_id}
         raise AssertionError((method, url, kwargs))
+
+
+def _clock(values: list[float]):
+    readings = list(values)
+
+    def _read() -> float:
+        if readings:
+            return readings.pop(0)
+        return values[-1]
+
+    return _read
+
+
+def test_fetch_unprocessed_uses_deadline_reserve_to_admit_only_safe_prefix(monkeypatch) -> None:
+    monkeypatch.setattr(gmail_module, "sleep", lambda _seconds: None)
+    http = ABCDEBacklogHttp()
+    context = RunContext.start(
+        timeout_seconds=30,
+        monotonic_clock=_clock([0.0, 0.0, 5.0, 6.0]),
+    )
+    mailbox = GmailMailboxTransport(
+        context=context,
+        http=http,
+        access_token="synthetic-token",
+        message_factory=lambda **kwargs: kwargs,
+        max_workers=8,
+    )
+
+    messages = mailbox.fetch_unprocessed(
+        datetime(2026, 9, 15, tzinfo=timezone.utc),
+        datetime(2026, 9, 16, tzinfo=timezone.utc),
+        "J Newsletters",
+    )
+
+    assert http.list_calls == 1
+    assert [message.message_id for message in messages] == ["A", "B"]
+    assert http.detail_ids == ["A", "B"]
+    assert http.processed == set()
+    assert mailbox.enumerate_unprocessed_ids("J Newsletters") == ("A", "B", "C", "D", "E")
+
+
+def test_fetch_unprocessed_natural_resume_starts_with_oldest_remaining_after_processed(monkeypatch) -> None:
+    monkeypatch.setattr(gmail_module, "sleep", lambda _seconds: None)
+    http = ABCDEBacklogHttp()
+    http.processed.update({"A", "B"})
+    mailbox = GmailMailboxTransport(
+        context=RunContext.start(timeout_seconds=45),
+        http=http,
+        access_token="synthetic-token",
+        message_factory=lambda **kwargs: kwargs,
+        max_workers=8,
+    )
+
+    messages = mailbox.fetch_unprocessed(
+        datetime(2026, 9, 15, tzinfo=timezone.utc),
+        datetime(2026, 9, 16, tzinfo=timezone.utc),
+        "J Newsletters",
+    )
+
+    assert [message.message_id for message in messages] == ["C", "D", "E"]
+    assert http.detail_ids == ["C", "D", "E"]
+
+
+def test_fetch_unprocessed_insufficient_reserve_before_first_unit_is_safe_noop(monkeypatch) -> None:
+    monkeypatch.setattr(gmail_module, "sleep", lambda _seconds: None)
+    http = ABCDEBacklogHttp()
+    threshold = BACKLOG_MESSAGE_RUNTIME_RESERVE_SECONDS + BACKLOG_PER_MESSAGE_ADMISSION_SECONDS
+    context = RunContext.start(
+        timeout_seconds=30,
+        monotonic_clock=_clock([0.0, 30.0 - threshold]),
+    )
+    mailbox = GmailMailboxTransport(
+        context=context,
+        http=http,
+        access_token="synthetic-token",
+        message_factory=lambda **kwargs: kwargs,
+        max_workers=8,
+    )
+
+    messages = mailbox.fetch_unprocessed(
+        datetime(2026, 9, 15, tzinfo=timezone.utc),
+        datetime(2026, 9, 16, tzinfo=timezone.utc),
+        "J Newsletters",
+    )
+
+    assert messages == ()
+    assert http.detail_ids == []
+    assert mailbox.enumerate_unprocessed_ids("J Newsletters") == ("A", "B", "C", "D", "E")
 
 
 def test_shared_primitive_receives_complete_backlog_and_performs_bounded_selection(monkeypatch) -> None:

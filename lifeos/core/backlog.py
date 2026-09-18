@@ -19,13 +19,14 @@ T = TypeVar("T", bound=Hashable)
 def consume_bounded_backlog(
     *,
     enumerate_backlog: Callable[[], Sequence[T]],
-    batch_size: int,
+    batch_size: int | None,
     process_batch: Callable[[Sequence[T]], Mapping[T, bool]],
     mark_complete: Callable[[T], None],
+    admit_item: Callable[[T, int], bool] | None = None,
 ) -> Sequence[T]:
     """Enumerate the domain's complete current backlog, in whatever
-    deterministic order the domain already supplies, take at most
-    ``batch_size`` of its leading items, hand exactly that batch to the
+    deterministic order the domain already supplies, take up to
+    ``batch_size`` of its leading items when a count cap is supplied, hand exactly that batch to the
     domain's own processing/accounting, and mark complete only the items the
     domain reports as safely accounted for.
 
@@ -34,10 +35,17 @@ def consume_bounded_backlog(
     from wherever ``enumerate_backlog`` says the canonical source currently
     stands (e.g. because completed items no longer appear in it).
     """
-    if batch_size <= 0:
+    if batch_size is not None and batch_size <= 0:
         raise ValueError("batch_size must be positive")
     backlog = tuple(enumerate_backlog())
-    batch = backlog[:batch_size]
+    batch_items: list[T] = []
+    for item in backlog:
+        if batch_size is not None and len(batch_items) >= batch_size:
+            break
+        if admit_item is not None and not admit_item(item, len(batch_items)):
+            break
+        batch_items.append(item)
+    batch = tuple(batch_items)
     if not batch:
         return ()
     accounted = process_batch(batch)
