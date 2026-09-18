@@ -25,7 +25,6 @@ from lifeos.jobs.us_remote_runtime import (
     _TERMINAL_RESOLUTION_SLOT_SECONDS,
     _accepted_newsletter_message_ids,
     _preexclude,
-    _select_newsletter_message_ids,
 )
 from lifeos.mail.router import MailRouter
 from lifeos.newsletter.models import SourceVacancyObservation
@@ -101,11 +100,6 @@ def execute_newsletter(
                 newsletter_preexcluded.append(disposition)
 
         newsletter_terminal_required_total = len(newsletter_to_resolve)
-        selected_message_ids, terminal_budget, terminal_admitted = _select_newsletter_message_ids(
-            newsletter_result,
-            newsletter_to_resolve,
-            context=context,
-        )
         timings["cheap_prefilter"] = round(perf_counter() - stage_started, 3)
 
         repository = NotionCareerRepository(
@@ -130,15 +124,16 @@ def execute_newsletter(
             if ":" not in message.message_ref:
                 continue
             message_id = message.message_ref.split(":", 1)[1]
-            if message_id not in selected_message_ids:
-                continue
-            if context.remaining_seconds() <= (
-                _TERMINAL_FINALIZE_RESERVE_SECONDS + _TERMINAL_RESOLUTION_SLOT_SECONDS
-            ):
-                break
             refs = {item.evidence_ref for item in message.observations}
             wave = [item for item in newsletter_to_resolve if item.source_message_id == message_id]
             preexcluded = [item for item in newsletter_preexcluded if item.evidence_ref in refs]
+            resolver_waves = max(1, (len(wave) + 7) // 8)
+            required_seconds = (
+                _TERMINAL_FINALIZE_RESERVE_SECONDS
+                + resolver_waves * _TERMINAL_RESOLUTION_SLOT_SECONDS
+            )
+            if wave and context.remaining_seconds() <= required_seconds:
+                continue
 
             stage_started = perf_counter()
             candidates = _adapt_all(tuple(wave), adapter=adapter, context=context, max_workers=8)
@@ -247,7 +242,7 @@ def execute_newsletter(
                 "deferred_messages": deferred_messages,
                 "deferred_observations": deferred_observations,
                 "terminal_resolution_required": newsletter_terminal_required_total,
-                "terminal_resolution_budget": terminal_budget,
+                "terminal_resolution_budget": None,
                 "terminal_resolution_admitted": terminal_admitted,
                 "state": newsletter_result.state.value,
                 "error_codes": [f"{item.operation}:{item.detail}" for item in newsletter_result.errors[:10]],
