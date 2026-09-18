@@ -117,6 +117,7 @@ class HistoricalInboxBackend:
         self.routed_ids: list[str] = []
         self.processed_ids: list[str] = []
         self.detail_fetch_ids: list[str] = []
+        self.metadata_fetch_ids: list[str] = []
         self.pages: dict[str, dict] = {}
         self._next_page = 1
         if existing_stable_key:
@@ -175,9 +176,10 @@ class HistoricalInboxBackend:
                     }
                 ).encode(),
             )
-        if method == "GET" and "/messages?" in url and "labelIds=" not in url:
-            # Whole-Inbox date-range scan (Mail Router / scan_window). Real
-            # Gmail semantics: filter strictly by the after:/before: query.
+        if method == "GET" and "/messages?" in url and "labelIds=label-news" not in url:
+            # Inbox metadata-first date-range scan (Mail Router /
+            # scan_inbox_metadata_window, labelIds=INBOX). Real Gmail
+            # semantics: filter strictly by the after:/before: query.
             parsed = urlsplit(url)
             q = parse_qs(parsed.query).get("q", [""])[0]
             after = next((int(part.split(":", 1)[1]) for part in q.split() if part.startswith("after:")), None)
@@ -193,6 +195,33 @@ class HistoricalInboxBackend:
         if method == "GET" and "/messages?" in url and "labelIds=label-news" in url:
             remaining = [mid for mid in self.routed_ids if mid not in self.processed_ids]
             return HttpResponse(200, {}, json.dumps({"messages": [{"id": mid} for mid in remaining]}).encode())
+        if method == "GET" and "format=metadata" in url:
+            # Metadata-first Inbox staging scan: real Gmail semantics never
+            # return a body under format=metadata.
+            message_id = url.split("/messages/", 1)[1].split("?", 1)[0]
+            self.metadata_fetch_ids.append(message_id)
+            msg = self._messages[message_id]
+            return HttpResponse(
+                200,
+                {},
+                json.dumps(
+                    {
+                        "id": message_id,
+                        "internalDate": str(_epoch(msg["received_at"]) * 1000),
+                        "payload": {
+                            "headers": [
+                                {"name": "From", "value": msg["sender"]},
+                                {"name": "Subject", "value": msg["subject"]},
+                                *(
+                                    [{"name": "List-Unsubscribe", "value": "<https://example.invalid/unsub>"}]
+                                    if msg["list_unsubscribe"]
+                                    else []
+                                ),
+                            ],
+                        },
+                    }
+                ).encode(),
+            )
         if method == "GET" and "?format=full" in url:
             message_id = url.split("/messages/", 1)[1].split("?", 1)[0]
             self.detail_fetch_ids.append(message_id)
@@ -348,6 +377,17 @@ class HistoricalInboxRecoveryTests(unittest.TestCase):
         # Only the confidently classified automated job alert was routed.
         self.assertEqual(backend.routed_ids, ["msg-old-job-alert"])
         self.assertEqual(backend.inbox_removed_ids, ["msg-old-job-alert"])
+        # Inbox staging classified all three candidate messages from
+        # metadata alone, including the one whose confirmed AUTOMATED_JOB_SOURCE
+        # routing decision came from headers only.
+        self.assertEqual(
+            sorted(backend.metadata_fetch_ids),
+            sorted(["msg-old-job-alert", "msg-old-recruiter", "msg-old-unrelated"]),
+        )
+        # format=full is reached only later, for the one message hydrated
+        # out of J Newsletters for Newsletter body parsing -- never during
+        # Inbox staging classification itself.
+        self.assertEqual(backend.detail_fetch_ids, ["msg-old-job-alert"])
         # Human/recruiter and unrelated automated mail were never touched.
         self.assertNotIn("msg-old-recruiter", backend.routed_ids)
         self.assertNotIn("msg-old-unrelated", backend.routed_ids)

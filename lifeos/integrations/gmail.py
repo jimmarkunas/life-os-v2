@@ -33,6 +33,20 @@ GMAIL_ACCESS_TOKEN_FIELD = "GMAIL_API_TOKEN"
 PROCESSED_LABEL_SUFFIX = "Processed"
 BACKLOG_DETAIL_PACING_SECONDS = 0.25
 BACKLOG_BATCH_SIZE = 10
+# Headers sufficient for DeterministicMailClassifier's AUTOMATED_JOB_SOURCE
+# routing decision (sender/subject plus automation/source-adapter headers).
+# That decision does not use body_text, so format=metadata with exactly
+# these headers is sufficient for safe Inbox staging classification.
+INBOX_METADATA_HEADERS = (
+    "From",
+    "Subject",
+    "List-Unsubscribe",
+    "List-ID",
+    "Precedence",
+    "Auto-Submitted",
+    "X-LifeOS-Source-Adapter",
+    "X-LifeOS-Job-Source",
+)
 # scan_window bounds concurrency (max_workers in-flight requests) but that
 # alone does not bound the per-minute call RATE against Gmail's 6,000
 # quota-units/min per-user ceiling: fast responses at even modest concurrency
@@ -104,18 +118,39 @@ class GmailMailboxTransport(Generic[T]):
     def scan_inbox_window(self, start: datetime, end: datetime) -> tuple[T, ...]:
         return self._scan_window(start, end, label_id="INBOX")
 
-    def _scan_window(self, start: datetime, end: datetime, *, label_id: str | None = None) -> tuple[T, ...]:
+    def scan_inbox_metadata_window(self, start: datetime, end: datetime) -> tuple[T, ...]:
+        """Metadata-first Inbox acquisition for staging classification.
+
+        Fetches Gmail format=metadata (never format=full) for every INBOX
+        message in the window, requesting only the headers current
+        deterministic routing policy needs. body_text/html_text/raw_mime are
+        left at their MailMessage defaults ("") since body content is
+        intentionally not acquired here -- full Newsletter bodies are
+        hydrated later, from J Newsletters, by the existing Newsletter
+        processing path.
+        """
+        return self._scan_window(start, end, label_id="INBOX", fetch_fn=self._fetch_message_metadata)
+
+    def _scan_window(
+        self,
+        start: datetime,
+        end: datetime,
+        *,
+        label_id: str | None = None,
+        fetch_fn: "Any" = None,
+    ) -> tuple[T, ...]:
         _validate_window(start, end)
         ids = self._list_message_ids(start, end, label_id=label_id)
         if not ids:
             return ()
 
+        fetch = fetch_fn or self._fetch_message
         messages: list[T] = []
         failures = 0
         with ThreadPoolExecutor(max_workers=min(self._max_workers, len(ids))) as pool:
             for chunk_start in range(0, len(ids), self._max_workers):
                 chunk = ids[chunk_start : chunk_start + self._max_workers]
-                futures = {pool.submit(self._fetch_message, message_id): message_id for message_id in chunk}
+                futures = {pool.submit(fetch, message_id): message_id for message_id in chunk}
                 for future in as_completed(futures):
                     try:
                         messages.append(future.result())
@@ -309,6 +344,40 @@ class GmailMailboxTransport(Generic[T]):
         fields.pop("raw_mime", None)
         return self._factory(provider=self.provider, **fields)
 
+    def _fetch_message_metadata(self, message_id: str) -> T:
+        fields = self._fetch_message_metadata_fields(message_id)
+        return self._factory(provider=self.provider, **fields)
+
+    def _fetch_message_metadata_fields(self, message_id: str) -> dict[str, Any]:
+        params = [("format", "metadata")] + [("metadataHeaders", name) for name in INBOX_METADATA_HEADERS]
+        url = (
+            f"{_GMAIL_API}/users/{quote(self._user_id, safe='')}/messages/"
+            f"{quote(message_id, safe='')}?{urlencode(params)}"
+        )
+        payload = self._http.request_json(
+            self._context,
+            "GET",
+            url,
+            headers=self._headers(),
+            timeout_seconds=10.0,
+            retry=_READ_RETRY,
+        )
+        if not isinstance(payload, dict):
+            raise MailboxTransportError("Gmail message metadata response was not an object")
+        headers = _gmail_headers(payload)
+        internal_date = payload.get("internalDate")
+        try:
+            received_at = datetime.fromtimestamp(int(str(internal_date)) / 1000.0, tz=timezone.utc)
+        except (TypeError, ValueError, OSError) as exc:
+            raise MailboxTransportError("Gmail message timestamp invalid") from exc
+        return {
+            "message_id": str(payload.get("id") or message_id),
+            "received_at": received_at,
+            "sender": headers.get("From", ""),
+            "subject": headers.get("Subject", ""),
+            "headers": headers,
+        }
+
     def _fetch_routed_message(self, message_id: str) -> RoutedNewsletterMessage:
         fields = self._fetch_message_fields(message_id)
         return RoutedNewsletterMessage(mailbox=self.provider, **fields)
@@ -383,6 +452,29 @@ class GmailMailboxTransport(Generic[T]):
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._token}", "Accept": "application/json"}
+
+
+class GmailInboxMetadataPort:
+    """MailboxPort view onto GmailMailboxTransport that routes MailRouter's
+    scan through the metadata-first Inbox boundary instead of full-body scan.
+    Not a second router/pipeline: classification and routing still flow
+    through the one MailRouter / DeterministicMailClassifier /
+    route_to_newsletters path -- this only changes which acquisition method
+    that path's scan_window call reaches.
+    """
+
+    def __init__(self, transport: GmailMailboxTransport) -> None:
+        self._transport = transport
+
+    @property
+    def provider(self) -> str:
+        return self._transport.provider
+
+    def scan_window(self, start: datetime, end: datetime) -> tuple[Any, ...]:
+        return self._transport.scan_inbox_metadata_window(start, end)
+
+    def route_to_newsletters(self, message_id: str, boundary_name: str) -> None:
+        self._transport.route_to_newsletters(message_id, boundary_name)
 
 
 def _processed_label_name(boundary_name: str) -> str:
