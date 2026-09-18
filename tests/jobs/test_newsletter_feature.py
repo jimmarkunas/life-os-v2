@@ -84,9 +84,6 @@ def _adapter(fetcher, source_lane="Newsletter") -> NewsletterJobsAdapter:
     return NewsletterJobsAdapter(NewsletterAdapterConfig(fetcher=fetcher, fit_profile=FAKE_PROFILE, market="Synthetic-US", source_lane=source_lane))
 
 
-# 1. one Newsletter / one qualifying vacancy ---------------------------------
-
-
 def test_single_qualifying_vacancy_created_and_cleanup_safe():
     fetcher = FakeFetcher({"https://greenhouse.io/acme/jobs/1": FetchResponse(final_url="https://greenhouse.io/acme/jobs/1", body=JOBPOSTING_HTML)})
     repo = InMemoryCareerRepository()
@@ -96,9 +93,6 @@ def test_single_qualifying_vacancy_created_and_cleanup_safe():
     assert result.execution.status == ExecutionStatus.PASS
     assert len(result.ingest_results) == 1
     assert result.ingest_results[0].disposition == Disposition.CREATED
-
-
-# 2. one Newsletter / many vacancies ------------------------------------------
 
 
 def test_many_vacancies_all_accounted_for():
@@ -117,20 +111,13 @@ def test_many_vacancies_all_accounted_for():
     assert result.cleanup_safe is True
 
 
-# 3. duplicate vacancy from two source observations -> one canonical mutation
-
-
 def test_duplicate_source_observations_produce_one_canonical_mutation():
-    fetcher = FakeFetcher({"https://greenhouse.io/acme/jobs/1": FetchResponse(final_url="https://greenhouse.io/acme/jobs/1", body=JOBPOSTING_HTML)})
     observations = (
         _observation(evidence_ref="ev:a", source_apply_url="https://greenhouse.io/acme/jobs/1?utm_source=x"),
         _observation(evidence_ref="ev:b", source_apply_url="https://greenhouse.io/acme/jobs/1?utm_source=y"),
     )
     fetcher = FakeFetcher(
         {
-            # Direct employer/ATS URLs canonicalize (tracking params stripped)
-            # with no fetch; the one subsequent fetch is always against the
-            # already-canonicalized destination.
             "https://greenhouse.io/acme/jobs/1": FetchResponse(final_url="https://greenhouse.io/acme/jobs/1", body=JOBPOSTING_HTML),
         }
     )
@@ -144,9 +131,6 @@ def test_duplicate_source_observations_produce_one_canonical_mutation():
     assert result.cleanup_safe is True
 
 
-# 4. existing Job -> update, not a duplicate row ------------------------------
-
-
 def test_reobserving_existing_job_across_runs_updates_not_duplicates():
     fetcher = FakeFetcher({"https://greenhouse.io/acme/jobs/1": FetchResponse(final_url="https://greenhouse.io/acme/jobs/1", body=JOBPOSTING_HTML)})
     repo = InMemoryCareerRepository()
@@ -158,14 +142,11 @@ def test_reobserving_existing_job_across_runs_updates_not_duplicates():
     assert len(repo.get_many([first.ingest_results[0].stable_job_key])) == 1
 
 
-# 5. stale/excluded vacancy ---------------------------------------------------
-
-
 def test_excluded_vacancy_still_cleanup_safe():
     strict_lane = LaneConfig(
         name="Strict",
         market="Synthetic-US",
-        fit_floor=999,  # unreachable -- guarantees exclusion
+        fit_floor=999,
         target_review_floor=None,
         work_mode_policy="any",
         compensation_floor=None,
@@ -176,17 +157,11 @@ def test_excluded_vacancy_still_cleanup_safe():
     repo = InMemoryCareerRepository()
     result = run_newsletter_feature(_process_result((_observation(),)), adapter=_adapter(fetcher), lane=strict_lane, lane_priority=LANE_PRIORITY, repository=repo, run_date=RUN_DATE, context=_context())
     assert result.ingest_results[0].disposition == Disposition.EXCLUDED
-    assert result.cleanup_safe is True  # EXCLUDED is a valid terminal disposition, not a blocker
-
-
-# 6. unresolved final employer URL, but identifiable -> CREATED / PASSED_REVIEW,
-#    cleanup safe. Enrichment failure is not ingestion failure: company/role/
-#    location are enough to identify the vacancy even though the terminal
-#    URL, JD, and Fit never resolved.
+    assert result.cleanup_safe is True
 
 
 def test_unresolved_employer_url_with_identifiable_vacancy_is_created_and_cleanup_safe():
-    fetcher = FakeFetcher({})  # nothing resolves
+    fetcher = FakeFetcher({})
     repo = InMemoryCareerRepository()
     result = run_newsletter_feature(
         _process_result((_observation(source_apply_url="https://linkedin.com/jobs/view/1"),)),
@@ -196,18 +171,13 @@ def test_unresolved_employer_url_with_identifiable_vacancy_is_created_and_cleanu
     assert result.cleanup_safe is True
     assert result.execution.status != ExecutionStatus.DEGRADED
     persisted = repo.get_many([result.ingest_results[0].stable_job_key])[result.ingest_results[0].stable_job_key]
-    assert persisted.opportunity.admission_status.value == "passed_review"
-    assert persisted.opportunity.job.apply_url is None
-    assert persisted.opportunity.fit is None
-
-
-# 6b. unresolved final employer URL AND no fallback identity -> REVIEW_DEGRADED,
-#     cleanup blocked. This is the genuine fatal-accounting-failure boundary
-#     that must survive Package A's fix.
+    assert persisted.job.admission_status.value == "passed_review"
+    assert persisted.job.job.apply_url is None
+    assert persisted.job.fit is None
 
 
 def test_unresolved_employer_url_without_identity_evidence_is_review_degraded():
-    fetcher = FakeFetcher({})  # nothing resolves
+    fetcher = FakeFetcher({})
     repo = InMemoryCareerRepository()
     result = run_newsletter_feature(
         _process_result((_observation(source_apply_url="https://linkedin.com/jobs/view/1", company="", role="", location_text=None),)),
@@ -217,11 +187,11 @@ def test_unresolved_employer_url_without_identity_evidence_is_review_degraded():
     assert result.cleanup_safe is False
 
 
-# 7. read-back failure -> REVIEW-DEGRADED / no cleanup ------------------------
-
-
 class AlwaysMismatchRepository:
     def get_many(self, stable_job_keys):
+        return {}
+
+    def get_by_apply_urls(self, apply_urls):
         return {}
 
     def upsert(self, record):
@@ -238,9 +208,6 @@ def test_read_back_failure_is_review_degraded_and_blocks_cleanup():
     assert result.cleanup_safe is False
 
 
-# 8. idempotent replay ---------------------------------------------------------
-
-
 def test_idempotent_replay_of_identical_batch():
     fetcher = FakeFetcher({"https://greenhouse.io/acme/jobs/1": FetchResponse(final_url="https://greenhouse.io/acme/jobs/1", body=JOBPOSTING_HTML)})
     repo = InMemoryCareerRepository()
@@ -254,13 +221,7 @@ def test_idempotent_replay_of_identical_batch():
     assert len(repo.get_many([first.ingest_results[0].stable_job_key])) == 1
 
 
-# 9. private Fit profile remains runtime-only ---------------------------------
-
-
 def test_no_default_fit_profile_shipped_in_public_code():
-    """fit_scoring.py and newsletter_adapter.py must never define a
-    ready-to-use real-looking FitProfile constant -- every caller (tests
-    included) must construct/inject their own."""
     import lifeos.jobs.fit_scoring as fit_scoring_module
     import lifeos.jobs.newsletter_adapter as adapter_module
 
@@ -270,9 +231,6 @@ def test_no_default_fit_profile_shipped_in_public_code():
                 continue
             value = getattr(module, name)
             assert not isinstance(value, FitProfile), f"{module.__name__}.{name} is an unexpected default FitProfile"
-
-
-# 10. no full Job Ledger scan --------------------------------------------------
 
 
 def test_feature_only_looks_up_keys_it_actually_touched():
@@ -292,4 +250,4 @@ def test_feature_only_looks_up_keys_it_actually_touched():
     assert set(repo.get_many_calls[0]) == {
         "url:https://greenhouse.io/acme/jobs/1",
         "acme synthetic co|synthetic engineer|remote - synthetic country",
-    }  # exactly the observed identity evidence, never "all keys"
+    }
