@@ -20,8 +20,8 @@ from lifeos.jobs.models import Company, FitAuthority, FreshnessStatus, Job, Norm
 from lifeos.jobs.newsletter_adapter import NewsletterJobsAdapter
 from lifeos.jobs.newsletter_feature import _adapt_all
 from lifeos.jobs.repository import CareerRepository
-from lifeos.jobs.terminal_evidence import FetchResponse, Fetcher
-from lifeos.newsletter.models import MessageParseResult, ParseState, RoutedNewsletterMessage, SourceVacancyObservation
+from lifeos.jobs.terminal_evidence import FetchResponse, Fetcher, is_provider_intermediary_source
+from lifeos.newsletter.models import MessageParseResult, ParseState, SourceVacancyObservation
 from lifeos.newsletter.processor import (
     NewsletterError,
     NewsletterExecutionState,
@@ -178,8 +178,6 @@ def oldest_pending_age_seconds(
     if not pending_ids:
         return None
     oldest_id = pending_ids[0]
-    # MessageParseResult does not expose received_at; use one authoritative
-    # Gmail source read for the oldest pending item.
     hydrated = tuple(gmail.hydrate_messages((oldest_id,)))
     if len(hydrated) != 1:
         raise RuntimeError("oldest pending Gmail message unavailable")
@@ -273,7 +271,8 @@ def prepare_newsletter_candidates(
 
     Safe reuse is limited to an exact existing canonical Apply URL match, or a
     fallback identity match when the new observation has no source URL at all.
-    Intermediary/ambiguous URLs therefore continue through normal resolution.
+    Discovery/intermediary URLs always continue through normal terminal
+    resolution even if legacy persisted state happens to contain the same URL.
     """
     ordered = tuple(observations)
     if not ordered:
@@ -283,6 +282,8 @@ def prepare_newsletter_candidates(
     direct_url_by_index: dict[int, str] = {}
     for index, observation in enumerate(ordered):
         if observation.source_apply_url:
+            if is_provider_intermediary_source(observation.source_apply_url):
+                continue
             url = canonical_url(observation.source_apply_url)
             if url:
                 direct_url_by_index[index] = url
