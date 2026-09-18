@@ -273,13 +273,13 @@ def browser_evidence() -> dict | None:
     try:
         value = json.loads(raw)
     except json.JSONDecodeError as exc:
-        from scripts.run_newsletter_production import ProductionConfigError
+        from lifeos.core.config import ConfigurationError
 
-        raise ProductionConfigError("US_REMOTE_BROWSER_EVIDENCE_JSON is invalid") from exc
+        raise ConfigurationError("US_REMOTE_BROWSER_EVIDENCE_JSON is invalid") from exc
     if not isinstance(value, dict):
-        from scripts.run_newsletter_production import ProductionConfigError
+        from lifeos.core.config import ConfigurationError
 
-        raise ProductionConfigError("US_REMOTE_BROWSER_EVIDENCE_JSON must be an object")
+        raise ConfigurationError("US_REMOTE_BROWSER_EVIDENCE_JSON must be an object")
     return value
 
 
