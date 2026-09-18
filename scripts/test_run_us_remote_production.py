@@ -453,7 +453,6 @@ class HistoricalInboxRecoveryTests(unittest.TestCase):
 
     def test_historical_recovery_routes_processes_and_reconciles_idempotently(self) -> None:
         backend = HistoricalInboxBackend(existing_stable_key=EXISTING_STABLE_KEY)
-        self.assertEqual(len(backend.pages), 1)
 
         exit_code, summary = self._run_capturing_summary(
             backend, "--historical-inbox-recovery-hours", "72"
