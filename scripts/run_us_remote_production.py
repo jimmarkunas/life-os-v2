@@ -23,7 +23,7 @@ from time import perf_counter
 
 from lifeos.core.http import HttpClient, HttpError
 from lifeos.core.runtime import DeadlineExceeded, RunContext
-from lifeos.integrations.gmail import GmailMailboxTransport
+from lifeos.integrations.gmail import GmailInboxMetadataPort, GmailMailboxTransport
 from lifeos.integrations.notion import NotionTransport, NotionTransportError
 from lifeos.jobs.fit_scoring import FitProfile
 from lifeos.jobs.newsletter_adapter import HttpClientFetcher, NewsletterAdapterConfig, NewsletterJobsAdapter
@@ -382,7 +382,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         stage_started = perf_counter()
         mail_result = (
-            MailRouter(newsletter_boundary=NEWSLETTER_BOUNDARY).route_window([gmail], inbox_start, end)
+            MailRouter(newsletter_boundary=NEWSLETTER_BOUNDARY).route_window(
+                [GmailInboxMetadataPort(gmail)], inbox_start, end
+            )
             if not args.dry_run
             else None
         )
