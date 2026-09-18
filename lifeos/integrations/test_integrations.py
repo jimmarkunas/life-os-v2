@@ -6,6 +6,7 @@ import unittest
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Mapping
+from urllib.parse import parse_qs, unquote, urlparse
 
 from lifeos.core.runtime import RunContext
 from lifeos.integrations.gmail import GmailMailboxTransport
@@ -39,6 +40,12 @@ class FakeHttp:
 
     def _gmail(self, method, url, kwargs):
         if method == "GET" and "/messages?" in url:
+            query = parse_qs(urlparse(url).query)
+            if query.get("labelIds") == ["INBOX"]:
+                decoded_query = unquote(query.get("q", [""])[0])
+                assert "after:1767225600" in decoded_query
+                assert "before:1767312000" in decoded_query
+                return {"messages": [{"id": "msg-b"}, {"id": "msg-a"}]}
             return {"messages": [{"id": "msg-b"}, {"id": "msg-a"}]}
         if method == "GET" and "/messages/msg-a?format=full" in url:
             return self._gmail_message("msg-a", 1000, "A")
@@ -115,6 +122,32 @@ class MailTransportTests(unittest.TestCase):
         self.assertEqual([m.message_id for m in messages], ["msg-a", "msg-b"])
         self.assertEqual(messages[0].body_text, "synthetic job alert")
         mailbox.route_to_newsletters("msg-a", "J Newsletters")
+
+    def test_gmail_scan_inbox_window_uses_inbox_label_and_existing_hydration(self) -> None:
+        mailbox = GmailMailboxTransport(
+            context=self.context,
+            http=self.http,
+            access_token="synthetic-token",
+            message_factory=SyntheticMessage,
+            max_workers=2,
+        )
+
+        messages = mailbox.scan_inbox_window(self.start, self.end)
+
+        self.assertEqual([m.message_id for m in messages], ["msg-a", "msg-b"])
+        self.assertEqual(messages[0].body_text, "synthetic job alert")
+        list_calls = [call for call in self.http.calls if call[0] == "GET" and "/messages?" in call[1]]
+        self.assertEqual(len(list_calls), 1)
+        params = parse_qs(urlparse(list_calls[0][1]).query)
+        self.assertEqual(params["labelIds"], ["INBOX"])
+        decoded_query = unquote(params["q"][0])
+        self.assertIn("after:1767225600", decoded_query)
+        self.assertIn("before:1767312000", decoded_query)
+
+        self.http.calls.clear()
+        mailbox.scan_window(self.start, self.end)
+        list_call = next(call for call in self.http.calls if call[0] == "GET" and "/messages?" in call[1])
+        self.assertNotIn("labelIds", parse_qs(urlparse(list_call[1]).query))
 
     def test_outlook_implements_agent2_port_shape(self) -> None:
         mailbox = OutlookMailboxTransport(

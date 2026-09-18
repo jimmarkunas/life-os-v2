@@ -6,11 +6,11 @@ import json
 import os
 from datetime import datetime, timedelta, timezone
 from time import perf_counter
-from urllib.parse import quote
 
-from lifeos.core.http import HttpClient
+from lifeos.core.http import HttpClient, HttpError
 from lifeos.core.runtime import DeadlineExceeded, RunContext
 from lifeos.integrations.gmail import GmailMailboxTransport
+from lifeos.integrations.mailbox import MailboxTransportError
 from lifeos.integrations.notion import NotionTransport
 from lifeos.jobs.newsletter_adapter import HttpClientFetcher, NewsletterAdapterConfig, NewsletterJobsAdapter
 from lifeos.jobs.newsletter_contract import Disposition, ingest
@@ -22,8 +22,6 @@ from lifeos.newsletter.models import ParseState
 from lifeos.newsletter.parsers import parse_message
 from scripts import run_us_remote_production as prod
 
-_GMAIL_API = "https://gmail.googleapis.com/gmail/v1"
-
 
 class Live1x1Diagnostic(RuntimeError):
     """Sanitized diagnostic for expected live-acceptance preconditions."""
@@ -33,49 +31,44 @@ class Live1x1Diagnostic(RuntimeError):
         super().__init__(code)
 
 
-def _message_has_inbox_label(gmail, message_id: str) -> bool:
-    url = (
-        f"{_GMAIL_API}/users/{quote(gmail._user_id, safe='')}/messages/"
-        f"{quote(message_id, safe='')}?format=metadata&fields=labelIds"
-    )
-    payload = gmail._http.request_json(
-        gmail._context,
-        "GET",
-        url,
-        headers=gmail._headers(),
-        timeout_seconds=10.0,
-    )
-    labels = payload.get("labelIds") if isinstance(payload, dict) else None
-    return isinstance(labels, list) and "INBOX" in {str(label) for label in labels}
-
-
-def _select_fresh_newsletter_candidate(gmail, start: datetime, end: datetime):
-    """Stage exactly one current Inbox message using existing classification."""
+def _select_fresh_newsletter_candidate(gmail, start: datetime, end: datetime) -> str:
+    """Select exactly one current Inbox message using existing classification."""
     classifier = DeterministicMailClassifier()
-    messages = gmail.scan_window(start, end)
+    messages = gmail.scan_inbox_window(start, end)
     for message in messages:
         classification = classifier.classify(message)
         if classification.mail_class is not MailClass.AUTOMATED_JOB_SOURCE:
             continue
-        if not _message_has_inbox_label(gmail, message.message_id):
-            continue
-        gmail.route_to_newsletters(message.message_id, prod.NEWSLETTER_BOUNDARY)
         return message.message_id
     raise Live1x1Diagnostic("no-current-newsletter-candidate")
 
 
 def _parse_selected_newsletter_message(gmail, message_id: str):
-    parsed = parse_message(gmail._fetch_routed_message(message_id))
+    messages = gmail.hydrate_messages((message_id,))
+    if len(messages) != 1:
+        raise Live1x1Diagnostic("selected-newsletter-hydrate-failed")
+    parsed = parse_message(messages[0])
     if parsed.state is not ParseState.PASS or not parsed.observations:
         raise Live1x1Diagnostic("selected-newsletter-parse-failed")
     return parsed
+
+
+def _base_diagnostic(context: RunContext, timings: dict[str, float], phase: str) -> dict[str, object]:
+    return {
+        "status": "DEGRADED",
+        "phase": phase,
+        "elapsed_seconds": round(context.elapsed_seconds(), 3),
+        "timings": timings,
+    }
 
 
 def main() -> int:
     context = RunContext.start(timeout_seconds=120)
     http = HttpClient()
     timings: dict[str, float] = {}
+    phase = "bootstrap"
     try:
+        phase = "bootstrap"
         env = prod._require_env()
         registry = prod._load_registry()
         notion = NotionTransport(context=context, http=http, access_token=env["NOTION_API_TOKEN"])
@@ -86,6 +79,7 @@ def main() -> int:
             lane, lane_priority, fit_profile, market, newsletter_source_lane = prod._load_private_policy_from_notion(
                 context, http, notion, notion_token=env["NOTION_API_TOKEN"]
             )
+        phase = "gmail-token"
         gmail_token = prod._exchange_gmail_access_token(
             context, http,
             client_id=env["GMAIL_OAUTH_CLIENT_ID"],
@@ -99,12 +93,17 @@ def main() -> int:
         fallback_fetcher = prod._fallback_fetcher(context, browser_evidence)
 
         started = perf_counter()
+        phase = "newsletter-inbox-acquire"
         selected_message_id = _select_fresh_newsletter_candidate(gmail, inbox_start, end)
+        phase = "newsletter-route"
+        gmail.route_to_newsletters(selected_message_id, prod.NEWSLETTER_BOUNDARY)
+        phase = "newsletter-parse"
         selected_message = _parse_selected_newsletter_message(gmail, selected_message_id)
         newsletter_observations = tuple(selected_message.observations)
         timings["newsletter_stage_select_parse"] = round(perf_counter() - started, 3)
 
         started = perf_counter()
+        phase = "web-acquire"
         web_result = prod.USRemoteAcquirer(context=context, http=http, fallback_fetcher=fallback_fetcher).acquire(
             registry,
             browser_evidence=browser_evidence,
@@ -137,11 +136,13 @@ def main() -> int:
         ))
 
         started = perf_counter()
+        phase = "terminal-resolution"
         newsletter_candidates = _adapt_all(tuple(newsletter_to_resolve), adapter=newsletter_adapter, context=context, max_workers=8)
         web_candidates = _adapt_all(tuple(web_to_resolve), adapter=web_adapter, context=context, max_workers=1)
         timings["terminal_resolution"] = round(perf_counter() - started, 3)
 
         started = perf_counter()
+        phase = "persist-readback"
         ingest_results = ingest(
             newsletter_candidates + web_candidates,
             lane=lane,
@@ -165,6 +166,7 @@ def main() -> int:
             mailbox, message_id = selected_message.message_ref.split(":", 1)
             if mailbox != "gmail" or not message_id:
                 raise RuntimeError("selected Newsletter message is not Gmail-backed")
+            phase = "gmail-processed"
             gmail.mark_newsletter_processed(message_id, prod.NEWSLETTER_BOUNDARY)
             processed = True
 
@@ -184,13 +186,33 @@ def main() -> int:
         }, sort_keys=True))
         return 0 if status == "PASS" else 1
     except DeadlineExceeded:
-        print(json.dumps({"status": "DEGRADED", "reason": "execution-deadline-exhausted", "elapsed_seconds": round(context.elapsed_seconds(), 3), "timings": timings}, sort_keys=True))
+        payload = _base_diagnostic(context, timings, phase)
+        payload["reason"] = "execution-deadline-exhausted"
+        print(json.dumps(payload, sort_keys=True))
+        return 1
+    except HttpError as exc:
+        payload = _base_diagnostic(context, timings, phase)
+        payload.update({
+            "reason": "HttpError",
+            "http_kind": exc.kind.value,
+            "http_status": exc.status_code,
+        })
+        print(json.dumps(payload, sort_keys=True))
+        return 1
+    except MailboxTransportError:
+        payload = _base_diagnostic(context, timings, phase)
+        payload.update({"reason": "MailboxTransportError", "detail": "mailbox-transport-error"})
+        print(json.dumps(payload, sort_keys=True))
         return 1
     except Live1x1Diagnostic as exc:
-        print(json.dumps({"status": "DEGRADED", "reason": exc.code, "elapsed_seconds": round(context.elapsed_seconds(), 3), "timings": timings}, sort_keys=True))
+        payload = _base_diagnostic(context, timings, phase)
+        payload["reason"] = exc.code
+        print(json.dumps(payload, sort_keys=True))
         return 1
     except Exception as exc:
-        print(json.dumps({"status": "DEGRADED", "reason": type(exc).__name__, "elapsed_seconds": round(context.elapsed_seconds(), 3), "timings": timings}, sort_keys=True))
+        payload = _base_diagnostic(context, timings, phase)
+        payload["reason"] = type(exc).__name__
+        print(json.dumps(payload, sort_keys=True))
         return 1
 
 
