@@ -96,6 +96,7 @@ CANONICAL_LEDGER_PROPERTY_TYPES = {
     "Admission Status": "select",
     "Source Provider": "rich_text",
     "Source Types": "multi_select",
+    "Eligible Lanes": "multi_select",
     "Applied": "checkbox",
     "Applied On": "date",
     "First Surfaced": "date",

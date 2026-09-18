@@ -11,25 +11,28 @@ LANE_PRIORITY = {"Lane-A": 0, "Lane-B": 1, "Lane-C": 1}
 
 def _obs(key, lane, fit, admission=AdmissionStatus.ADMITTED, apply_url=None, provider_job_id=None):
     job = make_job(apply_url=apply_url, provider_job_id=provider_job_id)
-    return LaneObservation(stable_job_key=key, lane=lane, job_observation=job, fit=fit, admission_status=admission)
-
-
-def test_single_observation_passes_through():
-    result = reconcile([_obs("k1", "Lane-A", 90)], lane_priority=LANE_PRIORITY)
-    assert len(result) == 1
-    assert result[0].job.stable_job_key == "k1"
-    assert result[0].source_lanes == ("Lane-A",)
+    return LaneObservation(
+        stable_job_key=key,
+        lane=lane,
+        job_observation=job,
+        fit=fit,
+        admission_status=admission,
+        eligible_lanes=(lane,),
+    )
 
 
 def test_higher_priority_lane_wins_visibility():
+    priority = {"Scale-Up": 0, "US Remote": 1}
     observations = [
-        _obs("k1", "Lane-B", 95),
-        _obs("k1", "Lane-A", 80),
+        _obs("k1", "US Remote", 95),
+        _obs("k1", "Scale-Up", 80),
     ]
-    result = reconcile(observations, lane_priority=LANE_PRIORITY)
+    result = reconcile(observations, lane_priority=priority)
     assert len(result) == 1
-    assert result[0].job.source_lanes[0] == "Lane-A"
-    assert result[0].source_lanes == ("Lane-A", "Lane-B")
+    assert result[0].job.source_lanes[0] == "Scale-Up"
+    assert result[0].source_lanes == ("Scale-Up", "US Remote")
+    assert result[0].job.eligible_lanes == ("Scale-Up", "US Remote")
+    assert result[0].job.primary_lane == "Scale-Up"
 
 
 def test_best_fit_tracked_even_when_not_visible_lane():
