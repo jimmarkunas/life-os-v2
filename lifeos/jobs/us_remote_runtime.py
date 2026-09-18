@@ -39,13 +39,6 @@ def load_registry() -> dict:
     return data
 
 
-def counts(results: list[IngestResult]) -> dict[str, int]:
-    return {
-        disposition.value: sum(item.disposition == disposition for item in results)
-        for disposition in Disposition
-    }
-
-
 def _accepted_newsletter_message_ids(process_result, results: list[IngestResult]) -> list[str]:
     by_ref = {result.evidence_ref: result for result in results}
     accepted: list[str] = []
@@ -115,27 +108,6 @@ def _preexclude(
             f"maximum possible fit {ceiling} is below configured review floor {review_floor}",
         )
     return None
-
-
-def partition_observations(
-    observations: tuple[SourceVacancyObservation, ...],
-    *,
-    lane: LaneConfig,
-    fit_profile: FitProfile,
-) -> tuple[list[SourceVacancyObservation], list[IngestResult]]:
-    resolve: list[SourceVacancyObservation] = []
-    excluded: list[IngestResult] = []
-    for observation in observations:
-        disposition = _preexclude(observation, lane=lane, fit_profile=fit_profile)
-        if disposition is None:
-            resolve.append(observation)
-        else:
-            excluded.append(disposition)
-    return resolve, excluded
-
-
-def _error_codes(items) -> list[str]:
-    return [f"{item.operation}:{item.detail}" for item in items[:10]]
 
 
 @dataclass(frozen=True)
@@ -227,16 +199,22 @@ def execute_us_remote(
             return UsRemoteResult(body=body, indent=None, exit_code=0)
 
         stage_started = perf_counter()
-        newsletter_to_resolve, newsletter_preexcluded = partition_observations(
-            newsletter_result.observations,
-            lane=lane,
-            fit_profile=fit_profile,
-        )
-        web_to_resolve, web_preexcluded = partition_observations(
-            web_result.observations,
-            lane=lane,
-            fit_profile=fit_profile,
-        )
+        newsletter_to_resolve: list[SourceVacancyObservation] = []
+        newsletter_preexcluded: list[IngestResult] = []
+        for observation in newsletter_result.observations:
+            disposition = _preexclude(observation, lane=lane, fit_profile=fit_profile)
+            if disposition is None:
+                newsletter_to_resolve.append(observation)
+            else:
+                newsletter_preexcluded.append(disposition)
+        web_to_resolve: list[SourceVacancyObservation] = []
+        web_preexcluded: list[IngestResult] = []
+        for observation in web_result.observations:
+            disposition = _preexclude(observation, lane=lane, fit_profile=fit_profile)
+            if disposition is None:
+                web_to_resolve.append(observation)
+            else:
+                web_preexcluded.append(disposition)
         timings["cheap_prefilter"] = round(perf_counter() - stage_started, 3)
 
         repository = NotionCareerRepository(
@@ -354,7 +332,7 @@ def execute_us_remote(
                 "processed_observations": len(newsletter_result.observations),
                 "progress_messages": processed_count,
                 "cleanup_safe": newsletter_ok and newsletter_fully_accounted and not newsletter_unresolved and not processed_errors,
-                "error_codes": _error_codes(mail_result.errors) if mail_result else [],
+                "error_codes": [f"{item.operation}:{item.detail}" for item in mail_result.errors[:10]] if mail_result else [],
                 "backlog_error_codes": backlog_errors,
             },
             "newsletter": {
@@ -363,7 +341,7 @@ def execute_us_remote(
                 "preexcluded": len(newsletter_preexcluded),
                 "terminal_resolution_required": len(newsletter_to_resolve),
                 "state": newsletter_result.state.value,
-                "error_codes": _error_codes(newsletter_result.errors),
+                "error_codes": [f"{item.operation}:{item.detail}" for item in newsletter_result.errors[:10]],
             },
             "web": {
                 "status": "PASS" if web_lane_pass else "DEGRADED",
@@ -381,7 +359,10 @@ def execute_us_remote(
             "jobs": {
                 "observations": len(newsletter_result.observations) + len(web_result.observations),
                 "fully_accounted": fully_accounted,
-                "dispositions": counts(results),
+                "dispositions": {
+                    disposition.value: sum(item.disposition == disposition for item in results)
+                    for disposition in Disposition
+                },
             },
             "timings": timings,
             "browser_fallback_available": fallback is not None,
