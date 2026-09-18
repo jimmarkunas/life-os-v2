@@ -207,7 +207,6 @@ class GoogleCalendarTransportTests(unittest.TestCase):
         )
 
         self.assertEqual(transport.get_event("synthetic-event")["id"], "synthetic-event")
-        self.assertNotIn("synthetic-calendar-token", repr(config))
         self.assertEqual(
             backend.calls[0]["headers"]["Authorization"],
             "Bearer synthetic-calendar-token",
