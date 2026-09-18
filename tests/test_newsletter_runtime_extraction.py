@@ -13,7 +13,7 @@ _SHARED_HELPERS = (
 
 
 def test_extraction_reuses_canonical_newsletter_helpers() -> None:
-    """Extraction must delegate shared policy/accounting helpers to the current runtime."""
+    """Extraction must delegate policy/accounting helpers to the current runtime."""
     for name in _SHARED_HELPERS:
         assert getattr(newsletter_runtime, name) is getattr(us_remote_runtime, name)
 
