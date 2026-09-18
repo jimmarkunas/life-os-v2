@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 from lifeos.jobs.newsletter_contract import Disposition, IngestResult
 from lifeos.mail.models import MailMessage
@@ -23,10 +24,31 @@ class FakeAcquirer:
         return FakeWebResult((observation("web-1", source_message_id="web"),))
 
 
+class FakeHttp:
+    def __init__(self, gmail: "FakeGmail") -> None:
+        self.gmail = gmail
+
+    def request_json(self, context, method, url, **kwargs):
+        message_id = urlparse(url).path.rsplit("/", 1)[-1]
+        return {"labelIds": sorted(self.gmail.labels.get(message_id, set()))}
+
+
 class FakeGmail:
     def __init__(self, *, context, http, access_token, message_factory) -> None:
         now = datetime(2026, 1, 15, 12, 0, tzinfo=timezone.utc)
-        self.inbox = [
+        self._context = context
+        self._user_id = "me"
+        self._http = FakeHttp(self)
+        self.messages = [
+            MailMessage(
+                provider="gmail",
+                message_id="synthetic-non-inbox-job",
+                received_at=now,
+                sender="alerts@example.invalid",
+                subject="Daily job alert: archived role",
+                body_text="Synthetic role",
+                headers={"List-Unsubscribe": "<https://example.invalid/unsub>"},
+            ),
             MailMessage(
                 provider="gmail",
                 message_id="synthetic-inbox-job",
@@ -46,15 +68,24 @@ class FakeGmail:
                 headers={},
             ),
         ]
+        self.labels = {
+            "synthetic-non-inbox-job": {"J Newsletters"},
+            "synthetic-inbox-job": {"INBOX"},
+            "synthetic-unrelated": {"INBOX"},
+        }
         self.staged: list[str] = []
         self.processed: list[str] = []
 
+    def _headers(self):
+        return {"Authorization": "Bearer synthetic-access", "Accept": "application/json"}
+
     def scan_window(self, start, end):
-        return tuple(self.inbox)
+        return tuple(self.messages)
 
     def route_to_newsletters(self, message_id: str, boundary_name: str) -> None:
         self.staged.append(message_id)
-        self.inbox = [message for message in self.inbox if message.message_id != message_id]
+        self.labels.setdefault(message_id, set()).discard("INBOX")
+        self.labels.setdefault(message_id, set()).add(boundary_name)
 
     def _fetch_routed_message(self, message_id: str) -> RoutedNewsletterMessage:
         if message_id not in self.staged:
@@ -71,6 +102,7 @@ class FakeGmail:
     def mark_newsletter_processed(self, message_id: str, boundary_name: str) -> None:
         if message_id not in self.staged:
             raise AssertionError("unstaged message marked processed")
+        self.labels.setdefault(message_id, set()).add(f"{boundary_name}/Processed")
         self.processed.append(message_id)
 
 
@@ -165,7 +197,9 @@ def test_live_1x1_stages_one_fresh_inbox_message_before_processing(monkeypatch, 
     assert output["web_candidates"] == 1
     assert gmail.staged == ["synthetic-inbox-job"]
     assert gmail.processed == ["synthetic-inbox-job"]
-    assert [message.message_id for message in gmail.inbox] == ["synthetic-unrelated"]
+    assert gmail.labels["synthetic-non-inbox-job"] == {"J Newsletters"}
+    assert gmail.labels["synthetic-inbox-job"] == {"J Newsletters", "J Newsletters/Processed"}
+    assert gmail.labels["synthetic-unrelated"] == {"INBOX"}
 
 
 def test_live_1x1_parse_failure_does_not_mark_processed(monkeypatch, capsys) -> None:
@@ -188,17 +222,7 @@ def test_live_1x1_no_current_candidate_reports_sanitized_diagnostic(monkeypatch,
     class NoCandidateGmail(FakeGmail):
         def __init__(self, **kwargs) -> None:
             super().__init__(**kwargs)
-            self.inbox = [
-                MailMessage(
-                    provider="gmail",
-                    message_id="synthetic-unrelated",
-                    received_at=datetime(2026, 1, 15, 12, 0, tzinfo=timezone.utc),
-                    sender="friend@example.invalid",
-                    subject="Hello",
-                    body_text="Not a job alert",
-                    headers={},
-                )
-            ]
+            self.labels["synthetic-inbox-job"] = {"J Newsletters"}
 
     def gmail_factory(**kwargs):
         fake = NoCandidateGmail(**kwargs)
