@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One-shot live US Remote proof: one staged Newsletter message + one Web candidate."""
+"""One-shot live US Remote proof: one fresh Newsletter message + one Web candidate."""
 from __future__ import annotations
 
 import json
@@ -15,10 +15,39 @@ from lifeos.jobs.newsletter_adapter import HttpClientFetcher, NewsletterAdapterC
 from lifeos.jobs.newsletter_contract import Disposition, ingest
 from lifeos.jobs.newsletter_feature import _adapt_all
 from lifeos.jobs.notion_repository import NotionCareerRepository, NotionCareerRepositoryConfig
-from lifeos.mail.models import MailMessage
+from lifeos.mail.classifier import DeterministicMailClassifier
+from lifeos.mail.models import MailClass, MailMessage
 from lifeos.newsletter.models import ParseState
 from lifeos.newsletter.parsers import parse_message
 from scripts import run_us_remote_production as prod
+
+
+class Live1x1Diagnostic(RuntimeError):
+    """Sanitized diagnostic for expected live-acceptance preconditions."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
+def _select_fresh_newsletter_candidate(gmail, start: datetime, end: datetime):
+    """Stage exactly one current Inbox message using existing classification."""
+    classifier = DeterministicMailClassifier()
+    messages = gmail.scan_window(start, end)
+    for message in messages:
+        classification = classifier.classify(message)
+        if classification.mail_class is not MailClass.AUTOMATED_JOB_SOURCE:
+            continue
+        gmail.route_to_newsletters(message.message_id, prod.NEWSLETTER_BOUNDARY)
+        return message.message_id
+    raise Live1x1Diagnostic("no-current-newsletter-candidate")
+
+
+def _parse_selected_newsletter_message(gmail, message_id: str):
+    parsed = parse_message(gmail._fetch_routed_message(message_id))
+    if parsed.state is not ParseState.PASS or not parsed.observations:
+        raise Live1x1Diagnostic("selected-newsletter-parse-failed")
+    return parsed
 
 
 def main() -> int:
@@ -44,31 +73,15 @@ def main() -> int:
         )
         gmail = GmailMailboxTransport(context=context, http=http, access_token=gmail_token, message_factory=MailMessage)
         end = datetime.now(timezone.utc)
+        inbox_start = end - timedelta(hours=prod.MAX_INBOX_STAGING_HOURS)
         browser_evidence = prod._browser_evidence()
         fallback_fetcher = prod._fallback_fetcher(context, browser_evidence)
 
         started = perf_counter()
-        label_id = gmail._resolve_label_id(prod.NEWSLETTER_BOUNDARY)
-        processed_name = f"{prod.NEWSLETTER_BOUNDARY}/Processed"
-        try:
-            gmail._resolve_label_id(processed_name)
-        except Exception:
-            processed_name = ""
-        ids = gmail._list_message_ids(
-            end - timedelta(days=60), end,
-            label_id=label_id,
-            exclude_label_name=processed_name or None,
-        )
-        selected_message = None
-        for message_id in ids[:10]:
-            parsed = parse_message(gmail._fetch_routed_message(message_id))
-            if parsed.state is ParseState.PASS and parsed.observations:
-                selected_message = parsed
-                break
-        if selected_message is None:
-            raise RuntimeError("no parseable staged Newsletter message with vacancies in bounded selection")
+        selected_message_id = _select_fresh_newsletter_candidate(gmail, inbox_start, end)
+        selected_message = _parse_selected_newsletter_message(gmail, selected_message_id)
         newsletter_observations = tuple(selected_message.observations)
-        timings["newsletter_select_parse"] = round(perf_counter() - started, 3)
+        timings["newsletter_stage_select_parse"] = round(perf_counter() - started, 3)
 
         started = perf_counter()
         web_result = prod.USRemoteAcquirer(context=context, http=http, fallback_fetcher=fallback_fetcher).acquire(
@@ -141,6 +154,7 @@ def main() -> int:
             "elapsed_seconds": round(context.elapsed_seconds(), 3),
             "newsletter_messages": 1,
             "newsletter_observations": len(newsletter_observations),
+            "newsletter_staged_from_inbox": True,
             "newsletter_processed": processed,
             "web_candidates": 1,
             "durable_job_writes_read_back": durable,
@@ -150,6 +164,9 @@ def main() -> int:
         return 0 if status == "PASS" else 1
     except DeadlineExceeded:
         print(json.dumps({"status": "DEGRADED", "reason": "execution-deadline-exhausted", "elapsed_seconds": round(context.elapsed_seconds(), 3), "timings": timings}, sort_keys=True))
+        return 1
+    except Live1x1Diagnostic as exc:
+        print(json.dumps({"status": "DEGRADED", "reason": exc.code, "elapsed_seconds": round(context.elapsed_seconds(), 3), "timings": timings}, sort_keys=True))
         return 1
     except Exception as exc:
         print(json.dumps({"status": "DEGRADED", "reason": type(exc).__name__, "elapsed_seconds": round(context.elapsed_seconds(), 3), "timings": timings}, sort_keys=True))
