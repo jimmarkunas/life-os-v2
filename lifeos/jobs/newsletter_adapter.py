@@ -14,7 +14,7 @@ from lifeos.core.http import HttpClient, RetryPolicy
 from lifeos.core.runtime import RunContext
 from lifeos.jobs.fit_scoring import FitEvidence, FitProfile
 from lifeos.jobs.fit_scoring import score as score_fit
-from lifeos.jobs.models import Company, FitAuthority, FreshnessStatus, Job, NormalizedCandidate, WorkMode
+from lifeos.jobs.models import Company, FitAuthority, FreshnessStatus, JobObservation, NormalizedCandidate, WorkMode
 from lifeos.jobs.terminal_evidence import (
     Fetcher,
     FetchResponse,
@@ -112,7 +112,7 @@ class NewsletterJobsAdapter:
         fatal_issues = fatal_issue_codes(observation.issues)
         if fatal_issues:
             return NormalizedCandidate(
-                job=Job(
+                job=JobObservation(
                     company=Company(name=company), role=role, location=location,
                     work_mode=_infer_work_mode(location), compensation_text=observation.compensation_text,
                     compensation_minimum=None, posting_date=None, apply_url=None,
@@ -125,14 +125,6 @@ class NewsletterJobsAdapter:
                 source_types=source_types,
             )
 
-        # Enrichment failure is not identity failure: a missing source apply
-        # URL, an unresolved final employer/ATS destination, or a raised
-        # resolver exception all leave apply_url/description_text/
-        # posting_date unset below, but never set unresolved_reason. Whether
-        # this candidate can still be safely identified is decided later, by
-        # identity.stable_job_key()'s own company+role+location fallback --
-        # not here. unresolved_reason is reserved for observation.issues
-        # above, which signals a parser-level identity problem.
         apply_url: str | None = None
         description_text: str | None = None
         posting_date: date | None = None
@@ -145,7 +137,7 @@ class NewsletterJobsAdapter:
                 posting_iso = parse_posting_date(evidence.posting_date_raw, reference_time=observation.source_received_at)
                 posting_date = date.fromisoformat(posting_iso) if posting_iso else None
 
-        job = Job(
+        job = JobObservation(
             company=Company(name=company), role=role, location=location,
             work_mode=_infer_work_mode(location), compensation_text=observation.compensation_text,
             compensation_minimum=_parse_compensation_minimum(observation.compensation_text),
@@ -155,11 +147,6 @@ class NewsletterJobsAdapter:
             source_provider=observation.source_provider,
         )
 
-        # LIFE OS Fit is authoritative evidence only: score it from terminal
-        # employer/ATS description text, never from weak source-card/title
-        # text alone. When enrichment did not resolve, fit stays None and
-        # qualify() routes the candidate to PASSED_REVIEW, never a silent
-        # admission and never a fabricated score.
         fit: int | None = None
         if description_text:
             fit = score_fit(
@@ -178,9 +165,6 @@ class NewsletterJobsAdapter:
         )
 
     def _terminal_evidence_for(self, source_apply_url: str) -> TerminalVacancyEvidence | None:
-        # Protect only cache access. Holding this lock across network/browser
-        # resolution serialized every distinct job URL and defeated _adapt_all's
-        # worker pool under large Newsletter batches.
         with self._terminal_evidence_lock:
             if source_apply_url in self._terminal_evidence_cache:
                 return self._terminal_evidence_cache[source_apply_url]
@@ -195,6 +179,4 @@ class NewsletterJobsAdapter:
             evidence = None
 
         with self._terminal_evidence_lock:
-            # A concurrent duplicate URL may have completed first. Preserve the
-            # first cached result while allowing distinct URLs to resolve in parallel.
             return self._terminal_evidence_cache.setdefault(source_apply_url, evidence)
