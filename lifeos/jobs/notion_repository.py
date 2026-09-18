@@ -165,8 +165,6 @@ def _record_to_properties(record: JobLedgerRecord) -> dict[str, Any]:
         "Admission Status": _select(_ADMISSION_TO_CANONICAL[record.job.admission_status]),
         "Source Provider": _rich_text(", ".join(record.job.source_providers)),
         "Source Types": _multi_select(record.job.source_types),
-        "Applied": _checkbox(record.applied),
-        "Applied On": _date(record.applied_on),
         "First Surfaced": _date(record.first_surfaced),
         "Last Seen": _date(record.last_seen),
     }
@@ -193,8 +191,6 @@ def _canonical_view(record: JobLedgerRecord) -> tuple[Any, ...]:
         record.job.source_types,
         observation.provider_score,
         record.job.admission_status,
-        record.applied,
-        record.applied_on,
         record.first_surfaced,
         record.last_seen,
     )
@@ -253,18 +249,12 @@ def _page_to_record(page: dict[str, Any]) -> JobLedgerRecord:
     if first_surfaced is None or last_seen is None:
         raise ReadBackMismatch(f"persisted page {page.get('id')} is missing required lifecycle dates")
 
-    applied = _extract_checkbox(props.get("Applied"))
     live = admission_status != AdmissionStatus.EXCLUDED
-    if applied:
-        status = LifecycleStatus.APPLIED
-    else:
-        status = LifecycleStatus.NEW if live else LifecycleStatus.HISTORICAL
+    status = LifecycleStatus.NEW if live else LifecycleStatus.HISTORICAL
 
     return JobLedgerRecord(
         job=job,
         status=status,
-        applied=applied,
-        applied_on=_extract_date(props.get("Applied On")),
         first_surfaced=first_surfaced,
         review_ready_on=first_surfaced + timedelta(days=1),
         last_seen=last_seen,

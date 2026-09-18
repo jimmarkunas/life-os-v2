@@ -7,7 +7,7 @@ import pytest
 from lifeos.core.runtime import RunContext
 from lifeos.integrations.notion import NotionTransport
 from lifeos.jobs.fit_scoring import FitProfile, RoleFamily
-from lifeos.jobs.lifecycle import mark_applied, new_record
+from lifeos.jobs.lifecycle import new_record
 from lifeos.jobs.models import AdmissionStatus, Company, FitAuthority, Job, JobObservation, WorkMode
 from lifeos.jobs.newsletter_adapter import NewsletterAdapterConfig, NewsletterJobsAdapter
 from lifeos.jobs.newsletter_contract import Disposition, ingest
@@ -546,41 +546,6 @@ def test_legacy_missing_fit_authority_with_fit_reads_authoritative_and_no_downgr
     assert after_rescore.job.fit_authority == FitAuthority.AUTHORITATIVE
 
 
-def test_package_c_human_state_survives_automated_refresh_across_fresh_repository_instances():
-    http = FakeNotionHttp()
-    key = "acme synthetic co|technical program manager|remote"
-    repo_1 = _repository_with_http(http)
-    job = Job(
-        stable_job_key=key,
-        job=make_job(role="Technical Program Manager", location="Remote", apply_url=None, source_provider="Source A"),
-        admission_status=AdmissionStatus.ADMITTED,
-        fit=86,
-        fit_authority=FitAuthority.AUTHORITATIVE,
-        source_lanes=("Synthetic-Remote",),
-        source_providers=("Source A",),
-    )
-    applied = mark_applied(new_record(job, run_date=RUN_DATE), run_date=RUN_DATE + timedelta(days=3))
-    repo_1.upsert(applied)
-
-    refresh, _ = _fresh_ingest(
-        http,
-        make_candidate(
-            job=make_job(role="Technical Program Manager", location="Remote", apply_url=None, source_provider="Source B"),
-            fit=None,
-            fit_authority=FitAuthority.NON_AUTHORITATIVE,
-            evidence_ref="ev:refresh",
-        ),
-        run_date=RUN_DATE + timedelta(days=6),
-    )
-    assert refresh[0].disposition == Disposition.UPDATED
-    record = _fresh_record(http, key)
-    assert record.applied is True
-    assert record.applied_on == RUN_DATE + timedelta(days=3)
-    assert record.first_surfaced == RUN_DATE
-    assert record.status.value == "applied"
-    assert record.job.fit == 86
-
-
 def test_package_c_missing_then_stronger_evidence_fills_canonical_row():
     http = FakeNotionHttp()
     key = "acme synthetic co|technical program manager|remote"
@@ -640,29 +605,31 @@ def test_read_back_mismatch_raised_when_persisted_page_diverges():
 
 
 def test_human_owned_state_preserved_across_reupsert():
-    """applied/applied_on must survive a second upsert reflecting only new
-    source evidence -- the repository itself must not need special-casing
-    for this since lifecycle.apply_observation already guarantees it; this
-    test proves the whole path (get_many -> apply_observation -> upsert)
-    together."""
-    repo, http = _repository()
-    job = Job(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED)
-    record = new_record(job, run_date=RUN_DATE)
-    repo.upsert(record)
+    """Jobs writes omit pursuit fields while preserving existing Notion values."""
+    http = FakeNotionHttp()
+    key = "k1"
+    repo = _repository_with_http(http)
+    job = Job(stable_job_key=key, job=_job(), admission_status=AdmissionStatus.ADMITTED)
+    repo.upsert(new_record(job, run_date=RUN_DATE))
+    page = next(iter(http.pages.values()))
+    page["properties"]["Applied"] = {"checkbox": True}
+    page["properties"]["Applied On"] = {"date": {"start": "2026-01-12"}}
 
-    from lifeos.jobs.lifecycle import mark_applied
-
-    existing = repo.get_many(["k1"])["k1"]
-    applied = mark_applied(existing, run_date=RUN_DATE)
-    repo.upsert(applied)
-
-    from lifeos.jobs.lifecycle import apply_observation
-
-    existing_after_apply = repo.get_many(["k1"])["k1"]
-    assert existing_after_apply.applied is True
-
-    reobserved_opportunity = Job(stable_job_key="k1", job=_job(compensation_text="$999,000"), admission_status=AdmissionStatus.ADMITTED)
-    merged = apply_observation(existing_after_apply, reobserved_opportunity, run_date=RUN_DATE)
-    persisted = repo.upsert(merged)
-    assert persisted.applied is True
-    assert persisted.applied_on == RUN_DATE
+    refreshed, _ = _fresh_ingest(
+        http,
+        make_candidate(
+            job=make_job(
+                compensation_text="$999,000",
+                apply_url="https://greenhouse.io/acme/jobs/42",
+            ),
+            evidence_ref="ev:refresh",
+        ),
+        run_date=RUN_DATE + timedelta(days=1),
+    )
+    assert refreshed[0].disposition == Disposition.UPDATED
+    assert page["properties"]["Applied"]["checkbox"] is True
+    assert page["properties"]["Applied On"]["date"]["start"] == "2026-01-12"
+    assert page["properties"]["Compensation"]["rich_text"][0]["text"]["content"] == "$999,000"
+    record = _fresh_record(http, key)
+    assert not hasattr(record, "applied")
+    assert not hasattr(record, "applied_on")
