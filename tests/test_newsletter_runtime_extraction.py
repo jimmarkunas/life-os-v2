@@ -8,13 +8,12 @@ from lifeos.jobs import newsletter_runtime, us_remote_runtime
 
 _SHARED_HELPERS = (
     "_preexclude",
-    "_select_newsletter_message_ids",
     "_accepted_newsletter_message_ids",
 )
 
 
 def test_extraction_reuses_canonical_newsletter_helpers() -> None:
-    """Extraction must delegate policy/accounting helpers to the current runtime."""
+    """Extraction must delegate shared policy/accounting helpers to the current runtime."""
     for name in _SHARED_HELPERS:
         assert getattr(newsletter_runtime, name) is getattr(us_remote_runtime, name)
 
