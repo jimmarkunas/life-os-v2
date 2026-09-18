@@ -102,6 +102,21 @@ For a pre-scoped Codex or equivalent handoff, default to roughly 100–200 words
 
 No silent scope expansion and no "while we're here" work.
 
+### 5.1 Clean-as-you-touch
+
+Lean efficiency is continuous package hygiene, not a future cleanup phase.
+
+Every code-changing package owns the exact surface it touches. Before landing, remove directly-obsolete residue made visible or unnecessary by that mutation when removal is safe and provable within the package boundary, including:
+
+- superseded local paths, wrappers, imports, branches, helpers, or configuration;
+- obsolete tests or fixtures for behavior removed or replaced;
+- exhausted one-shot diagnostics, migrations, or recovery utilities on the touched path;
+- duplicate local implementation replaced by the canonical path.
+
+This is not permission for "while we're here" cleanup. Do not expand into neighboring modules, repository-wide refactors, speculative abstraction, or unrelated debt. If cleanup requires new product semantics, a new architecture concept, or exceeds current file/line/time/token budgets, stop and report the concrete residue; it becomes separate work only if it blocks the active outcome or Jim explicitly promotes it.
+
+A package may report `REMOVAL: none — no directly-obsolete residue on touched surface`, but the question must be asked before landing.
+
 ## 6. Deterministic proof
 
 Prefer local deterministic evidence over live-system debugging.
@@ -194,6 +209,8 @@ Every landed package reports:
 - **PROOF**
 - **REMOTE SHA**
 - **NEXT**
+
+`REMOVAL` is mandatory clean-as-you-touch evidence: name what was deleted or consolidated, or report `none — no directly-obsolete residue on touched surface`.
 
 Use terms consistently:
 
