@@ -53,6 +53,8 @@ _FIT_AUTHORITY_TO_CANONICAL = {
     FitAuthority.NON_AUTHORITATIVE: "Non-Authoritative",
 }
 _FIT_AUTHORITY_FROM_CANONICAL = {v: k for k, v in _FIT_AUTHORITY_TO_CANONICAL.items()}
+_PRIMARY_LANE_TO_CANONICAL = {"Scale-Up": "Scale-up", "US Remote": "US Remote"}
+_PRIMARY_LANE_FROM_CANONICAL = {v: k for k, v in _PRIMARY_LANE_TO_CANONICAL.items()}
 
 
 def _chunk(values: list[str], size: int) -> list[list[str]]:
@@ -71,8 +73,8 @@ def _url(value: str | None) -> dict[str, Any]:
     return {"url": value}
 
 
-def _select(value: str) -> dict[str, Any]:
-    return {"select": {"name": value}}
+def _select(value: str | None) -> dict[str, Any]:
+    return {"select": {"name": value} if value is not None else None}
 
 
 def _multi_select(values: tuple[str, ...]) -> dict[str, Any]:
@@ -81,10 +83,6 @@ def _multi_select(values: tuple[str, ...]) -> dict[str, Any]:
 
 def _date(value: date | None) -> dict[str, Any]:
     return {"date": {"start": value.isoformat()} if value else None}
-
-
-def _checkbox(value: bool) -> dict[str, Any]:
-    return {"checkbox": value}
 
 
 def _number(value: int | None) -> dict[str, Any]:
@@ -134,10 +132,6 @@ def _extract_date(prop: Any) -> date | None:
     return date.fromisoformat(str(value["start"])[:10])
 
 
-def _extract_checkbox(prop: Any) -> bool:
-    return bool(isinstance(prop, dict) and prop.get("checkbox"))
-
-
 def _record_to_properties(record: JobLedgerRecord) -> dict[str, Any]:
     """Emit only properties that exist in the live canonical Job Ledger
     schema, using their real types and canonical option labels -- never an
@@ -166,6 +160,7 @@ def _record_to_properties(record: JobLedgerRecord) -> dict[str, Any]:
         "Source Provider": _rich_text(", ".join(record.job.source_providers)),
         "Source Types": _multi_select(record.job.source_types),
         "Eligible Lanes": _multi_select(record.job.eligible_lanes),
+        "Visible Lane": _select(_PRIMARY_LANE_TO_CANONICAL.get(record.job.primary_lane, record.job.primary_lane)),
         "First Surfaced": _date(record.first_surfaced),
         "Last Seen": _date(record.last_seen),
     }
@@ -191,6 +186,7 @@ def _canonical_view(record: JobLedgerRecord) -> tuple[Any, ...]:
         record.job.source_providers,
         record.job.source_types,
         record.job.eligible_lanes,
+        record.job.primary_lane,
         observation.provider_score,
         record.job.admission_status,
         record.first_surfaced,
@@ -236,6 +232,8 @@ def _page_to_record(page: dict[str, Any]) -> JobLedgerRecord:
         fit_authority = FitAuthority.NON_AUTHORITATIVE
     source_provider_text = _plain_text(props.get("Source Provider"))
     source_providers = tuple(part.strip() for part in source_provider_text.split(",") if part.strip())
+    visible_lane = _extract_select(props.get("Visible Lane"))
+    primary_lane = _PRIMARY_LANE_FROM_CANONICAL.get(visible_lane, visible_lane)
     job = Job(
         stable_job_key=stable_job_key,
         job=observation,
@@ -245,6 +243,7 @@ def _page_to_record(page: dict[str, Any]) -> JobLedgerRecord:
         source_providers=source_providers,
         source_types=_extract_multi_select(props.get("Source Types")),
         eligible_lanes=_extract_multi_select(props.get("Eligible Lanes")),
+        primary_lane=primary_lane,
     )
 
     first_surfaced = _extract_date(props.get("First Surfaced"))
