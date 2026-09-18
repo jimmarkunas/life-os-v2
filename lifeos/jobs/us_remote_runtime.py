@@ -21,11 +21,10 @@ from lifeos.jobs.notion_repository import NotionCareerRepository, NotionCareerRe
 from lifeos.jobs.qualification import LaneConfig
 from lifeos.jobs.terminal_evidence import browser_evidence, fallback_fetcher
 from lifeos.jobs.us_remote_acquisition import USRemoteAcquirer
-from lifeos.mail.router import MailRouter
+from lifeos.mail.router import NEWSLETTER_BOUNDARY, MailRouter
 from lifeos.newsletter.models import ParseState, SourceVacancyObservation
 from lifeos.newsletter.processor import NewsletterExecutionState, NewsletterProcessor
 
-from scripts.run_newsletter_production import NEWSLETTER_BOUNDARY
 
 _SOURCE_REGISTRY = Path(__file__).resolve().parents[2] / "contracts" / "us_remote_sources.json"
 _TERMINAL_RESOLUTION_WORKERS = 8

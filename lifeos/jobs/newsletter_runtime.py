@@ -20,10 +20,9 @@ from lifeos.jobs.notion_repository import NotionCareerRepository, NotionCareerRe
 from lifeos.jobs.qualification import LaneConfig
 from lifeos.jobs.terminal_evidence import fallback_fetcher
 from lifeos.jobs.us_remote_runtime import UsRemoteResult, _accepted_newsletter_message_ids, _preexclude
-from lifeos.mail.router import MailRouter
+from lifeos.mail.router import NEWSLETTER_BOUNDARY, MailRouter
 from lifeos.newsletter.models import SourceVacancyObservation
 from lifeos.newsletter.processor import NewsletterExecutionState, NewsletterProcessor
-from scripts.run_newsletter_production import NEWSLETTER_BOUNDARY
 
 
 def execute_newsletter(

@@ -31,6 +31,7 @@ class MailExecutionState(str, Enum):
 
 MAX_PROVIDER_SCAN_WORKERS = 2
 MAX_MESSAGE_WORKERS = 8
+NEWSLETTER_BOUNDARY = "J Newsletters"
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,7 +91,7 @@ class MailRouter:
         self,
         classifier: DeterministicMailClassifier | None = None,
         *,
-        newsletter_boundary: str = "J Newsletters",
+        newsletter_boundary: str = NEWSLETTER_BOUNDARY,
         max_workers: int = 8,
     ) -> None:
         self._classifier = classifier or DeterministicMailClassifier()
