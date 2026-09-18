@@ -24,8 +24,8 @@ from typing import Any
 
 from lifeos.integrations.notion import NotionIdentityQuery, NotionTransport
 from lifeos.jobs.identity import canonical_url
-from lifeos.jobs.lifecycle import LifecycleRecord, LifecycleStatus
-from lifeos.jobs.models import AdmissionStatus, Company, FitAuthority, Job, Opportunity, WorkMode
+from lifeos.jobs.lifecycle import JobLedgerRecord, LifecycleStatus
+from lifeos.jobs.models import AdmissionStatus, Company, FitAuthority, Job, JobObservation, WorkMode
 from lifeos.jobs.repository import ReadBackMismatch
 
 STABLE_KEY_PROPERTY = "Stable Job Key"
@@ -33,6 +33,7 @@ MAX_IDENTITY_VALUES_PER_QUERY = 50  # matches NotionIdentityQuery's own cap
 
 # Canonical Notion option labels -- the live Job Ledger schema uses these
 # exact strings, never the internal lowercase enum wire values.
+
 _WORK_MODE_TO_CANONICAL = {
     WorkMode.REMOTE: "Remote",
     WorkMode.HYBRID: "Hybrid",
@@ -137,7 +138,7 @@ def _extract_checkbox(prop: Any) -> bool:
     return bool(isinstance(prop, dict) and prop.get("checkbox"))
 
 
-def _record_to_properties(record: LifecycleRecord) -> dict[str, Any]:
+def _record_to_properties(record: JobLedgerRecord) -> dict[str, Any]:
     """Emit only properties that exist in the live canonical Job Ledger
     schema, using their real types and canonical option labels -- never an
     invented property name, and never an internal lowercase enum wire
@@ -146,24 +147,24 @@ def _record_to_properties(record: LifecycleRecord) -> dict[str, Any]:
     (compensation_minimum, source_lane, provider_job_id, description_text,
     source_lanes, aliases, lifecycle status/live/review_ready_on) stay in
     memory only -- they are never persisted under a fabricated property."""
-    job = record.opportunity.job
-    fit = record.opportunity.fit
+    observation = record.job.job
+    fit = record.job.fit
     return {
-        "Job": _title(f"{job.company.name} — {job.role}" if job.company.name or job.role else ""),
-        STABLE_KEY_PROPERTY: _rich_text(record.opportunity.stable_job_key),
-        "Company": _rich_text(job.company.name),
-        "Role": _rich_text(job.role),
-        "Location / Work Mode": _rich_text(job.location or ""),
-        "Work Mode": _select(_WORK_MODE_TO_CANONICAL[job.work_mode]),
-        "Compensation": _rich_text(job.compensation_text or ""),
-        "Apply URL": _url(job.apply_url),
-        "Posting Date": _date(job.posting_date),
+        "Job": _title(f"{observation.company.name} — {observation.role}" if observation.company.name or observation.role else ""),
+        STABLE_KEY_PROPERTY: _rich_text(record.job.stable_job_key),
+        "Company": _rich_text(observation.company.name),
+        "Role": _rich_text(observation.role),
+        "Location / Work Mode": _rich_text(observation.location or ""),
+        "Work Mode": _select(_WORK_MODE_TO_CANONICAL[observation.work_mode]),
+        "Compensation": _rich_text(observation.compensation_text or ""),
+        "Apply URL": _url(observation.apply_url),
+        "Posting Date": _date(observation.posting_date),
         "LIFE OS Fit": _number(fit),
-        "Fit Authority": _select(_FIT_AUTHORITY_TO_CANONICAL[record.opportunity.fit_authority]),
-        "Provider Score": _number(job.provider_score),
-        "Admission Status": _select(_ADMISSION_TO_CANONICAL[record.opportunity.admission_status]),
-        "Source Provider": _rich_text(", ".join(record.opportunity.source_providers)),
-        "Source Types": _multi_select(record.opportunity.source_types),
+        "Fit Authority": _select(_FIT_AUTHORITY_TO_CANONICAL[record.job.fit_authority]),
+        "Provider Score": _number(observation.provider_score),
+        "Admission Status": _select(_ADMISSION_TO_CANONICAL[record.job.admission_status]),
+        "Source Provider": _rich_text(", ".join(record.job.source_providers)),
+        "Source Types": _multi_select(record.job.source_types),
         "Applied": _checkbox(record.applied),
         "Applied On": _date(record.applied_on),
         "First Surfaced": _date(record.first_surfaced),
@@ -171,27 +172,27 @@ def _record_to_properties(record: LifecycleRecord) -> dict[str, Any]:
     }
 
 
-def _canonical_view(record: LifecycleRecord) -> tuple[Any, ...]:
-    """The subset of a LifecycleRecord this repository actually persists.
+def _canonical_view(record: JobLedgerRecord) -> tuple[Any, ...]:
+    """The subset of a JobLedgerRecord this repository actually persists.
     upsert()'s authoritative read-back compares this view, not full
     dataclass equality, since fields with no canonical Wave 1 property
     (see _record_to_properties) are intentionally never round-tripped."""
-    job = record.opportunity.job
+    observation = record.job.job
     return (
-        record.opportunity.stable_job_key,
-        job.company.name,
-        job.role,
-        job.location,
-        job.work_mode,
-        job.compensation_text,
-        job.apply_url,
-        job.posting_date,
-        record.opportunity.fit,
-        record.opportunity.fit_authority,
-        record.opportunity.source_providers,
-        record.opportunity.source_types,
-        job.provider_score,
-        record.opportunity.admission_status,
+        record.job.stable_job_key,
+        observation.company.name,
+        observation.role,
+        observation.location,
+        observation.work_mode,
+        observation.compensation_text,
+        observation.apply_url,
+        observation.posting_date,
+        record.job.fit,
+        record.job.fit_authority,
+        record.job.source_providers,
+        record.job.source_types,
+        observation.provider_score,
+        record.job.admission_status,
         record.applied,
         record.applied_on,
         record.first_surfaced,
@@ -199,7 +200,7 @@ def _canonical_view(record: LifecycleRecord) -> tuple[Any, ...]:
     )
 
 
-def _page_to_record(page: dict[str, Any]) -> LifecycleRecord:
+def _page_to_record(page: dict[str, Any]) -> JobLedgerRecord:
     """Decode the canonical properties this repository owns. Fields with no
     canonical Wave 1 property (compensation_minimum, source_lane,
     provider_job_id, description_text, source_lanes, aliases) are not
@@ -212,7 +213,7 @@ def _page_to_record(page: dict[str, Any]) -> LifecycleRecord:
 
     work_mode_canonical = _extract_select(props.get("Work Mode"))
     work_mode = _WORK_MODE_FROM_CANONICAL.get(work_mode_canonical, WorkMode.UNKNOWN)
-    job = Job(
+    observation = JobObservation(
         company=Company(name=_plain_text(props.get("Company"))),
         role=_plain_text(props.get("Role")),
         location=_plain_text(props.get("Location / Work Mode")) or None,
@@ -237,9 +238,9 @@ def _page_to_record(page: dict[str, Any]) -> LifecycleRecord:
         fit_authority = FitAuthority.NON_AUTHORITATIVE
     source_provider_text = _plain_text(props.get("Source Provider"))
     source_providers = tuple(part.strip() for part in source_provider_text.split(",") if part.strip())
-    opportunity = Opportunity(
+    job = Job(
         stable_job_key=stable_job_key,
-        job=job,
+        job=observation,
         admission_status=admission_status,
         fit=fit,
         fit_authority=fit_authority,
@@ -259,8 +260,8 @@ def _page_to_record(page: dict[str, Any]) -> LifecycleRecord:
     else:
         status = LifecycleStatus.NEW if live else LifecycleStatus.HISTORICAL
 
-    return LifecycleRecord(
-        opportunity=opportunity,
+    return JobLedgerRecord(
+        job=job,
         status=status,
         applied=applied,
         applied_on=_extract_date(props.get("Applied On")),
@@ -291,13 +292,13 @@ class NotionCareerRepository:
         self._config = config
         self._page_ids: dict[str, str] = {}
 
-    def get_many(self, stable_job_keys: list[str]) -> dict[str, LifecycleRecord]:
+    def get_many(self, stable_job_keys: list[str]) -> dict[str, JobLedgerRecord]:
         if not stable_job_keys:
             return {}
         # NotionIdentityQuery caps a single filter at _MAX_IDENTITY_VALUES
         # (50). Chunk into bounded batches -- never a full-ledger scan, just
         # multiple narrow identity-filtered queries for the same requested set.
-        found: dict[str, LifecycleRecord] = {}
+        found: dict[str, JobLedgerRecord] = {}
         for chunk in _chunk(stable_job_keys, MAX_IDENTITY_VALUES_PER_QUERY):
             query = NotionIdentityQuery(
                 property_name=STABLE_KEY_PROPERTY,
@@ -307,18 +308,18 @@ class NotionCareerRepository:
             pages = self._transport.query_data_source(self._config.data_source_id, query)
             for page in pages:
                 record = _page_to_record(page)
-                key = record.opportunity.stable_job_key
+                key = record.job.stable_job_key
                 found[key] = record
                 page_id = page.get("id")
                 if page_id:
                     self._page_ids[key] = str(page_id)
         return found
 
-    def get_by_apply_urls(self, apply_urls: list[str]) -> dict[str, LifecycleRecord]:
+    def get_by_apply_urls(self, apply_urls: list[str]) -> dict[str, JobLedgerRecord]:
         canonical_urls = list(dict.fromkeys(url for url in (canonical_url(value) for value in apply_urls) if url))
         if not canonical_urls:
             return {}
-        found: dict[str, LifecycleRecord] = {}
+        found: dict[str, JobLedgerRecord] = {}
         for chunk in _chunk(canonical_urls, MAX_IDENTITY_VALUES_PER_QUERY):
             query = NotionIdentityQuery(
                 property_name="Apply URL",
@@ -328,16 +329,16 @@ class NotionCareerRepository:
             pages = self._transport.query_data_source(self._config.data_source_id, query)
             for page in pages:
                 record = _page_to_record(page)
-                url = canonical_url(record.opportunity.job.apply_url)
+                url = canonical_url(record.job.job.apply_url)
                 if url:
                     found[url] = record
                 page_id = page.get("id")
                 if page_id:
-                    self._page_ids[record.opportunity.stable_job_key] = str(page_id)
+                    self._page_ids[record.job.stable_job_key] = str(page_id)
         return found
 
-    def upsert(self, record: LifecycleRecord) -> LifecycleRecord:
-        key = record.opportunity.stable_job_key
+    def upsert(self, record: JobLedgerRecord) -> JobLedgerRecord:
+        key = record.job.stable_job_key
         properties = _record_to_properties(record)
         existing_page_id = self._page_ids.get(key)
 

@@ -43,7 +43,7 @@ Do not create a generic dispatcher, workflow engine, event bus, recovery framewo
 
 - `mail` — full-mailbox acquisition and routing.
 - `newsletter` — routed-newsletter ingestion and source parsing.
-- `jobs` — shared canonical opportunity engine and Job Ledger persistence.
+- `jobs` — shared canonical Job engine and Job Ledger persistence.
 - `hiring` — direct-human hiring/recruiter evidence and Hiring Pipeline state.
 - `interviews` — interview context, preparation, coaching, notes, follow-up.
 - `work` — Jira/accountability/current commitments.

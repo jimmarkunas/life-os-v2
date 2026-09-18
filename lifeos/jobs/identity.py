@@ -10,7 +10,7 @@ duplication bug this correction removes.
 Corrected priority, strongest cross-source trust first:
 
 1. an already-resolved canonical identity, when a caller supplies one
-   (Job.canonical_identity) -- authoritative, skips everything else.
+   (JobObservation.canonical_identity) -- authoritative, skips everything else.
 2. the canonical employer/ATS vacancy URL (tracking parameters stripped).
    A resolved final URL is the strongest source-independent signal two
    different providers can agree on for the same vacancy.
@@ -35,7 +35,7 @@ from dataclasses import dataclass
 import re
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from lifeos.jobs.models import Job
+from lifeos.jobs.models import JobObservation
 
 TRACKING_QUERY_PREFIXES = ("utm_",)
 TRACKING_QUERY_KEYS = {"source", "src", "ref", "referrer", "tracking", "trk", "gh_src"}
@@ -67,10 +67,10 @@ def canonical_url(value: str | None) -> str | None:
     return urlunsplit((parts.scheme.casefold(), parts.netloc.casefold(), path, urlencode(kept), ""))
 
 
-def stable_job_key(job: Job) -> str:
+def stable_job_key(job: JobObservation) -> str:
     """Deterministic identity, strongest cross-source evidence first:
 
-    1. Job.canonical_identity, when a caller supplies one (authoritative)
+    1. JobObservation.canonical_identity, when a caller supplies one (authoritative)
     2. canonical apply URL (tracking parameters stripped)
     3. normalized company|role|location
 
@@ -112,7 +112,7 @@ class IdentityCollision(ValueError):
     """Raised when one observation points at multiple existing canonical Jobs."""
 
 
-def derive_identity_evidence(job: Job) -> IdentityEvidence:
+def derive_identity_evidence(job: JobObservation) -> IdentityEvidence:
     """Return all valid identity evidence for bounded existing-record lookup.
 
     The final fallback key remains exactly the same company|role|location
@@ -152,25 +152,25 @@ def resolve_existing_identity(
 
     Returns None when no existing record matches. Raises IdentityCollision
     when different evidence paths point at different existing canonical Jobs.
-    Records are duck-typed to LifecycleRecord to avoid making identity.py
+    Records are duck-typed to JobLedgerRecord to avoid making identity.py
     depend on lifecycle/repository modules.
     """
     matches: set[str] = set()
     for key in evidence.stable_job_keys:
         record = records_by_stable_key.get(key)
         if record is not None:
-            matches.add(record.opportunity.stable_job_key)
+            matches.add(record.job.stable_job_key)
     for url in evidence.canonical_apply_urls:
         record = records_by_apply_url.get(url)
         if record is not None:
-            matches.add(record.opportunity.stable_job_key)
+            matches.add(record.job.stable_job_key)
 
     if len(matches) > 1:
         raise IdentityCollision(f"identity evidence matched multiple existing Jobs: {', '.join(sorted(matches))}")
     return next(iter(matches), None)
 
 
-def provider_alias(job: Job) -> str | None:
+def provider_alias(job: JobObservation) -> str | None:
     """Return a provenance/alias string for this observation's source-native
     identity (company + provider_job_id), or None when unavailable.
 

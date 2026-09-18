@@ -10,7 +10,7 @@ from lifeos.core.runtime import RunContext
 from lifeos.integrations.notion import NotionTransport
 from lifeos.jobs.fit_scoring import FitProfile, RoleFamily
 from lifeos.jobs.lifecycle import new_record
-from lifeos.jobs.models import AdmissionStatus, Company, FitAuthority, Job, Opportunity, WorkMode
+from lifeos.jobs.models import AdmissionStatus, Company, FitAuthority, Job, JobObservation, WorkMode
 from lifeos.jobs.newsletter_adapter import HttpClientFetcher, NewsletterAdapterConfig, NewsletterJobsAdapter
 from lifeos.jobs.newsletter_contract import Disposition, ingest
 from lifeos.jobs.notion_repository import (
@@ -50,7 +50,7 @@ def _job(**overrides) -> Job:
         posting_date=RUN_DATE, apply_url="https://greenhouse.io/acme/jobs/1", source_lane="Newsletter",
     )
     base.update(overrides)
-    return Job(**base)
+    return JobObservation(**base)
 
 
 def _observation(**overrides) -> SourceVacancyObservation:
@@ -159,7 +159,7 @@ class StrictSchemaNotionHttp:
 
 
 def test_title_property_is_job_not_role():
-    record = new_record(Opportunity(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED, fit=80), run_date=RUN_DATE)
+    record = new_record(Job(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED, fit=80), run_date=RUN_DATE)
     props = _record_to_properties(record)
     assert "title" in props["Job"]
     assert props["Job"]["title"][0]["text"]["content"] == "Acme Synthetic Co — Synthetic Engineer"
@@ -168,7 +168,7 @@ def test_title_property_is_job_not_role():
 
 def test_fit_and_provider_score_persisted_with_canonical_names():
     job = _job(provider_score=91)
-    record = new_record(Opportunity(stable_job_key="k1", job=job, admission_status=AdmissionStatus.ADMITTED, fit=85, fit_authority=FitAuthority.AUTHORITATIVE), run_date=RUN_DATE)
+    record = new_record(Job(stable_job_key="k1", job=job, admission_status=AdmissionStatus.ADMITTED, fit=85, fit_authority=FitAuthority.AUTHORITATIVE), run_date=RUN_DATE)
     props = _record_to_properties(record)
     assert props["LIFE OS Fit"]["number"] == 85
     assert props["Provider Score"]["number"] == 91
@@ -180,13 +180,13 @@ def test_strict_schema_fixture_rejects_invented_property_types():
     http = StrictSchemaNotionHttp()
     transport = NotionTransport(context=context, http=http, access_token="synthetic-token")
     repo = NotionCareerRepository(transport=transport, config=NotionCareerRepositoryConfig(data_source_id="synthetic-ds"))
-    opportunity = Opportunity(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED, fit=80, fit_authority=FitAuthority.AUTHORITATIVE)
-    persisted = repo.upsert(new_record(opportunity, run_date=RUN_DATE))
-    assert persisted.opportunity.fit == 80
+    job = Job(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED, fit=80, fit_authority=FitAuthority.AUTHORITATIVE)
+    persisted = repo.upsert(new_record(job, run_date=RUN_DATE))
+    assert persisted.job.fit == 80
 
 
 def test_no_emitted_property_is_outside_canonical_schema():
-    record = new_record(Opportunity(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED, fit=80, fit_authority=FitAuthority.AUTHORITATIVE), run_date=RUN_DATE)
+    record = new_record(Job(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED, fit=80, fit_authority=FitAuthority.AUTHORITATIVE), run_date=RUN_DATE)
     props = _record_to_properties(record)
     assert set(props) <= set(CANONICAL_LEDGER_PROPERTY_TYPES)
     # Blocker 1's originally-invented properties must never appear.
@@ -211,7 +211,7 @@ def test_internal_enum_wire_values_fail_strict_schema_fixture():
 
 def test_admission_status_and_work_mode_use_canonical_labels():
     record = new_record(
-        Opportunity(stable_job_key="k1", job=_job(work_mode=WorkMode.REMOTE), admission_status=AdmissionStatus.ADMITTED, fit=80),
+        Job(stable_job_key="k1", job=_job(work_mode=WorkMode.REMOTE), admission_status=AdmissionStatus.ADMITTED, fit=80),
         run_date=RUN_DATE,
     )
     props = _record_to_properties(record)
@@ -226,8 +226,8 @@ def test_applied_state_survives_upsert_read_back():
     http = StrictSchemaNotionHttp()
     transport = NotionTransport(context=context, http=http, access_token="synthetic-token")
     repo = NotionCareerRepository(transport=transport, config=NotionCareerRepositoryConfig(data_source_id="synthetic-ds"))
-    opportunity = Opportunity(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED, fit=80, fit_authority=FitAuthority.AUTHORITATIVE)
-    record = mark_applied(new_record(opportunity, run_date=RUN_DATE), run_date=RUN_DATE)
+    job = Job(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED, fit=80, fit_authority=FitAuthority.AUTHORITATIVE)
+    record = mark_applied(new_record(job, run_date=RUN_DATE), run_date=RUN_DATE)
     persisted = repo.upsert(record)
     assert persisted.applied is True
     assert persisted.applied_on == RUN_DATE
@@ -246,8 +246,8 @@ def test_63_vacancies_chunked_correctly():
     for i in range(63):
         key = f"k{i}"
         keys.append(key)
-        opportunity = Opportunity(stable_job_key=key, job=_job(apply_url=f"https://greenhouse.io/acme/jobs/{i}"), admission_status=AdmissionStatus.ADMITTED, fit=80, fit_authority=FitAuthority.AUTHORITATIVE)
-        repo.upsert(new_record(opportunity, run_date=RUN_DATE))
+        job = Job(stable_job_key=key, job=_job(apply_url=f"https://greenhouse.io/acme/jobs/{i}"), admission_status=AdmissionStatus.ADMITTED, fit=80, fit_authority=FitAuthority.AUTHORITATIVE)
+        repo.upsert(new_record(job, run_date=RUN_DATE))
 
     found = repo.get_many(keys)
     assert len(found) == 63  # complete accounting, no exception at the 50-key boundary

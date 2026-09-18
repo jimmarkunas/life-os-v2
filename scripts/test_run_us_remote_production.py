@@ -21,7 +21,7 @@ import lifeos.integrations.gmail as gmail_module
 from lifeos.core.http import HttpClient, HttpResponse
 from lifeos.core.runtime import RunContext
 from lifeos.jobs.identity import stable_job_key
-from lifeos.jobs.models import Company, Job, WorkMode
+from lifeos.jobs.models import Company, JobObservation, WorkMode
 from lifeos.jobs.us_remote_acquisition import AcquisitionResult, SourceHealth
 from lifeos.mail.models import MailRef
 from lifeos.mail.router import MailExecutionState, MailRouteResult, ProviderScan, RoutingError, RoutingTimings
@@ -65,7 +65,7 @@ EMPTY_REGISTRY = {"schema_version": 1, "tier1_employers": [], "staffing_agencies
 
 RESOLVED_APPLY_URL = "https://greenhouse.io/acme/jobs/historical-1"
 EXISTING_STABLE_KEY = stable_job_key(
-    Job(
+    JobObservation(
         company=Company(name="Synthetic Labs"),
         role="Synthetic Historical Engineer",
         location="Remote",

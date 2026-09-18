@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from lifeos.jobs.models import Company, FitAuthority, FreshnessStatus, Job, NormalizedCandidate, WorkMode
+from lifeos.jobs.models import Company, FitAuthority, FreshnessStatus, JobObservation, NormalizedCandidate, WorkMode
 from lifeos.jobs.qualification import LaneConfig
 
 RUN_DATE = date(2026, 1, 15)
@@ -46,8 +46,8 @@ def make_job(
     provider_job_id: str | None = None,
     canonical_identity: str | None = None,
     source_provider: str | None = None,
-) -> Job:
-    return Job(
+) -> JobObservation:
+    return JobObservation(
         company=Company(name=company_name),
         role=role,
         location=location,
@@ -65,7 +65,7 @@ def make_job(
 
 def make_candidate(
     *,
-    job: Job | None = None,
+    job: JobObservation | None = None,
     fit: int | None = 85,
     market: str = "Synthetic-US",
     freshness_status: FreshnessStatus = FreshnessStatus.FRESH,

@@ -138,7 +138,7 @@ def ingest(
 
     existing_records = dict(records_by_stable_key)
     for record in records_by_apply_url.values():
-        existing_records[record.opportunity.stable_job_key] = record
+        existing_records[record.job.stable_job_key] = record
 
     for i, candidate in enumerate(candidates):
         if results[i] is not None:
@@ -166,7 +166,7 @@ def ingest(
             LaneObservation(
                 stable_job_key=key,
                 lane=lane.name,
-                job=candidate.job,
+                job_observation=candidate.job,
                 fit=candidate.fit,
                 fit_authority=candidate.fit_authority,
                 source_types=candidate.source_types,
@@ -181,8 +181,8 @@ def ingest(
 
     reconciled = reconcile(observations, lane_priority=lane_priority)
 
-    for reconciled_opportunity in reconciled:
-        key = reconciled_opportunity.opportunity.stable_job_key
+    for reconciled_job in reconciled:
+        key = reconciled_job.job.stable_job_key
         same_key_indices = [i for i, (_, observed_key) in live_by_index.items() if observed_key == key]
         primary_index = primary_index_for_key[key]
         primary_candidate = live_by_index[primary_index][0]
@@ -201,23 +201,18 @@ def ingest(
         existing = existing_records.get(key)
         try:
             if existing is None:
-                record = new_record(reconciled_opportunity.opportunity, run_date=run_date)
+                record = new_record(reconciled_job.job, run_date=run_date)
                 persisted = repository.upsert(record)
                 primary_disposition = Disposition.CREATED
             else:
-                record = apply_observation(existing, reconciled_opportunity.opportunity, run_date=run_date)
+                record = apply_observation(existing, reconciled_job.job, run_date=run_date)
                 persisted = repository.upsert(record)
                 primary_disposition = Disposition.UPDATED
         except Exception as exc:
             label = "read-back mismatch" if isinstance(exc, ReadBackMismatch) else f"repository failure ({type(exc).__name__})"
             for i in same_key_indices:
                 candidate, _ = live_by_index[i]
-                results[i] = IngestResult(
-                    candidate.evidence_ref,
-                    Disposition.REVIEW_DEGRADED,
-                    key,
-                    f"persistence {label}: {exc}",
-                )
+                results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, key, f"persistence {label}: {exc}")
             continue
 
         for i in same_key_indices:
@@ -226,13 +221,13 @@ def ingest(
                 results[i] = IngestResult(
                     candidate.evidence_ref,
                     primary_disposition,
-                    persisted.opportunity.stable_job_key,
+                    persisted.job.stable_job_key,
                 )
             else:
                 results[i] = IngestResult(
                     candidate.evidence_ref,
                     Disposition.DUPLICATE,
-                    persisted.opportunity.stable_job_key,
+                    persisted.job.stable_job_key,
                     f"duplicate of evidence {primary_candidate.evidence_ref}; provenance merged into the canonical reconciliation",
                 )
 

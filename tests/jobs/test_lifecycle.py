@@ -5,14 +5,14 @@ from datetime import date, timedelta
 import pytest
 
 from lifeos.jobs.lifecycle import LifecycleStatus, apply_observation, close_definitively, mark_applied, new_record
-from lifeos.jobs.models import AdmissionStatus, Opportunity
+from lifeos.jobs.models import AdmissionStatus, Job
 from tests.jobs.fixtures import make_job
 
 RUN_DATE = date(2026, 1, 15)
 
 
 def _opportunity(key="k1", admission=AdmissionStatus.ADMITTED):
-    return Opportunity(stable_job_key=key, job=make_job(), admission_status=admission)
+    return Job(stable_job_key=key, job=make_job(), admission_status=admission)
 
 
 def test_new_record_starts_new_and_live():
@@ -60,7 +60,7 @@ def test_review_transition_after_ready_date():
 
 def test_absence_is_never_a_close_reason():
     """Simply not re-observing a record must never call close_definitively;
-    only calling apply_observation with a live opportunity keeps status
+    only calling apply_observation with a live job keeps status
     current. This test documents the invariant by construction: there is no
     API path from "not observed this run" to closed."""
     original = new_record(_opportunity(), run_date=RUN_DATE)

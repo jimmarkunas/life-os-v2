@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from lifeos.core.runtime import DeadlineExceeded, ExecutionResult, RunContext
-from lifeos.jobs.models import Company, FreshnessStatus, Job, NormalizedCandidate, WorkMode
+from lifeos.jobs.models import Company, FreshnessStatus, JobObservation, NormalizedCandidate, WorkMode
 from lifeos.jobs.newsletter_adapter import NewsletterJobsAdapter
 from lifeos.jobs.newsletter_contract import Disposition, IngestResult, ingest
 from lifeos.jobs.qualification import LaneConfig
@@ -32,7 +32,7 @@ class NewsletterFeatureResult:
 
 def _unresolved_candidate(observation: SourceVacancyObservation, reason: str) -> NormalizedCandidate:
     return NormalizedCandidate(
-        job=Job(
+        job=JobObservation(
             company=Company(name=observation.company or ""),
             role=observation.role or "",
             location=observation.location_text,
