@@ -422,15 +422,22 @@ def execute_us_remote(
         web_results = list(web_preexcluded) + ingest_results[newsletter_ingest_count:]
         results = newsletter_results + web_results
 
+        newsletter_fully_accounted = len(newsletter_results) == len(newsletter_result.observations)
+        newsletter_unresolved = any(item.disposition is Disposition.REVIEW_DEGRADED for item in newsletter_results)
+        web_fully_accounted = len(web_results) == len(web_result.observations)
+        web_unresolved = any(item.disposition is Disposition.REVIEW_DEGRADED for item in web_results)
         fully_accounted = len(results) == len(newsletter_result.observations) + len(web_result.observations)
-        unresolved = any(item.disposition is Disposition.REVIEW_DEGRADED for item in results)
         newsletter_ok = newsletter_result.state is NewsletterExecutionState.PASS
         staging_ok = bool(mail_result and mail_result.checkpoint_safe)
 
         processed_errors: list[str] = []
         processed_count = 0
         stage_started = perf_counter()
-        for message_id in _accepted_newsletter_message_ids(newsletter_result, newsletter_results):
+        if staging_ok and newsletter_ok and newsletter_fully_accounted and not newsletter_unresolved:
+            accepted_message_ids = _accepted_newsletter_message_ids(newsletter_result, newsletter_results)
+        else:
+            accepted_message_ids = ()
+        for message_id in accepted_message_ids:
             try:
                 gmail.mark_newsletter_processed(message_id, NEWSLETTER_BOUNDARY)
             except Exception as exc:
@@ -439,18 +446,20 @@ def execute_us_remote(
                 processed_count += 1
         timings["newsletter_mark_processed"] = round(perf_counter() - stage_started, 3)
 
-        mail_ok = staging_ok and not processed_errors
-        pass_run = (
-            fully_accounted
-            and not unresolved
+        mail_lane_pass = (
+            staging_ok
             and newsletter_ok
-            and mail_ok
-            and web_result.complete
+            and newsletter_fully_accounted
+            and not newsletter_unresolved
+            and not processed_errors
         )
+        web_lane_pass = web_result.complete and web_fully_accounted and not web_unresolved
+        pass_run = mail_lane_pass and web_lane_pass
         body = {
             "status": "PASS" if pass_run else "DEGRADED",
             "elapsed_seconds": round(context.elapsed_seconds(), 3),
             "mail": {
+                "status": "PASS" if mail_lane_pass else "DEGRADED",
                 "mode": inbox_mode,
                 "scan_window_hours": round((end - inbox_start).total_seconds() / 3600.0, 3),
                 "scanned": mail_result.scanned_count if mail_result else 0,
@@ -469,6 +478,7 @@ def execute_us_remote(
                 "error_codes": _error_codes(newsletter_result.errors),
             },
             "web": {
+                "status": "PASS" if web_lane_pass else "DEGRADED",
                 "observations": len(web_result.observations),
                 "preexcluded": len(web_preexcluded),
                 "terminal_resolution_required": len(web_to_resolve),
