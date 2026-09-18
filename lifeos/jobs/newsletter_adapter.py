@@ -14,7 +14,7 @@ from lifeos.core.http import HttpClient, RetryPolicy
 from lifeos.core.runtime import RunContext
 from lifeos.jobs.fit_scoring import FitEvidence, FitProfile
 from lifeos.jobs.fit_scoring import score as score_fit
-from lifeos.jobs.models import Company, FitAuthority, FreshnessStatus, Job, NormalizedCandidate, WorkMode
+from lifeos.jobs.models import Company, FitAuthority, FreshnessStatus, JobObservation, NormalizedCandidate, WorkMode
 from lifeos.jobs.terminal_evidence import (
     Fetcher,
     FetchResponse,
@@ -112,7 +112,7 @@ class NewsletterJobsAdapter:
         fatal_issues = fatal_issue_codes(observation.issues)
         if fatal_issues:
             return NormalizedCandidate(
-                job=Job(
+                job=JobObservation(
                     company=Company(name=company), role=role, location=location,
                     work_mode=_infer_work_mode(location), compensation_text=observation.compensation_text,
                     compensation_minimum=None, posting_date=None, apply_url=None,
@@ -145,7 +145,7 @@ class NewsletterJobsAdapter:
                 posting_iso = parse_posting_date(evidence.posting_date_raw, reference_time=observation.source_received_at)
                 posting_date = date.fromisoformat(posting_iso) if posting_iso else None
 
-        job = Job(
+        job = JobObservation(
             company=Company(name=company), role=role, location=location,
             work_mode=_infer_work_mode(location), compensation_text=observation.compensation_text,
             compensation_minimum=_parse_compensation_minimum(observation.compensation_text),
