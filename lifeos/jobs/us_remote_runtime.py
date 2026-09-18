@@ -288,6 +288,20 @@ def execute_us_remote(
             for observation in newsletter_to_resolve
             if observation.source_message_id in selected_newsletter_message_ids
         ]
+        web_terminal_required_total = len(web_to_resolve)
+        web_resolution_capacity = max(0, terminal_resolution_budget - terminal_resolution_admitted)
+        deferred_web = web_to_resolve[web_resolution_capacity:]
+        web_to_resolve = web_to_resolve[:web_resolution_capacity]
+        web_deferred_observations = web_terminal_required_total - len(web_to_resolve)
+        web_deferred_results = [
+            IngestResult(
+                observation.evidence_ref,
+                Disposition.REVIEW_DEGRADED,
+                None,
+                "terminal resolution budget deferred",
+            )
+            for observation in deferred_web
+        ]
         newsletter_preexcluded = [
             result for result in newsletter_preexcluded if result.evidence_ref in selected_newsletter_refs
         ]
@@ -348,7 +362,7 @@ def execute_us_remote(
 
         newsletter_ingest_count = len(newsletter_candidates)
         newsletter_results = list(newsletter_preexcluded) + ingest_results[:newsletter_ingest_count]
-        web_results = list(web_preexcluded) + ingest_results[newsletter_ingest_count:]
+        web_results = list(web_preexcluded) + web_deferred_results + ingest_results[newsletter_ingest_count:]
         results = newsletter_results + web_results
 
         newsletter_fully_accounted = len(newsletter_results) == attempted_newsletter_observations
@@ -437,12 +451,16 @@ def execute_us_remote(
                 "status": "PASS" if web_lane_pass else "DEGRADED",
                 "observations": len(web_result.observations),
                 "preexcluded": len(web_preexcluded),
-                "terminal_resolution_required": len(web_to_resolve),
+                "terminal_resolution_required": web_terminal_required_total,
+                "terminal_resolution_admitted": len(web_to_resolve),
+                "deferred_observations": web_deferred_observations,
                 "complete_sources": sum(item.state == "COMPLETE" for item in web_result.sources),
                 "not_due_sources": sum(item.state == "NOT_DUE" for item in web_result.sources),
                 "sources": len(web_result.sources),
                 "degraded_sources": [
-                    item.source_id for item in web_result.sources if item.state == "DEGRADED"
+                    {"source_id": item.source_id, "detail": item.detail}
+                    for item in web_result.sources
+                    if item.state == "DEGRADED"
                 ],
                 "full_sweep": full_web_sweep,
             },
