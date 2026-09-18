@@ -15,6 +15,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 from lifeos.core.http import HttpClient, HttpError
+from lifeos.core.config import ConfigurationError
 from lifeos.core.runtime import DeadlineExceeded, RunContext
 from lifeos.integrations.gmail import GmailMailboxTransport
 from lifeos.integrations.notion import NotionTransport, NotionTransportError
@@ -24,7 +25,6 @@ from lifeos.jobs.us_remote_runtime import browser_evidence, execute_us_remote, l
 from lifeos.mail.models import MailMessage
 
 from scripts.run_newsletter_production import (
-    NEWSLETTER_BOUNDARY,
     ProductionConfigError,
     _exchange_gmail_access_token,
     _load_private_policy,
@@ -88,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
         env = _require_env()
         registry = load_registry()
         browser_evidence_payload = browser_evidence()
-    except ProductionConfigError as exc:
+    except (ConfigurationError, ProductionConfigError) as exc:
         print(f"BLOCKED: {exc}", file=sys.stderr)
         return 2
 

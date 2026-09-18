@@ -9,6 +9,7 @@ from time import perf_counter
 from typing import Any
 
 from lifeos.core.http import HttpClient
+from lifeos.core.config import ConfigurationError
 from lifeos.core.runtime import DeadlineExceeded, RunContext
 from lifeos.integrations.gmail import GmailInboxMetadataPort, GmailMailboxTransport
 from lifeos.integrations.notion import NotionTransport
@@ -24,7 +25,7 @@ from lifeos.mail.router import MailRouter
 from lifeos.newsletter.models import ParseState, SourceVacancyObservation
 from lifeos.newsletter.processor import NewsletterExecutionState, NewsletterProcessor
 
-from scripts.run_newsletter_production import NEWSLETTER_BOUNDARY, ProductionConfigError
+from scripts.run_newsletter_production import NEWSLETTER_BOUNDARY
 
 _SOURCE_REGISTRY = Path(__file__).resolve().parents[2] / "contracts" / "us_remote_sources.json"
 _TERMINAL_RESOLUTION_WORKERS = 8
@@ -36,9 +37,9 @@ def load_registry() -> dict:
     try:
         data = json.loads(_SOURCE_REGISTRY.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise ProductionConfigError("US Remote source registry unavailable") from exc
+        raise ConfigurationError("US Remote source registry unavailable") from exc
     if not isinstance(data, dict):
-        raise ProductionConfigError("US Remote source registry invalid")
+        raise ConfigurationError("US Remote source registry invalid")
     return data
 
 
