@@ -118,8 +118,8 @@ def execute_newsletter(
 
         newsletter_results: list[IngestResult] = []
         completed_message_ids: set[str] = set()
-        terminal_seconds = 0.0
-        persist_seconds = 0.0
+        admitted_messages: list[tuple[str, list[SourceVacancyObservation], list[IngestResult]]] = []
+        admitted_resolver_count = 0
         for message in newsletter_result.messages:
             if ":" not in message.message_ref:
                 continue
@@ -127,21 +127,34 @@ def execute_newsletter(
             refs = {item.evidence_ref for item in message.observations}
             wave = [item for item in newsletter_to_resolve if item.source_message_id == message_id]
             preexcluded = [item for item in newsletter_preexcluded if item.evidence_ref in refs]
-            resolver_waves = max(1, (len(wave) + 7) // 8)
+            projected_count = admitted_resolver_count + len(wave)
+            resolver_waves = max(1, (projected_count + 7) // 8)
             required_seconds = (
                 _TERMINAL_FINALIZE_RESERVE_SECONDS
                 + resolver_waves * _TERMINAL_RESOLUTION_SLOT_SECONDS
             )
             if wave and context.remaining_seconds() <= required_seconds:
                 continue
+            admitted_messages.append((message_id, wave, preexcluded))
+            admitted_resolver_count = projected_count
 
-            stage_started = perf_counter()
-            candidates = _adapt_all(tuple(wave), adapter=adapter, context=context, max_workers=8)
-            terminal_seconds += perf_counter() - stage_started
+        stage_started = perf_counter()
+        candidates = _adapt_all(
+            tuple(item for _, wave, _ in admitted_messages for item in wave),
+            adapter=adapter,
+            context=context,
+            max_workers=8,
+        )
+        terminal_seconds = perf_counter() - stage_started
 
+        persist_seconds = 0.0
+        candidate_offset = 0
+        for message_id, wave, preexcluded in admitted_messages:
+            message_candidates = candidates[candidate_offset:candidate_offset + len(wave)]
+            candidate_offset += len(wave)
             stage_started = perf_counter()
             ingest_results = ingest(
-                candidates,
+                message_candidates,
                 lane=lane,
                 lane_priority=lane_priority,
                 repository=repository,
