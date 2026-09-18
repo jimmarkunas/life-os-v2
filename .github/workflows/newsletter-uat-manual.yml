@@ -19,7 +19,7 @@ concurrency:
 jobs:
   uat:
     name: Bounded Newsletter production UAT
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/uat/newsletter-only-run3'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
@@ -31,10 +31,10 @@ jobs:
       NOTION_API_TOKEN: ${{ secrets.NOTION_API_TOKEN }}
       NOTION_JOB_LEDGER_DATA_SOURCE_ID: ${{ secrets.NOTION_JOB_LEDGER_DATA_SOURCE_ID }}
     steps:
-      - name: Checkout main
+      - name: Checkout selected UAT ref
         uses: actions/checkout@v5
         with:
-          ref: main
+          ref: ${{ github.ref_name }}
           persist-credentials: false
 
       - name: Set up Python 3.12
@@ -48,9 +48,9 @@ jobs:
           set +e
           PYTHONPATH="$GITHUB_WORKSPACE" python3.12 \
             scripts/run_us_remote_production.py \
+            --newsletter-only \
             --timeout-seconds 285 \
-            --window-hours 24 \
-            --web-lookback-hours 24 | tee /tmp/newsletter-uat.json
+            --window-hours 24 | tee /tmp/newsletter-uat.json
           runtime_exit=${PIPESTATUS[0]}
           set -e
           python3.12 - /tmp/newsletter-uat.json "$runtime_exit" <<'PY'
@@ -64,7 +64,6 @@ jobs:
           mail = result.get("mail", {})
           newsletter = result.get("newsletter", {})
           jobs = result.get("jobs", {})
-          web = result.get("web", {})
 
           failures = []
           if newsletter.get("state") != "PASS":
@@ -77,18 +76,14 @@ jobs:
               failures.append(f"mail.processed_errors={mail.get('processed_errors')!r}")
           if jobs.get("fully_accounted") is not True:
               failures.append(f"jobs.fully_accounted={jobs.get('fully_accounted')!r}")
+          if runtime_exit != 0:
+              failures.append(f"runtime_exit={runtime_exit}")
 
           if failures:
               print("Newsletter UAT FAIL: " + "; ".join(failures), file=sys.stderr)
               sys.exit(1)
 
-          if runtime_exit != 0:
-              print(
-                  "Newsletter UAT PASS: canonical runtime was DEGRADED outside the Newsletter/Mail acceptance boundary "
-                  f"(web.status={web.get('status')!r}, runtime_exit={runtime_exit})."
-              )
-          else:
-              print("Newsletter UAT PASS: canonical runtime and Newsletter/Mail acceptance boundary passed.")
+          print("Newsletter UAT PASS: isolated Newsletter runtime and Newsletter/Mail acceptance boundary passed.")
           PY
 
       - name: Newsletter production replay (idempotency proof)
@@ -98,9 +93,9 @@ jobs:
           set +e
           PYTHONPATH="$GITHUB_WORKSPACE" python3.12 \
             scripts/run_us_remote_production.py \
+            --newsletter-only \
             --timeout-seconds 285 \
-            --window-hours 24 \
-            --web-lookback-hours 24 | tee /tmp/newsletter-uat-replay.json
+            --window-hours 24 | tee /tmp/newsletter-uat-replay.json
           runtime_exit=${PIPESTATUS[0]}
           set -e
           python3.12 - /tmp/newsletter-uat-replay.json "$runtime_exit" <<'PY'
@@ -114,7 +109,6 @@ jobs:
           mail = result.get("mail", {})
           newsletter = result.get("newsletter", {})
           jobs = result.get("jobs", {})
-          web = result.get("web", {})
 
           failures = []
           if newsletter.get("state") != "PASS":
@@ -127,16 +121,12 @@ jobs:
               failures.append(f"mail.processed_errors={mail.get('processed_errors')!r}")
           if jobs.get("fully_accounted") is not True:
               failures.append(f"jobs.fully_accounted={jobs.get('fully_accounted')!r}")
+          if runtime_exit != 0:
+              failures.append(f"runtime_exit={runtime_exit}")
 
           if failures:
               print("Newsletter replay UAT FAIL: " + "; ".join(failures), file=sys.stderr)
               sys.exit(1)
 
-          if runtime_exit != 0:
-              print(
-                  "Newsletter replay UAT PASS: canonical runtime was DEGRADED outside the Newsletter/Mail acceptance boundary "
-                  f"(web.status={web.get('status')!r}, runtime_exit={runtime_exit})."
-              )
-          else:
-              print("Newsletter replay UAT PASS: canonical runtime and Newsletter/Mail acceptance boundary passed.")
+          print("Newsletter replay UAT PASS: isolated Newsletter runtime and Newsletter/Mail acceptance boundary passed.")
           PY
