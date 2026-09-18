@@ -59,12 +59,7 @@ def ingest(
 
     for i, candidate in enumerate(candidates):
         if candidate.unresolved_reason:
-            results[i] = IngestResult(
-                evidence_ref=candidate.evidence_ref,
-                disposition=Disposition.REVIEW_DEGRADED,
-                stable_job_key=None,
-                detail=candidate.unresolved_reason,
-            )
+            results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, None, candidate.unresolved_reason)
             continue
 
         evidence = derive_identity_evidence(candidate.job)
@@ -86,21 +81,11 @@ def ingest(
         try:
             qualification = qualify(candidate, lane=lane, run_date=run_date)
         except Exception as exc:
-            results[i] = IngestResult(
-                candidate.evidence_ref,
-                Disposition.REVIEW_DEGRADED,
-                tentative_key,
-                f"qualification error: {exc}",
-            )
+            results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, tentative_key, f"qualification error: {exc}")
             continue
 
         if qualification.admission_status == AdmissionStatus.EXCLUDED:
-            results[i] = IngestResult(
-                candidate.evidence_ref,
-                Disposition.EXCLUDED,
-                tentative_key,
-                qualification.review_reason,
-            )
+            results[i] = IngestResult(candidate.evidence_ref, Disposition.EXCLUDED, tentative_key, qualification.review_reason)
             continue
 
         evidence_by_index[i] = evidence
@@ -117,28 +102,18 @@ def ingest(
             lookup_failed = True
             for i in evidence_by_index:
                 candidate = candidates[i]
-                results[i] = IngestResult(
-                    candidate.evidence_ref,
-                    Disposition.REVIEW_DEGRADED,
-                    None,
-                    f"repository stable-key lookup failed: {type(exc).__name__}: {exc}",
-                )
+                results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, None, f"repository stable-key lookup failed: {type(exc).__name__}: {exc}")
         if not lookup_failed:
             try:
                 records_by_apply_url = repository.get_by_apply_urls(list(dict.fromkeys(candidate_apply_urls)))
             except Exception as exc:
                 for i in evidence_by_index:
                     candidate = candidates[i]
-                    results[i] = IngestResult(
-                        candidate.evidence_ref,
-                        Disposition.REVIEW_DEGRADED,
-                        None,
-                        f"repository apply-url lookup failed: {type(exc).__name__}: {exc}",
-                    )
+                    results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, None, f"repository apply-url lookup failed: {type(exc).__name__}: {exc}")
 
     existing_records = dict(records_by_stable_key)
     for record in records_by_apply_url.values():
-        existing_records[record.opportunity.stable_job_key] = record
+        existing_records[record.job.stable_job_key] = record
 
     for i, candidate in enumerate(candidates):
         if results[i] is not None:
@@ -166,7 +141,7 @@ def ingest(
             LaneObservation(
                 stable_job_key=key,
                 lane=lane.name,
-                job=candidate.job,
+                job_observation=candidate.job,
                 fit=candidate.fit,
                 fit_authority=candidate.fit_authority,
                 source_types=candidate.source_types,
@@ -181,8 +156,8 @@ def ingest(
 
     reconciled = reconcile(observations, lane_priority=lane_priority)
 
-    for reconciled_opportunity in reconciled:
-        key = reconciled_opportunity.opportunity.stable_job_key
+    for reconciled_job in reconciled:
+        key = reconciled_job.job.stable_job_key
         same_key_indices = [i for i, (_, observed_key) in live_by_index.items() if observed_key == key]
         primary_index = primary_index_for_key[key]
         primary_candidate = live_by_index[primary_index][0]
@@ -190,49 +165,35 @@ def ingest(
         if context is not None and context.expired():
             for i in same_key_indices:
                 candidate, _ = live_by_index[i]
-                results[i] = IngestResult(
-                    candidate.evidence_ref,
-                    Disposition.REVIEW_DEGRADED,
-                    key,
-                    "execution deadline exhausted before canonical mutation",
-                )
+                results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, key, "execution deadline exhausted before canonical mutation")
             continue
 
         existing = existing_records.get(key)
         try:
             if existing is None:
-                record = new_record(reconciled_opportunity.opportunity, run_date=run_date)
+                record = new_record(reconciled_job.job, run_date=run_date)
                 persisted = repository.upsert(record)
                 primary_disposition = Disposition.CREATED
             else:
-                record = apply_observation(existing, reconciled_opportunity.opportunity, run_date=run_date)
+                record = apply_observation(existing, reconciled_job.job, run_date=run_date)
                 persisted = repository.upsert(record)
                 primary_disposition = Disposition.UPDATED
         except Exception as exc:
             label = "read-back mismatch" if isinstance(exc, ReadBackMismatch) else f"repository failure ({type(exc).__name__})"
             for i in same_key_indices:
                 candidate, _ = live_by_index[i]
-                results[i] = IngestResult(
-                    candidate.evidence_ref,
-                    Disposition.REVIEW_DEGRADED,
-                    key,
-                    f"persistence {label}: {exc}",
-                )
+                results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, key, f"persistence {label}: {exc}")
             continue
 
         for i in same_key_indices:
             candidate, _ = live_by_index[i]
             if i == primary_index:
-                results[i] = IngestResult(
-                    candidate.evidence_ref,
-                    primary_disposition,
-                    persisted.opportunity.stable_job_key,
-                )
+                results[i] = IngestResult(candidate.evidence_ref, primary_disposition, persisted.job.stable_job_key)
             else:
                 results[i] = IngestResult(
                     candidate.evidence_ref,
                     Disposition.DUPLICATE,
-                    persisted.opportunity.stable_job_key,
+                    persisted.job.stable_job_key,
                     f"duplicate of evidence {primary_candidate.evidence_ref}; provenance merged into the canonical reconciliation",
                 )
 
