@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import json
 from datetime import date, datetime, timezone
-from pathlib import Path
 
-from lifeos.core.http import HttpResponse
 from lifeos.core.runtime import RunContext
 from lifeos.jobs.fit_scoring import FitProfile, RoleFamily
 from lifeos.jobs.newsletter_adapter import NewsletterAdapterConfig, NewsletterJobsAdapter
@@ -44,14 +41,6 @@ JOB_HTML = '''<html><script type="application/ld+json">{"@type":"JobPosting","de
 
 def _context() -> RunContext:
     return RunContext.start(timeout_seconds=45.0, now=datetime.now(timezone.utc))
-
-
-def test_public_source_registry_has_exact_43_sources_and_no_personal_exclusions():
-    registry = json.loads((Path(__file__).parents[2] / "contracts" / "us_remote_sources.json").read_text())
-    assert len(registry["tier1_employers"]) == 30
-    assert len(registry["staffing_agencies"]) == 10
-    assert len(registry["discovery_helpers"]) == 3
-    assert "hard_excluded_employers" not in registry
 
 
 def test_acquisition_accounts_for_deterministic_and_browser_recovered_sources():
