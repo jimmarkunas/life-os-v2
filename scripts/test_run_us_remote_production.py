@@ -505,6 +505,26 @@ class HistoricalInboxRecoveryTests(unittest.TestCase):
         self.assertEqual(backend.routed_ids, ["msg-old-job-alert"])
         self.assertEqual(len(backend.pages), 1)
 
+    def test_newsletter_only_reports_excluded_observation_audit_details(self) -> None:
+        strict_policy = json.loads(json.dumps(PRIVATE_POLICY))
+        strict_policy["lane"]["fit_floor"] = 999
+        with open(self._policy_path, "w", encoding="utf-8") as handle:
+            json.dump(strict_policy, handle)
+        backend = HistoricalInboxBackend(extra_staged_job_alerts=1)
+
+        exit_code, summary = self._run_capturing_summary(backend, "--newsletter-only")
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(summary["jobs"]["dispositions"]["excluded"], 1)
+        self.assertEqual(summary["jobs"]["excluded"], [
+            {
+                "company": "Synthetic Labs",
+                "title": "Synthetic Historical Engineer",
+                "evidence_ref": "gmail:msg-staged-job-alert-1:body:card:1",
+                "detail": "maximum possible fit 10 is below configured review floor 999",
+            }
+        ])
+
     def test_mail_degraded_does_not_poison_authoritative_web_reconciliation(self) -> None:
         backend = HistoricalInboxBackend()
 

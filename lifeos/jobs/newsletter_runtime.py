@@ -135,6 +135,17 @@ def execute_newsletter(
         terminal_admitted = len(newsletter_to_resolve)
         fully_accounted = len(newsletter_results) == attempted_observations
         unresolved = any(item.disposition is Disposition.REVIEW_DEGRADED for item in newsletter_results)
+        observations_by_ref = {observation.evidence_ref: observation for observation in newsletter_result.observations}
+        excluded = [
+            {
+                "company": getattr(observations_by_ref.get(result.evidence_ref), "company", None),
+                "title": getattr(observations_by_ref.get(result.evidence_ref), "role", None),
+                "evidence_ref": result.evidence_ref,
+                "detail": result.detail,
+            }
+            for result in newsletter_results
+            if result.disposition is Disposition.EXCLUDED
+        ]
         newsletter_ok = newsletter_result.state is NewsletterExecutionState.PASS
         staging_ok = bool(mail_result and mail_result.checkpoint_safe)
 
@@ -224,6 +235,7 @@ def execute_newsletter(
                     disposition.value: sum(item.disposition == disposition for item in newsletter_results)
                     for disposition in Disposition
                 },
+                "excluded": excluded,
             },
             "timings": timings,
             "browser_fallback_available": fallback is not None,
