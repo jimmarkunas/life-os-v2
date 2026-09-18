@@ -102,6 +102,7 @@ def merge_canonical_observation(existing: Job, incoming: Job) -> Job:
         source_provider=incoming_job.source_provider or existing_job.source_provider,
     )
     fit, fit_authority = _merge_fit(existing, incoming)
+    eligible_lanes = tuple(sorted(set(existing.eligible_lanes) | set(incoming.eligible_lanes)))
     admission_status = existing.admission_status
     if incoming.admission_status == AdmissionStatus.ADMITTED or existing.admission_status != AdmissionStatus.ADMITTED:
         admission_status = incoming.admission_status
@@ -116,6 +117,7 @@ def merge_canonical_observation(existing: Job, incoming: Job) -> Job:
         fit_authority=fit_authority,
         source_providers=tuple(sorted(set(existing.source_providers) | set(incoming.source_providers))),
         source_types=tuple(sorted(set(existing.source_types) | set(incoming.source_types))),
+        eligible_lanes=eligible_lanes,
     )
 
 

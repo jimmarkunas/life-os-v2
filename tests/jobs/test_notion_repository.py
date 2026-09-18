@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -135,13 +136,20 @@ def _repository_with_http(http: FakeNotionHttp):
     return repo
 
 
-def _fresh_ingest(http: FakeNotionHttp, candidate, *, run_date: date = RUN_DATE):
+def _fresh_ingest(
+    http: FakeNotionHttp,
+    candidate,
+    *,
+    run_date: date = RUN_DATE,
+    lane=REMOTE_LANE,
+    lane_priority: dict[str, int] | None = None,
+):
     repo = _repository_with_http(http)
     assert repo._page_ids == {}
     result = ingest(
         [candidate],
-        lane=REMOTE_LANE,
-        lane_priority={"Synthetic-Remote": 0},
+        lane=lane,
+        lane_priority=lane_priority or {lane.name: 0},
         repository=repo,
         run_date=run_date,
     )
@@ -339,6 +347,10 @@ def test_source_types_round_trip_acquisition_provenance_across_fresh_repository_
     )
     assert first[0].disposition == Disposition.CREATED
     assert first[0].stable_job_key == key
+    assert _fresh_record(http, key).job.eligible_lanes == ("Synthetic-Remote",)
+    page = next(iter(http.pages.values()))
+    page["properties"]["Applied"] = {"checkbox": True}
+    page["properties"]["Applied On"] = {"date": {"start": "2026-01-12"}}
 
     first_record = _fresh_record(http, key)
     assert first_record.job.source_providers == ("LinkedIn Jobs",)
@@ -348,6 +360,7 @@ def test_source_types_round_trip_acquisition_provenance_across_fresh_repository_
     assert "Synthetic-Remote" not in _multi_select_names(page["properties"]["Source Types"])
     assert "Newsletter" not in _multi_select_names(page["properties"]["Source Types"])
 
+    scale_up_lane = replace(REMOTE_LANE, name="Scale-Up")
     second, repo_2 = _fresh_ingest(
         http,
         _newsletter_candidate(
@@ -357,6 +370,8 @@ def test_source_types_round_trip_acquisition_provenance_across_fresh_repository_
             evidence_ref="ev:lensa",
         ),
         run_date=RUN_DATE + timedelta(days=1),
+        lane=scale_up_lane,
+        lane_priority={"Scale-Up": 0, "Synthetic-Remote": 1},
     )
 
     assert second[0].disposition == Disposition.UPDATED
@@ -365,14 +380,33 @@ def test_source_types_round_trip_acquisition_provenance_across_fresh_repository_
     assert repo_2.get_many(["url:https://greenhouse.io/acme/jobs/123"]) == {}
 
     record = _fresh_record(http, key)
+    assert record.job.eligible_lanes == ("Scale-Up", "Synthetic-Remote")
     assert record.job.job.apply_url == "https://greenhouse.io/acme/jobs/123"
     assert record.job.source_providers == ("Lensa", "LinkedIn Jobs")
     assert set(record.job.source_types) == {"LinkedIn Jobs", "Lensa", "Gmail Alert"}
     page = next(iter(http.pages.values()))
     persisted_source_types = set(_multi_select_names(page["properties"]["Source Types"]))
     assert persisted_source_types == {"LinkedIn Jobs", "Lensa", "Gmail Alert"}
+    assert set(_multi_select_names(page["properties"]["Eligible Lanes"])) == {"Scale-Up", "Synthetic-Remote"}
+    assert page["properties"]["Applied"]["checkbox"] is True
+    assert page["properties"]["Applied On"]["date"]["start"] == "2026-01-12"
+    assert "Primary Lane" not in page["properties"]
     assert "Synthetic-Remote" not in persisted_source_types
     assert "Newsletter" not in persisted_source_types
+
+    excluded, _ = _fresh_ingest(
+        http,
+        make_candidate(
+            job=make_job(work_mode=WorkMode.ONSITE, source_provider="Scale-Up"),
+            fit=86,
+            evidence_ref="ev:excluded",
+        ),
+        run_date=RUN_DATE + timedelta(days=2),
+        lane=scale_up_lane,
+        lane_priority={"Scale-Up": 0, "Synthetic-Remote": 1},
+    )
+    assert excluded[0].disposition == Disposition.EXCLUDED
+    assert _fresh_record(http, key).job.eligible_lanes == ("Scale-Up", "Synthetic-Remote")
 
 
 def test_package_c_no_downgrade_merge_survives_fresh_repository_instances():

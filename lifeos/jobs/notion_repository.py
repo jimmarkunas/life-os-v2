@@ -165,6 +165,7 @@ def _record_to_properties(record: JobLedgerRecord) -> dict[str, Any]:
         "Admission Status": _select(_ADMISSION_TO_CANONICAL[record.job.admission_status]),
         "Source Provider": _rich_text(", ".join(record.job.source_providers)),
         "Source Types": _multi_select(record.job.source_types),
+        "Eligible Lanes": _multi_select(record.job.eligible_lanes),
         "First Surfaced": _date(record.first_surfaced),
         "Last Seen": _date(record.last_seen),
     }
@@ -189,6 +190,7 @@ def _canonical_view(record: JobLedgerRecord) -> tuple[Any, ...]:
         record.job.fit_authority,
         record.job.source_providers,
         record.job.source_types,
+        record.job.eligible_lanes,
         observation.provider_score,
         record.job.admission_status,
         record.first_surfaced,
@@ -242,6 +244,7 @@ def _page_to_record(page: dict[str, Any]) -> JobLedgerRecord:
         fit_authority=fit_authority,
         source_providers=source_providers,
         source_types=_extract_multi_select(props.get("Source Types")),
+        eligible_lanes=_extract_multi_select(props.get("Eligible Lanes")),
     )
 
     first_surfaced = _extract_date(props.get("First Surfaced"))
