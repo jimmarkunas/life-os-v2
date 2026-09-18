@@ -1,3 +1,22 @@
+# LIFE OS Agent Guardrails
+
+`docs/life-os-development-policy.md` is mandatory before any coding task.
+
+Hard stops for every implementation agent:
+
+- Fresh-read current `origin/main` before analysis or mutation; stale implementation analysis is invalid if main moved.
+- Maximum production-code addition/material rewrite: **50 lines per package/run**. Deletions do not count. Over 50 requires Jim's explicit approval and a `Jim-Approved-Budget:` justification in the commit message.
+- Default mutation surface: **3 production files maximum**. Larger scope requires Jim's explicit approval.
+- Claude/Codex token budget: **2% maximum of the active 5-hour allowance per run**; target stop at 1.8%. If reliable usage telemetry is unavailable, broad autonomous exploration is prohibited.
+- Ordinary coding run: **5 minutes maximum**. Major feature: **60 minutes maximum to production acceptance attempt**. At 60 minutes stop and report the blocker; do not continue by default.
+- No new framework, runner, workflow family, datastore, QA layer, diagnostic path, abstraction, or duplicate implementation unless the changed production behavior requires it.
+- Tests are a liability budget, not an achievement metric. Target repository ceiling is **100 collected tests**. Above 100, code-changing packages may add no tests and must delete obsolete/non-production-critical tests. New tests at/below 100 require `Production-Critical-Test: <reason>`.
+- When behavior is removed, merged, or replaced, delete its obsolete tests in the same package.
+- Targeted proof first; affected regression once; full suite once before landing. Never rerun green proof without changed code or a new factual failure.
+- One implementer per mutation by default. No duplicate Claude/Codex rediscovery.
+
+Stop codes: `BASE_MOVED_STOP`, `LINE_BUDGET_STOP`, `TOKEN_BUDGET_STOP`, `TIMEBOX_STOP`, `TEST_BUDGET_STOP`, `SCOPE_EXPANSION_STOP`.
+
 # LIFE OS Optional Role Triggers
 
 These role files are optional overlays. They do **not** replace canonical LIFE OS authority, the Development Policy, the Production Contract, current Notion product requirements, or current implementation.
