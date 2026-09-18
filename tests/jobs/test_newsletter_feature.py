@@ -196,9 +196,9 @@ def test_unresolved_employer_url_with_identifiable_vacancy_is_created_and_cleanu
     assert result.cleanup_safe is True
     assert result.execution.status != ExecutionStatus.DEGRADED
     persisted = repo.get_many([result.ingest_results[0].stable_job_key])[result.ingest_results[0].stable_job_key]
-    assert persisted.opportunity.admission_status.value == "passed_review"
-    assert persisted.opportunity.job.apply_url is None
-    assert persisted.opportunity.fit is None
+    assert persisted.job.admission_status.value == "passed_review"
+    assert persisted.job.job.apply_url is None
+    assert persisted.job.fit is None
 
 
 # 6b. unresolved final employer URL AND no fallback identity -> REVIEW_DEGRADED,

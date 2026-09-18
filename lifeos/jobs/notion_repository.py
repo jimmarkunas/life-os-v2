@@ -29,7 +29,10 @@ from lifeos.jobs.models import AdmissionStatus, Company, FitAuthority, Job, JobO
 from lifeos.jobs.repository import ReadBackMismatch
 
 STABLE_KEY_PROPERTY = "Stable Job Key"
-MAX_IDENTITY_VALUES_PER_QUERY = 50
+MAX_IDENTITY_VALUES_PER_QUERY = 50  # matches NotionIdentityQuery's own cap
+
+# Canonical Notion option labels -- the live Job Ledger schema uses these
+# exact strings, never the internal lowercase enum wire values.
 
 _WORK_MODE_TO_CANONICAL = {
     WorkMode.REMOTE: "Remote",
@@ -271,10 +274,19 @@ def _page_to_record(page: dict[str, Any]) -> JobLedgerRecord:
 
 @dataclass(frozen=True)
 class NotionCareerRepositoryConfig:
+    """Private runtime configuration -- never a source constant. The real
+    data_source_id is injected at trusted runtime, exactly like
+    NotionTransport's access token."""
+
     data_source_id: str
 
 
 class NotionCareerRepository:
+    """Concrete CareerRepository. One instance is scoped to one bounded
+    feature execution; its page-ID cache exists only to avoid a second
+    lookup between get_many() and upsert() within that single run -- it is
+    not a second persistence layer and holds no data across runs."""
+
     def __init__(self, *, transport: NotionTransport, config: NotionCareerRepositoryConfig) -> None:
         self._transport = transport
         self._config = config
@@ -283,6 +295,9 @@ class NotionCareerRepository:
     def get_many(self, stable_job_keys: list[str]) -> dict[str, JobLedgerRecord]:
         if not stable_job_keys:
             return {}
+        # NotionIdentityQuery caps a single filter at _MAX_IDENTITY_VALUES
+        # (50). Chunk into bounded batches -- never a full-ledger scan, just
+        # multiple narrow identity-filtered queries for the same requested set.
         found: dict[str, JobLedgerRecord] = {}
         for chunk in _chunk(stable_job_keys, MAX_IDENTITY_VALUES_PER_QUERY):
             query = NotionIdentityQuery(
