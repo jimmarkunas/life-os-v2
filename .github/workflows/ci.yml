@@ -27,6 +27,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -35,6 +36,12 @@ jobs:
 
       - name: Install test runner
         run: python -m pip install --disable-pip-version-check pytest
+
+      - name: Development efficiency guard
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: python scripts/ci/development_guard.py
 
       - name: Leak guard
         run: python scripts/security/leak_guard.py
