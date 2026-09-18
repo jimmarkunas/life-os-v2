@@ -1,24 +1,10 @@
-"""US Remote product runtime.
-
-Coordinates the existing Mail/Newsletter/Web/Jobs domain primitives
-(MailRouter, NewsletterProcessor, USRemoteAcquirer, NewsletterJobsAdapter,
-ingest, NotionCareerRepository) for one bounded US Remote execution. This is
-product-specific to US Remote, not a general orchestration framework --
-scripts/run_us_remote_production.py stays the executable composition root
-(CLI, config bootstrap, dependency construction, print, exit code); this
-module owns the execution mechanics so that boundary can be read/changed
-without pulling in Mail/Newsletter/Web/Jobs mechanics.
-"""
+"""US Remote production runtime: coordinate Mail, Newsletter, Web, and Jobs."""
 from __future__ import annotations
 
 import json
-import os
 import re
-import shutil
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Semaphore
 from time import perf_counter
 from typing import Any
 
@@ -32,7 +18,7 @@ from lifeos.jobs.newsletter_contract import Disposition, IngestResult, ingest
 from lifeos.jobs.newsletter_feature import _adapt_all
 from lifeos.jobs.notion_repository import NotionCareerRepository, NotionCareerRepositoryConfig
 from lifeos.jobs.qualification import LaneConfig
-from lifeos.jobs.terminal_evidence import FetchResponse, Fetcher
+from lifeos.jobs.terminal_evidence import browser_evidence, fallback_fetcher
 from lifeos.jobs.us_remote_acquisition import USRemoteAcquirer
 from lifeos.mail.router import MailRouter
 from lifeos.newsletter.models import ParseState, SourceVacancyObservation
@@ -41,121 +27,6 @@ from lifeos.newsletter.processor import NewsletterExecutionState, NewsletterProc
 from scripts.run_newsletter_production import NEWSLETTER_BOUNDARY, ProductionConfigError
 
 _SOURCE_REGISTRY = Path(__file__).resolve().parents[2] / "contracts" / "us_remote_sources.json"
-
-
-class MappingFetcher(Fetcher):
-    """Optional explicitly supplied browser evidence, kept in memory only."""
-
-    def __init__(self, evidence: dict | None) -> None:
-        self._pages = {
-            str(item.get("url")): FetchResponse(
-                final_url=str(item.get("final_url") or item.get("url") or ""),
-                body=str(item.get("html") or ""),
-            )
-            for item in (evidence or {}).get("pages", [])
-            if isinstance(item, dict) and item.get("url") and item.get("html")
-        }
-
-    def get(self, url: str) -> FetchResponse:
-        if url not in self._pages:
-            raise RuntimeError("injected browser evidence unavailable")
-        return self._pages[url]
-
-    @property
-    def available(self) -> bool:
-        return bool(self._pages)
-
-
-class ChromeFetcher(Fetcher):
-    """Bounded headless-browser fallback using the GitHub runner's Chrome."""
-
-    def __init__(self, context: RunContext, *, max_concurrency: int = 2) -> None:
-        self._context = context
-        self._binary = (
-            shutil.which("google-chrome")
-            or shutil.which("google-chrome-stable")
-            or shutil.which("chromium")
-            or shutil.which("chromium-browser")
-        )
-        self._permits = Semaphore(max(1, min(int(max_concurrency), 2)))
-
-    @property
-    def available(self) -> bool:
-        return bool(self._binary)
-
-    def get(self, url: str) -> FetchResponse:
-        if not self._binary:
-            raise RuntimeError("headless browser unavailable")
-        wait = self._context.require_time(0.5)
-        acquired = self._permits.acquire(timeout=wait)
-        if not acquired:
-            raise DeadlineExceeded("browser fallback concurrency wait exhausted deadline")
-        try:
-            with self._context.http_permit():
-                remaining = self._context.require_time(0.5)
-                timeout = max(0.5, min(12.0, remaining - 0.25))
-                completed = subprocess.run(
-                    [
-                        self._binary,
-                        "--headless=new",
-                        "--disable-gpu",
-                        "--no-sandbox",
-                        "--disable-dev-shm-usage",
-                        "--dump-dom",
-                        url,
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                    check=False,
-                )
-        except subprocess.TimeoutExpired as exc:
-            raise RuntimeError("browser fallback timed out") from exc
-        finally:
-            self._permits.release()
-        body = completed.stdout or ""
-        if completed.returncode != 0 or len(body.strip()) < 20:
-            raise RuntimeError("browser fallback did not return usable DOM")
-        return FetchResponse(final_url=url, body=body)
-
-
-class CompositeFetcher(Fetcher):
-    def __init__(self, fetchers: list[Fetcher]) -> None:
-        self._fetchers = tuple(fetchers)
-
-    def get(self, url: str) -> FetchResponse:
-        for fetcher in self._fetchers:
-            try:
-                return fetcher.get(url)
-            except DeadlineExceeded:
-                raise
-            except Exception:
-                continue
-        raise RuntimeError("all browser fallback transports failed")
-
-
-def browser_evidence() -> dict | None:
-    raw = os.getenv("US_REMOTE_BROWSER_EVIDENCE_JSON")
-    if not raw:
-        return None
-    try:
-        value = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ProductionConfigError("US_REMOTE_BROWSER_EVIDENCE_JSON is invalid") from exc
-    if not isinstance(value, dict):
-        raise ProductionConfigError("US_REMOTE_BROWSER_EVIDENCE_JSON must be an object")
-    return value
-
-
-def fallback_fetcher(context: RunContext, evidence: dict | None) -> Fetcher | None:
-    fetchers: list[Fetcher] = []
-    injected = MappingFetcher(evidence)
-    if injected.available:
-        fetchers.append(injected)
-    chrome = ChromeFetcher(context)
-    if chrome.available:
-        fetchers.append(chrome)
-    return CompositeFetcher(fetchers) if fetchers else None
 
 
 def load_registry() -> dict:

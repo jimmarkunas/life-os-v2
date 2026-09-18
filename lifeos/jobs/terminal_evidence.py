@@ -9,13 +9,18 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import re
+import shutil
+import subprocess
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from html.parser import HTMLParser
+from threading import Semaphore
 from typing import Any, Protocol
 from urllib.parse import urljoin, urlsplit
 
+from lifeos.core.runtime import DeadlineExceeded, RunContext
 from lifeos.jobs.identity import canonical_url
 
 _ISO_DATE = re.compile(r"\b(20\d{2})-(\d{2})-(\d{2})\b")
@@ -181,6 +186,106 @@ class FetchResponse:
 
 class Fetcher(Protocol):
     def get(self, url: str) -> FetchResponse: ...
+
+
+class MappingFetcher(Fetcher):
+    """Optional explicitly supplied browser evidence, kept in memory only."""
+
+    def __init__(self, evidence: dict | None) -> None:
+        self._pages = {
+            str(item.get("url")): FetchResponse(str(item.get("final_url") or item.get("url") or ""), str(item.get("html") or ""))
+            for item in (evidence or {}).get("pages", [])
+            if isinstance(item, dict) and item.get("url") and item.get("html")
+        }
+
+    @property
+    def available(self) -> bool:
+        return bool(self._pages)
+
+    def get(self, url: str) -> FetchResponse:
+        if url not in self._pages:
+            raise RuntimeError("injected browser evidence unavailable")
+        return self._pages[url]
+
+
+class ChromeFetcher(Fetcher):
+    """Bounded headless-browser fallback using the GitHub runner's Chrome."""
+
+    def __init__(self, context: RunContext, *, max_concurrency: int = 2) -> None:
+        self._context = context
+        self._binary = (
+            shutil.which("google-chrome")
+            or shutil.which("google-chrome-stable") or shutil.which("chromium") or shutil.which("chromium-browser")
+        )
+        self._permits = Semaphore(max(1, min(int(max_concurrency), 2)))
+
+    @property
+    def available(self) -> bool:
+        return bool(self._binary)
+
+    def get(self, url: str) -> FetchResponse:
+        if not self._binary:
+            raise RuntimeError("headless browser unavailable")
+        wait = self._context.require_time(0.5)
+        acquired = self._permits.acquire(timeout=wait)
+        if not acquired:
+            raise DeadlineExceeded("browser fallback concurrency wait exhausted deadline")
+        try:
+            with self._context.http_permit():
+                remaining = self._context.require_time(0.5)
+                timeout = max(0.5, min(12.0, remaining - 0.25))
+                completed = subprocess.run(
+                    [self._binary, "--headless=new", "--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage", "--dump-dom", url],
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    check=False,
+                )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("browser fallback timed out") from exc
+        finally:
+            self._permits.release()
+        body = completed.stdout or ""
+        if completed.returncode != 0 or len(body.strip()) < 20:
+            raise RuntimeError("browser fallback did not return usable DOM")
+        return FetchResponse(final_url=url, body=body)
+
+
+class CompositeFetcher(Fetcher):
+    def __init__(self, fetchers: list[Fetcher]) -> None:
+        self._fetchers = tuple(fetchers)
+
+    def get(self, url: str) -> FetchResponse:
+        for fetcher in self._fetchers:
+            try:
+                return fetcher.get(url)
+            except DeadlineExceeded:
+                raise
+            except Exception:
+                continue
+        raise RuntimeError("all browser fallback transports failed")
+
+
+def browser_evidence() -> dict | None:
+    raw = os.getenv("US_REMOTE_BROWSER_EVIDENCE_JSON")
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        from scripts.run_newsletter_production import ProductionConfigError
+
+        raise ProductionConfigError("US_REMOTE_BROWSER_EVIDENCE_JSON is invalid") from exc
+    if not isinstance(value, dict):
+        from scripts.run_newsletter_production import ProductionConfigError
+
+        raise ProductionConfigError("US_REMOTE_BROWSER_EVIDENCE_JSON must be an object")
+    return value
+
+
+def fallback_fetcher(context: RunContext, evidence: dict | None) -> Fetcher | None:
+    fetchers = [fetcher for fetcher in (MappingFetcher(evidence), ChromeFetcher(context)) if fetcher.available]
+    return CompositeFetcher(fetchers) if fetchers else None
 
 
 @dataclass(frozen=True)
