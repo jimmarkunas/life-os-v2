@@ -19,7 +19,7 @@ from dataclasses import replace
 from typing import Protocol
 
 from lifeos.jobs.identity import canonical_url
-from lifeos.jobs.lifecycle import LifecycleRecord
+from lifeos.jobs.lifecycle import JobLedgerRecord
 
 
 class ReadBackMismatch(RuntimeError):
@@ -28,17 +28,17 @@ class ReadBackMismatch(RuntimeError):
 
 
 class CareerRepository(Protocol):
-    def get_many(self, stable_job_keys: list[str]) -> dict[str, LifecycleRecord]:
+    def get_many(self, stable_job_keys: list[str]) -> dict[str, JobLedgerRecord]:
         """Narrow identity lookup for exactly the keys this run needs.
         Must never require scanning the full canonical store."""
         ...
 
-    def get_by_apply_urls(self, apply_urls: list[str]) -> dict[str, LifecycleRecord]:
+    def get_by_apply_urls(self, apply_urls: list[str]) -> dict[str, JobLedgerRecord]:
         """Narrow lookup by canonical Apply URL for exactly the URLs this run
         touches. Must never require scanning the full canonical store."""
         ...
 
-    def upsert(self, record: LifecycleRecord) -> LifecycleRecord:
+    def upsert(self, record: JobLedgerRecord) -> JobLedgerRecord:
         """Write one record, preserving any existing human-owned fields the
         caller did not intend to change (see lifecycle.apply_observation),
         then read back and return the authoritative persisted state. Must
@@ -52,22 +52,22 @@ class InMemoryCareerRepository:
     production dependency. Never wire this to a real production data path."""
 
     def __init__(self) -> None:
-        self._store: dict[str, LifecycleRecord] = {}
+        self._store: dict[str, JobLedgerRecord] = {}
 
-    def get_many(self, stable_job_keys: list[str]) -> dict[str, LifecycleRecord]:
+    def get_many(self, stable_job_keys: list[str]) -> dict[str, JobLedgerRecord]:
         return {key: self._store[key] for key in stable_job_keys if key in self._store}
 
-    def get_by_apply_urls(self, apply_urls: list[str]) -> dict[str, LifecycleRecord]:
+    def get_by_apply_urls(self, apply_urls: list[str]) -> dict[str, JobLedgerRecord]:
         requested = {url for url in (canonical_url(value) for value in apply_urls) if url}
-        found: dict[str, LifecycleRecord] = {}
+        found: dict[str, JobLedgerRecord] = {}
         for record in self._store.values():
-            url = canonical_url(record.opportunity.job.apply_url)
+            url = canonical_url(record.job.job.apply_url)
             if url in requested:
                 found[url] = record
         return found
 
-    def upsert(self, record: LifecycleRecord) -> LifecycleRecord:
-        key = record.opportunity.stable_job_key
+    def upsert(self, record: JobLedgerRecord) -> JobLedgerRecord:
+        key = record.job.stable_job_key
         self._store[key] = record
         persisted = self._store.get(key)
         if persisted is None or persisted != record:
