@@ -21,7 +21,7 @@ import lifeos.integrations.gmail as gmail_module
 from lifeos.core.http import HttpClient, HttpResponse
 from lifeos.core.runtime import RunContext
 from lifeos.jobs.identity import stable_job_key
-from lifeos.jobs.models import Company, Job, WorkMode
+from lifeos.jobs.models import Company, JobObservation, WorkMode
 from lifeos.jobs.us_remote_acquisition import AcquisitionResult, SourceHealth
 from lifeos.mail.models import MailRef
 from lifeos.mail.router import MailExecutionState, MailRouteResult, ProviderScan, RoutingError, RoutingTimings
@@ -65,7 +65,7 @@ EMPTY_REGISTRY = {"schema_version": 1, "tier1_employers": [], "staffing_agencies
 
 RESOLVED_APPLY_URL = "https://greenhouse.io/acme/jobs/historical-1"
 EXISTING_STABLE_KEY = stable_job_key(
-    Job(
+    JobObservation(
         company=Company(name="Synthetic Labs"),
         role="Synthetic Historical Engineer",
         location="Remote",
@@ -150,7 +150,6 @@ class NewsletterWorkloadAdmissionTests(unittest.TestCase):
         self.assertNotIn("msg-a", selected)
 
 
-
 class HistoricalInboxBackend:
     """One synthetic Gmail-like Inbox plus a Notion Job Ledger. Messages are
     filtered by the real after:/before: epoch query, exactly like live Gmail,
@@ -164,7 +163,7 @@ class HistoricalInboxBackend:
         extra_staged_job_alerts: int = 0,
     ) -> None:
         now = datetime.now(timezone.utc)
-        old_job_alert_at = now - timedelta(hours=48)  # older than the 24h normal staging window
+        old_job_alert_at = now - timedelta(hours=48)
         self._messages = {
             "msg-old-job-alert": {
                 "sender": "alerts@jobright.example.invalid",
@@ -233,7 +232,6 @@ class HistoricalInboxBackend:
             }
             self._next_page += 1
 
-    # -- HttpClient backend protocol -----------------------------------
     def request(self, method, url, *, headers, body, timeout_seconds) -> HttpResponse:
         if url == _GOOGLE_TOKEN_URL:
             return HttpResponse(200, {}, json.dumps({"access_token": "synthetic-access-token"}).encode())
@@ -242,9 +240,7 @@ class HistoricalInboxBackend:
         if "api.notion.com" in url:
             return self._notion(method, url, body)
         if url == "https://jobright.ai/jobs/info/historical-1":
-            return HttpResponse(
-                200, {}, f'<a href="{RESOLVED_APPLY_URL}">Apply</a>'.encode(), final_url=url
-            )
+            return HttpResponse(200, {}, f'<a href="{RESOLVED_APPLY_URL}">Apply</a>'.encode(), final_url=url)
         if url == RESOLVED_APPLY_URL:
             body_html = (
                 '<html><script type="application/ld+json">'
@@ -256,29 +252,17 @@ class HistoricalInboxBackend:
 
     def _gmail(self, method, url, body) -> HttpResponse:
         if method == "GET" and url.endswith("/labels"):
-            return HttpResponse(
-                200,
-                {},
-                json.dumps(
-                    {
-                        "labels": [
-                            {"id": "label-news", "name": "J Newsletters"},
-                            {"id": "label-processed", "name": "J Newsletters/Processed"},
-                        ]
-                    }
-                ).encode(),
-            )
+            return HttpResponse(200, {}, json.dumps({"labels": [
+                {"id": "label-news", "name": "J Newsletters"},
+                {"id": "label-processed", "name": "J Newsletters/Processed"},
+            ]}).encode())
         if method == "GET" and "/messages?" in url and "labelIds=label-news" not in url:
-            # Inbox metadata-first date-range scan (Mail Router /
-            # scan_inbox_metadata_window, labelIds=INBOX). Real Gmail
-            # semantics: filter strictly by the after:/before: query.
             parsed = urlsplit(url)
             q = parse_qs(parsed.query).get("q", [""])[0]
             after = next((int(part.split(":", 1)[1]) for part in q.split() if part.startswith("after:")), None)
             before = next((int(part.split(":", 1)[1]) for part in q.split() if part.startswith("before:")), None)
             matched = [
-                mid
-                for mid, msg in self._messages.items()
+                mid for mid, msg in self._messages.items()
                 if mid not in self.inbox_removed_ids
                 and (after is None or _epoch(msg["received_at"]) >= after)
                 and (before is None or _epoch(msg["received_at"]) <= before)
@@ -288,59 +272,35 @@ class HistoricalInboxBackend:
             remaining = [mid for mid in self.routed_ids if mid not in self.processed_ids]
             return HttpResponse(200, {}, json.dumps({"messages": [{"id": mid} for mid in remaining]}).encode())
         if method == "GET" and "format=metadata" in url:
-            # Metadata-first Inbox staging scan: real Gmail semantics never
-            # return a body under format=metadata.
             message_id = url.split("/messages/", 1)[1].split("?", 1)[0]
             self.metadata_fetch_ids.append(message_id)
             msg = self._messages[message_id]
-            return HttpResponse(
-                200,
-                {},
-                json.dumps(
-                    {
-                        "id": message_id,
-                        "internalDate": str(_epoch(msg["received_at"]) * 1000),
-                        "payload": {
-                            "headers": [
-                                {"name": "From", "value": msg["sender"]},
-                                {"name": "Subject", "value": msg["subject"]},
-                                *(
-                                    [{"name": "List-Unsubscribe", "value": "<https://example.invalid/unsub>"}]
-                                    if msg["list_unsubscribe"]
-                                    else []
-                                ),
-                            ],
-                        },
-                    }
-                ).encode(),
-            )
+            return HttpResponse(200, {}, json.dumps({
+                "id": message_id,
+                "internalDate": str(_epoch(msg["received_at"]) * 1000),
+                "payload": {"headers": [
+                    {"name": "From", "value": msg["sender"]},
+                    {"name": "Subject", "value": msg["subject"]},
+                    *([{"name": "List-Unsubscribe", "value": "<https://example.invalid/unsub>"}] if msg["list_unsubscribe"] else []),
+                ]},
+            }).encode())
         if method == "GET" and "?format=full" in url:
             message_id = url.split("/messages/", 1)[1].split("?", 1)[0]
             self.detail_fetch_ids.append(message_id)
             msg = self._messages[message_id]
-            return HttpResponse(
-                200,
-                {},
-                json.dumps(
-                    {
-                        "id": message_id,
-                        "internalDate": str(_epoch(msg["received_at"]) * 1000),
-                        "payload": {
-                            "mimeType": "text/plain",
-                            "headers": [
-                                {"name": "From", "value": msg["sender"]},
-                                {"name": "Subject", "value": msg["subject"]},
-                                *(
-                                    [{"name": "List-Unsubscribe", "value": "<https://example.invalid/unsub>"}]
-                                    if msg["list_unsubscribe"]
-                                    else []
-                                ),
-                            ],
-                            "body": {"data": msg["body"]},
-                        },
-                    }
-                ).encode(),
-            )
+            return HttpResponse(200, {}, json.dumps({
+                "id": message_id,
+                "internalDate": str(_epoch(msg["received_at"]) * 1000),
+                "payload": {
+                    "mimeType": "text/plain",
+                    "headers": [
+                        {"name": "From", "value": msg["sender"]},
+                        {"name": "Subject", "value": msg["subject"]},
+                        *([{"name": "List-Unsubscribe", "value": "<https://example.invalid/unsub>"}] if msg["list_unsubscribe"] else []),
+                    ],
+                    "body": {"data": msg["body"]},
+                },
+            }).encode())
         if method == "POST" and url.endswith("/modify"):
             message_id = url.split("/messages/", 1)[1].split("/modify", 1)[0]
             payload = json.loads(body.decode("utf-8")) if body else {}
@@ -365,15 +325,10 @@ class HistoricalInboxBackend:
                 value_dict = next(v for k, v in clause.items() if k != "property")
                 return value_dict["equals"]
 
-            stable_key_values = {
-                _clause_equals(clause) for clause in clauses if clause.get("property") == "Stable Job Key"
-            }
-            apply_url_values = {
-                _clause_equals(clause) for clause in clauses if clause.get("property") == "Apply URL"
-            }
+            stable_key_values = {_clause_equals(clause) for clause in clauses if clause.get("property") == "Stable Job Key"}
+            apply_url_values = {_clause_equals(clause) for clause in clauses if clause.get("property") == "Apply URL"}
             results = [
-                p
-                for p in self.pages.values()
+                p for p in self.pages.values()
                 if (stable_key_values and self._key(p) in stable_key_values)
                 or (apply_url_values and self._apply_url(p) in apply_url_values)
             ]
@@ -415,9 +370,7 @@ class HistoricalInboxRecoveryTests(unittest.TestCase):
 
     def _run(self, backend, *cli_args):
         fake_client = HttpClient(backend=backend)
-        with patch.dict(os.environ, self._env, clear=True), patch.object(
-            entry, "HttpClient", return_value=fake_client
-        ), patch.object(entry, "load_registry", return_value=EMPTY_REGISTRY):
+        with patch.dict(os.environ, self._env, clear=True), patch.object(entry, "HttpClient", return_value=fake_client), patch.object(entry, "load_registry", return_value=EMPTY_REGISTRY):
             exit_code = entry.main(list(cli_args) + ["--timeout-seconds", "120"])
         return exit_code
 
@@ -427,22 +380,13 @@ class HistoricalInboxRecoveryTests(unittest.TestCase):
 
         fake_client = HttpClient(backend=backend)
         stdout = io.StringIO()
-        with patch.dict(os.environ, self._env, clear=True), patch.object(
-            entry, "HttpClient", return_value=fake_client
-        ), patch.object(entry, "load_registry", return_value=EMPTY_REGISTRY), contextlib.redirect_stdout(stdout):
+        with patch.dict(os.environ, self._env, clear=True), patch.object(entry, "HttpClient", return_value=fake_client), patch.object(entry, "load_registry", return_value=EMPTY_REGISTRY), contextlib.redirect_stdout(stdout):
             exit_code = entry.main(list(cli_args) + ["--timeout-seconds", "120"])
         return exit_code, json.loads(stdout.getvalue())
 
     def test_normal_production_does_not_acquire_old_inbox_job_alert(self) -> None:
-        # The empty synthetic Web registry used by every test here makes
-        # US Web acquisition report incomplete (zero sources), so overall
-        # status/exit code reflect that unrelated fact, not Mail/Newsletter
-        # behavior -- assert the Mail/Newsletter/Jobs summary sections
-        # directly instead of the web-coupled top-level exit code.
         backend = HistoricalInboxBackend()
-
         _exit_code, summary = self._run_capturing_summary(backend)
-
         self.assertEqual(summary["mail"]["mode"], "normal")
         self.assertEqual(summary["mail"]["scanned"], 0)
         self.assertEqual(summary["mail"]["staged"], 0)
@@ -453,11 +397,7 @@ class HistoricalInboxRecoveryTests(unittest.TestCase):
 
     def test_historical_recovery_routes_processes_and_reconciles_idempotently(self) -> None:
         backend = HistoricalInboxBackend(existing_stable_key=EXISTING_STABLE_KEY)
-
-        exit_code, summary = self._run_capturing_summary(
-            backend, "--historical-inbox-recovery-hours", "72"
-        )
-
+        exit_code, summary = self._run_capturing_summary(backend, "--historical-inbox-recovery-hours", "72")
         self.assertEqual(exit_code, 1)
         self.assertEqual(summary["status"], "DEGRADED")
         self.assertEqual(summary["mail"]["status"], "PASS")
@@ -469,37 +409,19 @@ class HistoricalInboxRecoveryTests(unittest.TestCase):
         self.assertEqual(summary["newsletter"]["state"], "PASS")
         self.assertEqual(summary["jobs"]["dispositions"]["updated"], 1)
         self.assertEqual(summary["jobs"]["dispositions"]["created"], 0)
-        # Only the confidently classified automated job alert was routed.
         self.assertEqual(backend.routed_ids, ["msg-old-job-alert"])
         self.assertEqual(backend.inbox_removed_ids, ["msg-old-job-alert"])
-        # Inbox staging classified all three candidate messages from
-        # metadata alone, including the one whose confirmed AUTOMATED_JOB_SOURCE
-        # routing decision came from headers only.
-        self.assertEqual(
-            sorted(backend.metadata_fetch_ids),
-            sorted(["msg-old-job-alert", "msg-old-recruiter", "msg-old-unrelated"]),
-        )
-        # format=full is reached only later, for the one message hydrated
-        # out of J Newsletters for Newsletter body parsing -- never during
-        # Inbox staging classification itself.
+        self.assertEqual(sorted(backend.metadata_fetch_ids), sorted(["msg-old-job-alert", "msg-old-recruiter", "msg-old-unrelated"]))
         self.assertEqual(backend.detail_fetch_ids, ["msg-old-job-alert"])
-        # Human/recruiter and unrelated automated mail were never touched.
         self.assertNotIn("msg-old-recruiter", backend.routed_ids)
         self.assertNotIn("msg-old-unrelated", backend.routed_ids)
         self.assertNotIn("msg-old-recruiter", backend.inbox_removed_ids)
         self.assertNotIn("msg-old-unrelated", backend.inbox_removed_ids)
-        # Safe accounting completed: message marked Processed.
         self.assertEqual(backend.processed_ids, ["msg-old-job-alert"])
-        # Idempotent reconciliation: no duplicate canonical row created.
         self.assertEqual(len(backend.pages), 1)
         self.assertEqual(backend.pages["page-existing-1"]["properties"]["Stable Job Key"]["rich_text"][0]["text"]["content"], EXISTING_STABLE_KEY)
 
-        # Immediate canonical replay is idempotent: the message is gone from
-        # Inbox and no longer eligible, so a second recovery run touches
-        # nothing further.
-        _exit_code_2, summary_2 = self._run_capturing_summary(
-            backend, "--historical-inbox-recovery-hours", "72"
-        )
+        _exit_code_2, summary_2 = self._run_capturing_summary(backend, "--historical-inbox-recovery-hours", "72")
         self.assertEqual(summary_2["mail"]["staged"], 0)
         self.assertEqual(backend.routed_ids, ["msg-old-job-alert"])
         self.assertEqual(len(backend.pages), 1)
@@ -516,13 +438,7 @@ class HistoricalInboxRecoveryTests(unittest.TestCase):
                     state=MailExecutionState.DEGRADED,
                     provider_scans=(ProviderScan("gmail", False, 0, "synthetic-scan-error"),),
                     records=(),
-                    errors=(
-                        RoutingError(
-                            MailRef("gmail", "synthetic-message"),
-                            "scan",
-                            "synthetic-scan-error",
-                        ),
-                    ),
+                    errors=(RoutingError(MailRef("gmail", "synthetic-message"), "scan", "synthetic-scan-error"),),
                     timings=RoutingTimings(0.0, 0.0, 0.0, 0.0),
                 )
 
@@ -531,23 +447,14 @@ class HistoricalInboxRecoveryTests(unittest.TestCase):
                 pass
 
             def acquire(self, *args, **kwargs) -> AcquisitionResult:
-                return AcquisitionResult(
-                    observations=(_synthetic_web_observation(),),
-                    sources=(SourceHealth("synthetic-web", "COMPLETE", 1),),
-                )
+                return AcquisitionResult(observations=(_synthetic_web_observation(),), sources=(SourceHealth("synthetic-web", "COMPLETE", 1),))
 
         fake_client = HttpClient(backend=backend)
         import contextlib
         import io
 
         stdout = io.StringIO()
-        with patch.dict(os.environ, self._env, clear=True), patch.object(
-            entry, "HttpClient", return_value=fake_client
-        ), patch.object(entry, "load_registry", return_value=EMPTY_REGISTRY), patch.object(
-            runtime, "MailRouter", DegradedMailRouter
-        ), patch.object(
-            runtime, "USRemoteAcquirer", CompleteWebAcquirer
-        ), contextlib.redirect_stdout(stdout):
+        with patch.dict(os.environ, self._env, clear=True), patch.object(entry, "HttpClient", return_value=fake_client), patch.object(entry, "load_registry", return_value=EMPTY_REGISTRY), patch.object(runtime, "MailRouter", DegradedMailRouter), patch.object(runtime, "USRemoteAcquirer", CompleteWebAcquirer), contextlib.redirect_stdout(stdout):
             exit_code = entry.main(["--timeout-seconds", "120"])
 
         summary = json.loads(stdout.getvalue())
@@ -579,13 +486,7 @@ class HistoricalInboxRecoveryTests(unittest.TestCase):
                     state=MailExecutionState.DEGRADED,
                     provider_scans=(ProviderScan("gmail", False, 0, "synthetic-scan-error"),),
                     records=(),
-                    errors=(
-                        RoutingError(
-                            MailRef("gmail", "synthetic-message"),
-                            "scan",
-                            "synthetic-scan-error",
-                        ),
-                    ),
+                    errors=(RoutingError(MailRef("gmail", "synthetic-message"), "scan", "synthetic-scan-error"),),
                     timings=RoutingTimings(0.0, 0.0, 0.0, 0.0),
                 )
 
@@ -594,11 +495,7 @@ class HistoricalInboxRecoveryTests(unittest.TestCase):
         import io
 
         stdout = io.StringIO()
-        with patch.dict(os.environ, self._env, clear=True), patch.object(
-            entry, "HttpClient", return_value=fake_client
-        ), patch.object(entry, "load_registry", return_value=EMPTY_REGISTRY), patch.object(
-            runtime, "MailRouter", DegradedMailRouter
-        ), contextlib.redirect_stdout(stdout):
+        with patch.dict(os.environ, self._env, clear=True), patch.object(entry, "HttpClient", return_value=fake_client), patch.object(entry, "load_registry", return_value=EMPTY_REGISTRY), patch.object(runtime, "MailRouter", DegradedMailRouter), contextlib.redirect_stdout(stdout):
             exit_code = entry.main(["--timeout-seconds", "120"])
 
         summary = json.loads(stdout.getvalue())
@@ -628,11 +525,7 @@ class HistoricalInboxRecoveryTests(unittest.TestCase):
         import io
 
         stdout = io.StringIO()
-        with patch.dict(os.environ, self._env, clear=True), patch.object(
-            entry, "HttpClient", return_value=fake_client
-        ), patch.object(entry, "load_registry", return_value=EMPTY_REGISTRY), patch.object(
-            runtime, "USRemoteAcquirer", RuntimeErrorWebAcquirer
-        ), contextlib.redirect_stdout(stdout):
+        with patch.dict(os.environ, self._env, clear=True), patch.object(entry, "HttpClient", return_value=fake_client), patch.object(entry, "load_registry", return_value=EMPTY_REGISTRY), patch.object(runtime, "USRemoteAcquirer", RuntimeErrorWebAcquirer), contextlib.redirect_stdout(stdout):
             exit_code = entry.main(["--timeout-seconds", "120"])
 
         summary = json.loads(stdout.getvalue())
@@ -649,18 +542,12 @@ class HistoricalInboxRecoveryTests(unittest.TestCase):
         backend = HistoricalInboxBackend(extra_staged_job_alerts=3)
         reserve = gmail_module.BACKLOG_MESSAGE_RUNTIME_RESERVE_SECONDS
         per_message = gmail_module.BACKLOG_PER_MESSAGE_ADMISSION_SECONDS
-
-        with patch.object(
-            RunContext,
-            "remaining_seconds",
-            _admit_only_remaining_seconds([
-                reserve + per_message + 1.0,
-                reserve + (per_message * 2) + 1.0,
-                reserve + (per_message * 3),
-            ]),
-        ):
+        with patch.object(RunContext, "remaining_seconds", _admit_only_remaining_seconds([
+            reserve + per_message + 1.0,
+            reserve + (per_message * 2) + 1.0,
+            reserve + (per_message * 3),
+        ])):
             exit_code, summary = self._run_capturing_summary(backend)
-
         self.assertEqual(exit_code, 1)
         self.assertEqual(summary["status"], "DEGRADED")
         self.assertEqual(summary["mail"]["status"], "PASS")
@@ -675,18 +562,9 @@ class HistoricalInboxRecoveryTests(unittest.TestCase):
 
     def test_pending_backlog_with_zero_progress_reports_mail_degraded(self) -> None:
         backend = HistoricalInboxBackend(extra_staged_job_alerts=1)
-        first_required = (
-            gmail_module.BACKLOG_MESSAGE_RUNTIME_RESERVE_SECONDS
-            + gmail_module.BACKLOG_PER_MESSAGE_ADMISSION_SECONDS
-        )
-
-        with patch.object(
-            RunContext,
-            "remaining_seconds",
-            _admit_only_remaining_seconds([first_required]),
-        ):
+        first_required = gmail_module.BACKLOG_MESSAGE_RUNTIME_RESERVE_SECONDS + gmail_module.BACKLOG_PER_MESSAGE_ADMISSION_SECONDS
+        with patch.object(RunContext, "remaining_seconds", _admit_only_remaining_seconds([first_required])):
             exit_code, summary = self._run_capturing_summary(backend)
-
         self.assertEqual(exit_code, 1)
         self.assertEqual(summary["mail"]["status"], "DEGRADED")
         self.assertEqual(summary["mail"]["pending_source_messages"], 1)
@@ -698,29 +576,16 @@ class HistoricalInboxRecoveryTests(unittest.TestCase):
         backend = HistoricalInboxBackend(extra_staged_job_alerts=3)
         reserve = gmail_module.BACKLOG_MESSAGE_RUNTIME_RESERVE_SECONDS
         per_message = gmail_module.BACKLOG_PER_MESSAGE_ADMISSION_SECONDS
-
-        with patch.object(
-            RunContext,
-            "remaining_seconds",
-            _admit_only_remaining_seconds([
-                reserve + per_message + 1.0,
-                reserve + (per_message * 2) + 1.0,
-                reserve + (per_message * 3),
-            ]),
-        ):
+        with patch.object(RunContext, "remaining_seconds", _admit_only_remaining_seconds([
+            reserve + per_message + 1.0,
+            reserve + (per_message * 2) + 1.0,
+            reserve + (per_message * 3),
+        ])):
             self._run_capturing_summary(backend)
-        with patch.object(
-            RunContext,
-            "remaining_seconds",
-            _admit_only_remaining_seconds([reserve + per_message + 1.0]),
-        ):
+        with patch.object(RunContext, "remaining_seconds", _admit_only_remaining_seconds([reserve + per_message + 1.0])):
             exit_code_2, summary_2 = self._run_capturing_summary(backend)
             processed_after_drain = tuple(backend.processed_ids)
-        with patch.object(
-            RunContext,
-            "remaining_seconds",
-            _admit_only_remaining_seconds([reserve + per_message]),
-        ):
+        with patch.object(RunContext, "remaining_seconds", _admit_only_remaining_seconds([reserve + per_message])):
             exit_code_3, summary_3 = self._run_capturing_summary(backend)
 
         self.assertEqual(exit_code_2, 1)
@@ -729,11 +594,7 @@ class HistoricalInboxRecoveryTests(unittest.TestCase):
         self.assertIsNone(summary_2["mail"]["oldest_pending_age_seconds"])
         self.assertEqual(summary_2["mail"]["processed"], 1)
         self.assertTrue(summary_2["mail"]["cleanup_safe"])
-        self.assertEqual(set(backend.processed_ids), {
-            "msg-staged-job-alert-1",
-            "msg-staged-job-alert-2",
-            "msg-staged-job-alert-3",
-        })
+        self.assertEqual(set(backend.processed_ids), {"msg-staged-job-alert-1", "msg-staged-job-alert-2", "msg-staged-job-alert-3"})
 
         self.assertEqual(exit_code_3, 1)
         self.assertEqual(summary_3["mail"]["status"], "PASS")
@@ -752,9 +613,7 @@ class HistoricalInboxRecoveryTests(unittest.TestCase):
                 return super()._gmail(method, url, body)
 
         backend = ProcessedFailureBackend(extra_staged_job_alerts=1)
-
         exit_code, summary = self._run_capturing_summary(backend)
-
         self.assertEqual(exit_code, 1)
         self.assertEqual(summary["mail"]["status"], "DEGRADED")
         self.assertEqual(summary["mail"]["processed"], 0)
@@ -792,20 +651,10 @@ class HistoricalInboxRecoveryNegativeControlTests(unittest.TestCase):
                 raise RuntimeError("synthetic Notion outage")
 
         fake_client = HttpClient(backend=backend)
-        with patch.dict(os.environ, self._env, clear=True), patch.object(
-            entry, "HttpClient", return_value=fake_client
-        ), patch.object(entry, "load_registry", return_value=EMPTY_REGISTRY), patch.object(
-            runtime, "NotionCareerRepository", side_effect=lambda *a, **k: FailingRepository()
-        ):
-            exit_code = entry.main(
-                ["--historical-inbox-recovery-hours", "72", "--timeout-seconds", "120"]
-            )
+        with patch.dict(os.environ, self._env, clear=True), patch.object(entry, "HttpClient", return_value=fake_client), patch.object(entry, "load_registry", return_value=EMPTY_REGISTRY), patch.object(runtime, "NotionCareerRepository", side_effect=lambda *a, **k: FailingRepository()):
+            exit_code = entry.main(["--historical-inbox-recovery-hours", "72", "--timeout-seconds", "120"])
 
         self.assertEqual(exit_code, 1)
-        # Message was routed to J Newsletters (confident classification is
-        # independent of downstream Jobs persistence), but never marked
-        # Processed, and no canonical row was created -- it remains staged
-        # and recoverable through the exact existing canonical Gmail state.
         self.assertEqual(backend.routed_ids, ["msg-old-job-alert"])
         self.assertEqual(backend.processed_ids, [])
         self.assertEqual(backend.pages, {})
