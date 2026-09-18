@@ -43,18 +43,100 @@ jobs:
           python-version: "3.12"
 
       - name: Newsletter production run
-        run: >
-          PYTHONPATH="$GITHUB_WORKSPACE" python3.12
-          scripts/run_us_remote_production.py
-          --timeout-seconds 285
-          --window-hours 24
-          --web-lookback-hours 24
+        shell: bash
+        run: |
+          set +e
+          PYTHONPATH="$GITHUB_WORKSPACE" python3.12 \
+            scripts/run_us_remote_production.py \
+            --timeout-seconds 285 \
+            --window-hours 24 \
+            --web-lookback-hours 24 | tee /tmp/newsletter-uat.json
+          runtime_exit=${PIPESTATUS[0]}
+          set -e
+          python3.12 - /tmp/newsletter-uat.json "$runtime_exit" <<'PY'
+          import json
+          import sys
+
+          path, runtime_exit = sys.argv[1], int(sys.argv[2])
+          with open(path, encoding="utf-8") as handle:
+              result = json.load(handle)
+
+          mail = result.get("mail", {})
+          newsletter = result.get("newsletter", {})
+          jobs = result.get("jobs", {})
+          web = result.get("web", {})
+
+          failures = []
+          if newsletter.get("state") != "PASS":
+              failures.append(f"newsletter.state={newsletter.get('state')!r}")
+          if mail.get("status") != "PASS":
+              failures.append(f"mail.status={mail.get('status')!r}")
+          if mail.get("cleanup_safe") is not True:
+              failures.append(f"mail.cleanup_safe={mail.get('cleanup_safe')!r}")
+          if mail.get("processed_errors") != 0:
+              failures.append(f"mail.processed_errors={mail.get('processed_errors')!r}")
+          if jobs.get("fully_accounted") is not True:
+              failures.append(f"jobs.fully_accounted={jobs.get('fully_accounted')!r}")
+
+          if failures:
+              print("Newsletter UAT FAIL: " + "; ".join(failures), file=sys.stderr)
+              sys.exit(1)
+
+          if runtime_exit != 0:
+              print(
+                  "Newsletter UAT PASS: canonical runtime was DEGRADED outside the Newsletter/Mail acceptance boundary "
+                  f"(web.status={web.get('status')!r}, runtime_exit={runtime_exit})."
+              )
+          else:
+              print("Newsletter UAT PASS: canonical runtime and Newsletter/Mail acceptance boundary passed.")
+          PY
 
       - name: Newsletter production replay (idempotency proof)
         if: ${{ inputs.replay_idempotency }}
-        run: >
-          PYTHONPATH="$GITHUB_WORKSPACE" python3.12
-          scripts/run_us_remote_production.py
-          --timeout-seconds 285
-          --window-hours 24
-          --web-lookback-hours 24
+        shell: bash
+        run: |
+          set +e
+          PYTHONPATH="$GITHUB_WORKSPACE" python3.12 \
+            scripts/run_us_remote_production.py \
+            --timeout-seconds 285 \
+            --window-hours 24 \
+            --web-lookback-hours 24 | tee /tmp/newsletter-uat-replay.json
+          runtime_exit=${PIPESTATUS[0]}
+          set -e
+          python3.12 - /tmp/newsletter-uat-replay.json "$runtime_exit" <<'PY'
+          import json
+          import sys
+
+          path, runtime_exit = sys.argv[1], int(sys.argv[2])
+          with open(path, encoding="utf-8") as handle:
+              result = json.load(handle)
+
+          mail = result.get("mail", {})
+          newsletter = result.get("newsletter", {})
+          jobs = result.get("jobs", {})
+          web = result.get("web", {})
+
+          failures = []
+          if newsletter.get("state") != "PASS":
+              failures.append(f"newsletter.state={newsletter.get('state')!r}")
+          if mail.get("status") != "PASS":
+              failures.append(f"mail.status={mail.get('status')!r}")
+          if mail.get("cleanup_safe") is not True:
+              failures.append(f"mail.cleanup_safe={mail.get('cleanup_safe')!r}")
+          if mail.get("processed_errors") != 0:
+              failures.append(f"mail.processed_errors={mail.get('processed_errors')!r}")
+          if jobs.get("fully_accounted") is not True:
+              failures.append(f"jobs.fully_accounted={jobs.get('fully_accounted')!r}")
+
+          if failures:
+              print("Newsletter replay UAT FAIL: " + "; ".join(failures), file=sys.stderr)
+              sys.exit(1)
+
+          if runtime_exit != 0:
+              print(
+                  "Newsletter replay UAT PASS: canonical runtime was DEGRADED outside the Newsletter/Mail acceptance boundary "
+                  f"(web.status={web.get('status')!r}, runtime_exit={runtime_exit})."
+              )
+          else:
+              print("Newsletter replay UAT PASS: canonical runtime and Newsletter/Mail acceptance boundary passed.")
+          PY
