@@ -378,9 +378,9 @@ def test_missing_source_apply_url_is_enrichment_only_through_real_parser_boundar
     assert result.ingest_results[0].disposition == Disposition.CREATED
     assert result.ingest_results[0].stable_job_key is not None
     persisted = repo.get_many([result.ingest_results[0].stable_job_key])[result.ingest_results[0].stable_job_key]
-    assert persisted.opportunity.admission_status.value == "passed_review"
-    assert persisted.opportunity.job.apply_url is None
-    assert persisted.opportunity.fit is None
+    assert persisted.job.admission_status.value == "passed_review"
+    assert persisted.job.job.apply_url is None
+    assert persisted.job.fit is None
     assert all(item.disposition is not Disposition.REVIEW_DEGRADED for item in result.ingest_results)
 
 
