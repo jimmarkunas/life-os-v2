@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from lifeos.jobs.lifecycle import new_record
-from lifeos.jobs.models import AdmissionStatus, Opportunity, WorkMode
+from lifeos.jobs.models import AdmissionStatus, Job, WorkMode
 from lifeos.jobs.newsletter_contract import Disposition, ingest
 from lifeos.jobs.repository import InMemoryCareerRepository
 from tests.jobs.fixtures import REMOTE_LANE, RUN_DATE, make_candidate, make_job
@@ -28,12 +28,12 @@ def _seed(
     role: str = "Synthetic Engineer",
     location: str | None = "Remote - Synthetic Country",
 ):
-    opportunity = Opportunity(
+    job = Job(
         stable_job_key=key,
         job=make_job(company_name=company_name, role=role, location=location, apply_url=apply_url),
         admission_status=AdmissionStatus.PASSED_REVIEW,
     )
-    return repo.upsert(new_record(opportunity, run_date=RUN_DATE))
+    return repo.upsert(new_record(job, run_date=RUN_DATE))
 
 
 def test_every_candidate_receives_exactly_one_disposition():
@@ -101,10 +101,9 @@ def test_unresolvable_identity_is_review_degraded_never_dropped():
 
 
 def test_duplicate_observation_still_contributes_provenance_to_canonical_record():
-    """BLOCKER 2 regression: the second same-vacancy observation (same
-    canonical URL, hence same identity) is reported DUPLICATE, but its
-    evidence -- here, its provider alias -- must still shape the persisted
-    canonical Opportunity, never be silently discarded."""
+    """The second same-vacancy observation (same canonical URL, hence same
+    identity) is reported DUPLICATE, but its evidence -- here, its provider
+    alias -- must still shape the persisted canonical Job."""
     same_url = "https://boards.example/the-real-vacancy"
     first_job = make_job(apply_url=same_url, provider_job_id=None)
     second_job = make_job(apply_url=same_url, provider_job_id="linkedin-alias-1")
@@ -120,15 +119,10 @@ def test_duplicate_observation_still_contributes_provenance_to_canonical_record(
 
     key = by_ref["ev:first"].stable_job_key
     persisted = repo.get_many([key])[key]
-    # The duplicate's alias reached the canonical record despite its own
-    # observation being reported DUPLICATE -- evidence was merged, not dropped.
-    assert persisted.opportunity.aliases == ("Acme Synthetic Co::linkedin-alias-1",)
+    assert persisted.job.aliases == ("Acme Synthetic Co::linkedin-alias-1",)
 
 
 def test_cross_provider_duplicate_aliases_reach_the_persisted_record():
-    """Two different discovery providers, same vacancy (via matching
-    company+role+location), different provider_job_id -- both must
-    contribute their alias to the one persisted canonical record."""
     provider_a = make_job(
         company_name="Acme Synthetic Co", role="Synthetic Engineer", location="NYC",
         apply_url=None, provider_job_id="linkedin-1",
@@ -145,7 +139,7 @@ def test_cross_provider_duplicate_aliases_reach_the_persisted_record():
     results = ingest(candidates, lane=REMOTE_LANE, lane_priority=LANE_PRIORITY, repository=repo, run_date=RUN_DATE)
     key = results[0].stable_job_key
     persisted = repo.get_many([key])[key]
-    assert persisted.opportunity.aliases == (
+    assert persisted.job.aliases == (
         "Acme Synthetic Co::lensa-2",
         "Acme Synthetic Co::linkedin-1",
     )
@@ -165,9 +159,6 @@ def test_only_one_canonical_mutation_per_key_regardless_of_observation_count():
 
 
 def test_exact_index_to_result_correspondence_in_mixed_batch():
-    """BLOCKER 3: results[i] must correspond to candidates[i] for every i,
-    across every disposition type in one batch, regardless of internal
-    grouping/reconciliation order."""
     same_url_job = make_job(apply_url="https://boards.example/shared")
     onsite_job = make_job(work_mode=WorkMode.ONSITE, apply_url="https://boards.example/onsite-only")
     unresolvable_job = make_job(provider_job_id=None, apply_url=None, company_name="", role="", location=None)
@@ -193,10 +184,7 @@ def test_exact_index_to_result_correspondence_in_mixed_batch():
     assert results[4].disposition == Disposition.CREATED
 
 
-def test_idempotent_rerun_of_identical_batch_does_not_duplicate_opportunity():
-    """Same normalized input processed twice must converge on one canonical
-    Opportunity: first run creates, second run updates the same key -- never
-    a second row for the same vacancy."""
+def test_idempotent_rerun_of_identical_batch_does_not_duplicate_job():
     candidate = make_candidate(evidence_ref="ev:1")
     repo = InMemoryCareerRepository()
     first = ingest([candidate], lane=REMOTE_LANE, lane_priority=LANE_PRIORITY, repository=repo, run_date=RUN_DATE)
@@ -243,7 +231,7 @@ def test_existing_fallback_identity_later_canonical_url_updates_same_job():
     assert second[0].stable_job_key == first[0].stable_job_key
     assert repo.get_many(["url:https://greenhouse.io/acme/jobs/123"]) == {}
     persisted = repo.get_many([first[0].stable_job_key])[first[0].stable_job_key]
-    assert persisted.opportunity.job.apply_url == "https://greenhouse.io/acme/jobs/123"
+    assert persisted.job.job.apply_url == "https://greenhouse.io/acme/jobs/123"
 
 
 def test_persisted_apply_url_resolves_future_changed_fallback_to_existing_job():
