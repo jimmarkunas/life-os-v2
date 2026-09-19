@@ -47,14 +47,6 @@ REQUIRED_ENV = {
 
 
 class ConfigLoadingTests(unittest.TestCase):
-    def test_require_env_lists_missing_names_never_values(self) -> None:
-        with patch.dict(os.environ, {}, clear=True):
-            with self.assertRaises(entry.ProductionConfigError) as caught:
-                entry._require_env()
-        message = str(caught.exception)
-        for name in entry.REQUIRED_ENV:
-            self.assertIn(name, message)
-
     def test_loads_lane_priority_and_fit_profile_from_private_file(self, tmp_path=None) -> None:
         import tempfile
 

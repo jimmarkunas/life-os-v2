@@ -14,8 +14,8 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 
+from lifeos.core.config import ConfigField, ConfigurationError, RuntimeConfig
 from lifeos.core.http import HttpClient, HttpError
-from lifeos.core.config import ConfigurationError
 from lifeos.core.runtime import DeadlineExceeded, RunContext
 from lifeos.integrations.gmail import GmailMailboxTransport
 from lifeos.integrations.notion import NotionTransport, NotionTransportError
@@ -25,7 +25,6 @@ from lifeos.jobs.us_remote_runtime import browser_evidence, execute_us_remote, l
 from lifeos.mail.models import MailMessage
 
 from scripts.run_newsletter_production import (
-    ProductionConfigError,
     _exchange_gmail_access_token,
     _load_private_policy,
     _load_private_policy_from_notion,
@@ -38,6 +37,18 @@ DEFAULT_WINDOW_HOURS = 24.0
 DEFAULT_WEB_LOOKBACK_HOURS = 24.0
 MAX_INBOX_STAGING_HOURS = 24.0
 MAX_HISTORICAL_INBOX_RECOVERY_HOURS = 24.0 * 90
+_RUNTIME_FIELDS = tuple(ConfigField(name) for name in (
+    "GMAIL_OAUTH_CLIENT_ID",
+    "GMAIL_OAUTH_CLIENT_SECRET",
+    "GMAIL_OAUTH_REFRESH_TOKEN",
+    "NOTION_API_TOKEN",
+    "NOTION_JOB_LEDGER_DATA_SOURCE_ID",
+))
+
+
+def _require_env() -> dict[str, str]:
+    config = RuntimeConfig.load(_RUNTIME_FIELDS)
+    return {name: config.require(name) for name in config.declared_names()}
 
 
 def _args(argv: list[str]) -> argparse.Namespace:
@@ -88,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
         env = _require_env()
         registry = load_registry()
         browser_evidence_payload = browser_evidence()
-    except (ConfigurationError, ProductionConfigError) as exc:
+    except ConfigurationError as exc:
         print(f"BLOCKED: {exc}", file=sys.stderr)
         return 2
 
@@ -113,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
             client_secret=env["GMAIL_OAUTH_CLIENT_SECRET"],
             refresh_token=env["GMAIL_OAUTH_REFRESH_TOKEN"],
         )
-    except (ProductionConfigError, NotionTransportError, HttpError, DeadlineExceeded) as exc:
+    except (RuntimeError, NotionTransportError, HttpError, DeadlineExceeded) as exc:
         print(f"BLOCKED: production configuration failed: {type(exc).__name__}", file=sys.stderr)
         return 2
 

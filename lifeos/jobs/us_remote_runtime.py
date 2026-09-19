@@ -25,7 +25,7 @@ from lifeos.mail.router import MailRouter
 from lifeos.newsletter.models import ParseState, SourceVacancyObservation
 from lifeos.newsletter.processor import NewsletterExecutionState, NewsletterProcessor
 
-from scripts.run_newsletter_production import NEWSLETTER_BOUNDARY
+NEWSLETTER_BOUNDARY = "J Newsletters"
 
 _SOURCE_REGISTRY = Path(__file__).resolve().parents[2] / "contracts" / "us_remote_sources.json"
 _TERMINAL_RESOLUTION_WORKERS = 8

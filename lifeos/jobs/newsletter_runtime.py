@@ -23,7 +23,7 @@ from lifeos.jobs.us_remote_runtime import UsRemoteResult, _accepted_newsletter_m
 from lifeos.mail.router import MailRouter
 from lifeos.newsletter.models import SourceVacancyObservation
 from lifeos.newsletter.processor import NewsletterExecutionState, NewsletterProcessor
-from scripts.run_newsletter_production import NEWSLETTER_BOUNDARY
+NEWSLETTER_BOUNDARY = "J Newsletters"
 
 
 def execute_newsletter(
