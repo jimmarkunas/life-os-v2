@@ -2,6 +2,7 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timedelta, timezone
 from lifeos.newsletter import NewsletterExecutionState, NewsletterProcessor, ParseState, RoutedNewsletterMessage, adapt_for_jobs, parse_message
+from lifeos.newsletter.processor import _parse_message_or_known_empty
 
 def msg(message_id, subject, body, *, sender="alerts@jobright.example.invalid", mailbox="gmail", minute=0, headers=None):
     return RoutedNewsletterMessage(mailbox,message_id,datetime(2026,1,15,12,minute,tzinfo=timezone.utc),sender,subject,body,headers or {})
@@ -128,4 +129,15 @@ Content-Type: text/html; charset=utf-8
             def to_jobs_candidate(self, observation): return {"evidence_ref":observation.evidence_ref,"role":observation.role}
         adapted=adapt_for_jobs(parsed.observations,Adapter())
         self.assertEqual(len(adapted),1); self.assertEqual(adapted[0]["evidence_ref"],parsed.observations[0].evidence_ref)
+
+    def test_bridgeview_linked_card_extracts_context_and_excludes_controls(self):
+        body = '<div>Synthetic Technical Program Manager</div><div>Denver, CO</div><div>$80 - $90 Hourly</div><a href="https://l1.boostie.jobs.invalid/et/click/job">View This Job</a><a href="https://l1.boostie.jobs.invalid/et/click/unsub">Unsubscribe</a>'
+        result = parse_message(msg("bridgeview", "Latest jobs", body, sender="synthetic-alert@match.boostie.jobs.invalid"))
+        self.assertEqual(len(result.observations), 1); obs = result.observations[0]
+        self.assertEqual(obs.role, "Synthetic Technical Program Manager"); self.assertEqual(obs.location_text, "Denver, CO")
+        self.assertIsNone(obs.company); self.assertEqual(result.state, ParseState.PASS)
+
+    def test_known_empty_linkedin_notice_does_not_fabricate_vacancy(self):
+        result = _parse_message_or_known_empty(msg("linkedin-empty", "We‘ve turned off your job alert for Synthetic Role in Synthetic City", "We've turned off this job alert since you haven't viewed it in over 90 days.", sender="Synthetic LinkedIn notification via linkedin.com"))
+        self.assertEqual(result.state, ParseState.PASS); self.assertEqual(result.observations, ()); self.assertEqual(result.issues, ())
 if __name__ == "__main__": unittest.main()
