@@ -137,7 +137,19 @@ Content-Type: text/html; charset=utf-8
         self.assertEqual(obs.role, "Synthetic Technical Program Manager"); self.assertEqual(obs.location_text, "Denver, CO")
         self.assertIsNone(obs.company); self.assertEqual(result.state, ParseState.PASS)
 
+    def test_bridgeview_multi_card_contract_and_malformed_fail_closed(self):
+        body = '<div>Technical Program Manager</div><div>Denver, CO</div><div>$80 - $90 Hourly</div><a href="https://l1.boostie.jobs.invalid/et/click/one">View This Job</a><div>Senior Project Manager</div><div>Gallatin, TN</div><div>$65 - $72 Hourly</div><a href="https://l1.boostie.jobs.invalid/et/click/two">View This Job</a><a href="https://l1.boostie.jobs.invalid/et/click/all">View All Jobs</a><a href="https://l1.boostie.jobs.invalid/et/click/dash">Go To Dashboard</a><a href="https://l1.boostie.jobs.invalid/et/click/prefs">Manage Preferences</a><a href="https://l1.boostie.jobs.invalid/et/click/unsub">Unsubscribe</a>'
+        result = parse_message(msg("bridgeview-two", "Latest jobs", body, sender="synthetic-alert@match.boostie.jobs.invalid"))
+        self.assertEqual([(o.role, o.location_text, o.compensation_text, o.source_apply_url) for o in result.observations], [("Technical Program Manager", "Denver, CO", "$80 - $90 Hourly", "https://l1.boostie.jobs.invalid/et/click/one"), ("Senior Project Manager", "Gallatin, TN", "$65 - $72 Hourly", "https://l1.boostie.jobs.invalid/et/click/two")])
+        malformed = parse_message(msg("bridgeview-bad", "Latest jobs", '<div>Role only</div><a href="https://l1.boostie.jobs.invalid/et/click/bad">View This Job</a>', sender="synthetic-alert@match.boostie.jobs.invalid"))
+        self.assertEqual(malformed.state, ParseState.DEGRADED); self.assertEqual(malformed.observations, ())
+
     def test_known_empty_linkedin_notice_does_not_fabricate_vacancy(self):
-        result = _parse_message_or_known_empty(msg("linkedin-empty", "We‘ve turned off your job alert for Synthetic Role in Synthetic City", "We've turned off this job alert since you haven't viewed it in over 90 days.", sender="Synthetic LinkedIn notification via linkedin.com"))
-        self.assertEqual(result.state, ParseState.PASS); self.assertEqual(result.observations, ()); self.assertEqual(result.issues, ())
+        cases = [("networking", "Message people you know at Synthetic Co to learn more", "Now that you've applied to Project Manager at Synthetic Co, message your connections to learn more about the company."), ("guidance", "Synthetic Person, looking for a new job?", "Learn how to find the jobs you want. Search for jobs and update your profile."), ("disabled", "We‘ve turned off your job alert for Synthetic Role in Synthetic City", "We've turned off this job alert since you haven't viewed it in over 90 days.")]
+        for name, subject, body in cases:
+            with self.subTest(name=name):
+                result = _parse_message_or_known_empty(msg("linkedin-empty-" + name, subject, body, sender="Synthetic LinkedIn notification via linkedin.com"))
+                self.assertEqual(result.state, ParseState.PASS); self.assertEqual(result.observations, ()); self.assertEqual(result.issues, ())
+        unknown = _parse_message_or_known_empty(msg("linkedin-unknown", "A LinkedIn notification", "There are no vacancy cards in this synthetic message.", sender="Synthetic LinkedIn notification via linkedin.com"))
+        self.assertEqual(unknown.state, ParseState.DEGRADED); self.assertEqual(unknown.observations, ())
 if __name__ == "__main__": unittest.main()
