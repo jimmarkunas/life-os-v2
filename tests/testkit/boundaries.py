@@ -4,6 +4,12 @@ import threading
 import time
 from urllib.parse import unquote
 from lifeos.core.http import HttpResponse
+from datetime import datetime
+
+class Mailbox:
+    def __init__(self, provider, messages): self.provider=provider; self.messages=messages; self.routed=[]
+    def scan_window(self, start: datetime, end: datetime): return [m for m in self.messages if start <= m.received_at < end]
+    def route_to_newsletters(self, message_id, boundary_name): self.routed.append((message_id, boundary_name))
 
 class FakeHttp:
     def __init__(self): self.calls=[]; self.created_processed=False
