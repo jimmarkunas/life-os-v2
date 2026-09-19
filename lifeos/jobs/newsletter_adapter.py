@@ -230,7 +230,7 @@ class NewsletterJobsAdapter:
         fit: int | None = None
         if description_text:
             fit = score_fit(
-                FitEvidence(role=role, description_text=description_text, location_text=location or ""),
+                FitEvidence(role=role, description_text=description_text),
                 profile=cfg.fit_profile,
             ).score
         fit_authority = FitAuthority.AUTHORITATIVE if fit is not None else FitAuthority.NON_AUTHORITATIVE

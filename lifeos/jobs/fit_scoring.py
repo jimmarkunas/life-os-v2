@@ -79,7 +79,6 @@ class FitEvidence:
 
     role: str
     description_text: str = ""
-    location_text: str = ""
 
 
 @dataclass(frozen=True)
@@ -91,7 +90,7 @@ class FitResult:
 
 def _evaluated_text(evidence: FitEvidence) -> str:
     return " ".join(
-        part for part in (evidence.role, evidence.description_text, evidence.location_text) if part
+        part for part in (evidence.role, evidence.description_text) if part
     ).lower()
 
 
