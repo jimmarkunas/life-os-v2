@@ -6,13 +6,12 @@ cleanup-safe signal. No second orchestration or persistence layer.
 """
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date
 
-from lifeos.core.runtime import DeadlineExceeded, ExecutionResult, RunContext
-from lifeos.jobs.models import Company, FreshnessStatus, JobObservation, NormalizedCandidate, WorkMode
-from lifeos.jobs.newsletter_adapter import NewsletterJobsAdapter
+from lifeos.core.runtime import ExecutionResult, RunContext
+from lifeos.jobs.models import NormalizedCandidate
+from lifeos.jobs.newsletter_adapter import NewsletterJobsAdapter, _adapt_all, _unresolved_candidate
 from lifeos.jobs.newsletter_contract import Disposition, IngestResult, ingest
 from lifeos.jobs.qualification import LaneConfig
 from lifeos.jobs.repository import CareerRepository
@@ -20,7 +19,6 @@ from lifeos.newsletter.models import SourceVacancyObservation
 from lifeos.newsletter.processor import NewsletterExecutionState, NewsletterProcessResult
 
 DEFAULT_MAX_WORKERS = 8
-MAX_ADAPT_WORKERS = 8
 
 
 @dataclass(frozen=True)
@@ -28,66 +26,6 @@ class NewsletterFeatureResult:
     execution: ExecutionResult
     ingest_results: tuple[IngestResult, ...]
     cleanup_safe: bool
-
-
-def _unresolved_candidate(observation: SourceVacancyObservation, reason: str) -> NormalizedCandidate:
-    return NormalizedCandidate(
-        job=JobObservation(
-            company=Company(name=observation.company or ""),
-            role=observation.role or "",
-            location=observation.location_text,
-            work_mode=WorkMode.UNKNOWN,
-            compensation_text=observation.compensation_text,
-            compensation_minimum=None,
-            posting_date=None,
-            apply_url=None,
-            source_lane="",
-            provider_job_id=observation.provider_job_id,
-        ),
-        fit=None,
-        market="",
-        freshness_status=FreshnessStatus.UNRESOLVED,
-        evidence_ref=observation.evidence_ref,
-        unresolved_reason=reason,
-    )
-
-
-def _adapt_all(
-    observations: tuple[SourceVacancyObservation, ...],
-    *,
-    adapter: NewsletterJobsAdapter,
-    context: RunContext,
-    max_workers: int,
-) -> list[NormalizedCandidate]:
-    if not observations:
-        return []
-    workers = max(1, min(int(max_workers), MAX_ADAPT_WORKERS))
-    results: list[NormalizedCandidate | None] = [None] * len(observations)
-
-    def _resolve_one(index: int, observation: SourceVacancyObservation) -> None:
-        context.require_time()
-        try:
-            results[index] = adapter.to_jobs_candidate(observation)
-        except Exception as exc:
-            results[index] = _unresolved_candidate(observation, f"adapter raised {type(exc).__name__}")
-
-    with ThreadPoolExecutor(max_workers=min(workers, len(observations))) as pool:
-        futures = {
-            pool.submit(_resolve_one, index, observation): index
-            for index, observation in enumerate(observations)
-        }
-        for future in as_completed(futures):
-            index = futures[future]
-            try:
-                future.result()
-            except DeadlineExceeded:
-                if results[index] is None:
-                    results[index] = _unresolved_candidate(observations[index], "run deadline exhausted")
-
-    return [
-        candidate if candidate is not None else _unresolved_candidate(observations[i], "adapter did not complete")
-        for i, candidate in enumerate(results)
-    ]
 
 
 def run_newsletter_feature(
