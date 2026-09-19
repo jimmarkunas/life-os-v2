@@ -245,7 +245,7 @@ def test_fallback_key_job_later_url_converges_across_fresh_repository_instances(
         [
             make_candidate(
                 job=make_job(role="Technical Program Manager", location="Remote", apply_url=None),
-                fit=None,
+                fit=85,
                 evidence_ref="ev:first",
             )
         ],
@@ -314,11 +314,14 @@ def test_source_types_round_trip_acquisition_provenance_across_fresh_repository_
 
     first, _ = _fresh_ingest(
         http,
-        _newsletter_candidate(
-            provider="LinkedIn Jobs",
-            mailbox="gmail-primary",
-            apply_url=None,
-            evidence_ref="ev:linkedin",
+        replace(
+            _newsletter_candidate(
+                provider="LinkedIn Jobs",
+                mailbox="gmail-primary",
+                apply_url=None,
+                evidence_ref="ev:linkedin",
+            ),
+            fit=86,
         ),
         lane=us_remote_lane,
         lane_priority={"US Remote": 1},
@@ -391,11 +394,14 @@ def test_source_types_round_trip_acquisition_provenance_across_fresh_repository_
     reverse_http = FakeNotionHttp()
     first_reverse, _ = _fresh_ingest(
         reverse_http,
-        _newsletter_candidate(
-            provider="Lensa",
-            mailbox="gmail-primary",
-            apply_url=None,
-            evidence_ref="ev:scale-first",
+        replace(
+            _newsletter_candidate(
+                provider="Lensa",
+                mailbox="gmail-primary",
+                apply_url=None,
+                evidence_ref="ev:scale-first",
+            ),
+            fit=86,
         ),
         lane=scale_up_lane,
         lane_priority={"Scale-Up": 0, "US Remote": 1},
@@ -435,7 +441,7 @@ def test_package_c_no_downgrade_merge_survives_fresh_repository_instances():
                 posting_date=None,
                 source_provider="Source A",
             ),
-            fit=None,
+            fit=85,
             fit_authority=FitAuthority.NON_AUTHORITATIVE,
             evidence_ref="ev:first",
         ),
@@ -520,7 +526,9 @@ def test_package_c_missing_then_stronger_evidence_fills_canonical_row():
             evidence_ref="ev:first",
         ),
     )
+    assert first[0].disposition == Disposition.REVIEW_DEGRADED
     assert first[0].stable_job_key == key
+    assert len(http.pages) == 0
 
     second, _ = _fresh_ingest(
         http,
@@ -538,13 +546,13 @@ def test_package_c_missing_then_stronger_evidence_fills_canonical_row():
         ),
         run_date=RUN_DATE + timedelta(days=1),
     )
-    assert second[0].disposition == Disposition.UPDATED
+    assert second[0].disposition == Disposition.CREATED
     record = _fresh_record(http, key)
     assert record.job.job.apply_url == "https://greenhouse.io/acme/jobs/123"
     assert record.job.job.posting_date == date(2026, 1, 10)
     assert record.job.fit == 86
     assert record.job.fit_authority == FitAuthority.AUTHORITATIVE
-    assert record.job.source_providers == ("Source A", "Source B")
+    assert record.job.source_providers == ("Source B",)
 
 
 def test_read_back_mismatch_raised_when_persisted_page_diverges():
