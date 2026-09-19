@@ -1,5 +1,21 @@
 # LIFE OS v2 — Claude Code Guide
 
+## Repository role — hard lock
+
+`jimmarkunas/life-os-v2` is the **sole active LIFE OS implementation repository**.
+
+All current product development, bug fixes, refactors, tests, runtime implementation, configuration work, branches, pull requests, and production-boundary changes happen here unless Jim explicitly names a different repository for the exact task.
+
+`jimmarkunas/life-os-automation` is V1/reference-only implementation code. Consult it only when a current V2 task explicitly needs a proven old behavior/asset for reuse, when a still-canonical governance/runtime document physically housed there must be read, or when Jim explicitly requests bounded V1 governance/legacy maintenance. Never switch implementation into V1 because an old handoff, search result, or historical file points there.
+
+Every implementation handoff must begin:
+
+`Repository: jimmarkunas/life-os-v2`
+
+If stale context appears to direct ordinary implementation into V1, stop with:
+
+`WRONG_REPOSITORY_STOP — active LIFE OS development belongs in jimmarkunas/life-os-v2`
+
 **Canonical development authority:** `jimmarkunas/life-os-automation/docs/life-os-development-policy.md`.  
 **v2 repository supplement:** `docs/life-os-development-policy.md`.  
 **Architecture authority:** `docs/DECISIONS.md` and `docs/ARCHITECTURE.md`.
@@ -8,11 +24,12 @@ This file is a thin execution guide. It does not duplicate or override LIFE OS g
 
 ## Before coding
 
-1. Fresh-read current `origin/main` and record its SHA.
-2. State `OUTCOME`, exact `MUTATION SURFACE`, and smallest deterministic `PROOF`.
-3. Use the current Notion product/domain canon for durable requirements.
-4. Read `Development Projects` only when ownership/concurrency matters.
-5. For structured Notion queries, follow the canonical `jimmarkunas/life-os-automation/docs/notion-query-conservation-policy.md`.
+1. Confirm the repository is exactly `jimmarkunas/life-os-v2`; otherwise stop with `WRONG_REPOSITORY_STOP` unless Jim explicitly authorized the other repo.
+2. Fresh-read current `origin/main` and record its SHA.
+3. State `OUTCOME`, exact `MUTATION SURFACE`, and smallest deterministic `PROOF`.
+4. Use the current Notion product/domain canon for durable requirements.
+5. Read `Development Projects` only when ownership/concurrency matters.
+6. For structured Notion queries, follow the canonical `jimmarkunas/life-os-automation/docs/notion-query-conservation-policy.md`.
 
 ## Execution discipline
 
@@ -24,6 +41,16 @@ This file is a thin execution guide. It does not duplicate or override LIFE OS g
 - Tech Lead handoff should be approximately: `exact repo/base → exact files/symbols → mutation → proof → stop`.
 - No repository-wide archaeology, open-ended debugging, or speculative cleanup.
 - One failure boundary gets one bounded retry. Then stop with the exact blocker.
+
+## V1 reuse rule
+
+When a V2 task explicitly references V1 to strengthen the new build:
+
+- inspect only the named/relevant V1 behavior;
+- extract the smallest proven mechanic, algorithm, parser behavior, mapping, or fixture insight;
+- re-express it inside current V2 architecture and contracts;
+- do not copy V1 orchestration, persistence, QA scaffolding, recovery systems, test estates, or duplicated live paths wholesale;
+- return to V2 for all mutation and proof.
 
 ## Production and architecture
 

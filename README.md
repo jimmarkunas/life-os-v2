@@ -1,5 +1,7 @@
 # LIFE OS v2
 
+> **ACTIVE IMPLEMENTATION REPOSITORY.** All current LIFE OS product development, fixes, refactors, tests, runtime implementation, configuration work, branches, and pull requests belong here. `jimmarkunas/life-os-automation` is V1/reference-only implementation code and is consulted only for explicit reuse/comparison or still-canonical governance/runtime documents. See `AGENTS.md`.
+
 LIFE OS v2 is a public-code/private-data personal operating platform.
 
 The repository contains reusable platform code only. Production credentials, personal data, account identifiers, message content, financial data, runtime state, and canonical records must never be committed.
@@ -27,6 +29,7 @@ No census-file maze, handoff manifests, trigger chains, per-step virtual machine
 
 ## Docs
 
+- [Repository role lock](AGENTS.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Rebuild plan](docs/REBUILD_PLAN.md)
 - [Decision log](docs/DECISIONS.md)
