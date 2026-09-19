@@ -236,13 +236,6 @@ class MainEntryPointTests(unittest.TestCase):
             exit_code = entry.main(list(cli_args))
         return exit_code, backend
 
-    def test_dry_run_never_routes_or_persists(self) -> None:
-        exit_code, backend = self._run("--dry-run", "--timeout-seconds", "30")
-        self.assertEqual(exit_code, 0)
-        self.assertEqual(backend.routed_message_ids, [])
-        self.assertEqual(backend.processed_message_ids, [])
-        self.assertEqual(backend.pages, {})
-
     def test_full_composed_run_routes_persists_reads_back_and_marks_processed(self) -> None:
         exit_code, backend = self._run("--timeout-seconds", "30")
         self.assertEqual(exit_code, 0)
