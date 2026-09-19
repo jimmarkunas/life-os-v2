@@ -3,41 +3,12 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from lifeos.mail import MailClass, MailExecutionState, MailMessage, MailRouter
+from tests.testkit.boundaries import Mailbox
+from tests.testkit.builders import mail_message
+from lifeos.mail import MailClass, MailExecutionState, MailRouter
 
 
-class FakeMailbox:
-    def __init__(self, provider: str, messages: list[MailMessage]) -> None:
-        self.provider = provider
-        self.messages = messages
-        self.routed: list[tuple[str, str]] = []
 
-    def scan_window(self, start: datetime, end: datetime):
-        return [message for message in self.messages if start <= message.received_at < end]
-
-    def route_to_newsletters(self, message_id: str, boundary_name: str) -> None:
-        self.routed.append((message_id, boundary_name))
-
-
-def message(
-    provider: str,
-    message_id: str,
-    subject: str,
-    *,
-    sender: str,
-    body: str = "",
-    headers: dict[str, str] | None = None,
-    minute: int = 0,
-) -> MailMessage:
-    return MailMessage(
-        provider=provider,
-        message_id=message_id,
-        received_at=datetime(2026, 1, 15, 12, minute, tzinfo=timezone.utc),
-        sender=sender,
-        subject=subject,
-        body_text=body,
-        headers=headers or {},
-    )
 
 
 class WholeMailboxRoutingTests(unittest.TestCase):
@@ -46,10 +17,10 @@ class WholeMailboxRoutingTests(unittest.TestCase):
         self.end = self.start + timedelta(hours=1)
 
     def test_scans_both_providers_and_routes_only_confirmed_job_alerts(self) -> None:
-        gmail = FakeMailbox(
+        gmail = Mailbox(
             "gmail",
             [
-                message(
+                mail_message(
                     "gmail",
                     "synthetic-g-001",
                     "Daily job alert: new roles for you",
@@ -57,7 +28,7 @@ class WholeMailboxRoutingTests(unittest.TestCase):
                     headers={"List-Unsubscribe": "<https://example.invalid/unsub>"},
                     minute=1,
                 ),
-                message(
+                mail_message(
                     "gmail",
                     "synthetic-g-002",
                     "Opportunity at Synthetic Co",
@@ -65,7 +36,7 @@ class WholeMailboxRoutingTests(unittest.TestCase):
                     body="I am a recruiter and would like to speak about next steps.",
                     minute=2,
                 ),
-                message(
+                mail_message(
                     "gmail",
                     "synthetic-g-003",
                     "Application received",
@@ -74,7 +45,7 @@ class WholeMailboxRoutingTests(unittest.TestCase):
                     headers={"Precedence": "bulk"},
                     minute=3,
                 ),
-                message(
+                mail_message(
                     "gmail",
                     "synthetic-g-004",
                     "Your synthetic receipt",
@@ -83,10 +54,10 @@ class WholeMailboxRoutingTests(unittest.TestCase):
                 ),
             ],
         )
-        outlook = FakeMailbox(
+        outlook = Mailbox(
             "outlook",
             [
-                message(
+                mail_message(
                     "outlook",
                     "synthetic-o-001",
                     "Recommended jobs for you",
@@ -94,7 +65,7 @@ class WholeMailboxRoutingTests(unittest.TestCase):
                     headers={"Precedence": "list"},
                     minute=5,
                 ),
-                message(
+                mail_message(
                     "outlook",
                     "synthetic-o-002",
                     "Interview scheduling",
@@ -120,10 +91,10 @@ class WholeMailboxRoutingTests(unittest.TestCase):
         self.assertLess(result.timings.total_seconds, 45.0)
 
     def test_newsletter_body_hiring_language_does_not_override_source_evidence(self) -> None:
-        gmail = FakeMailbox(
+        gmail = Mailbox(
             "gmail",
             [
-                message(
+                mail_message(
                     "gmail",
                     "synthetic-news-001",
                     "Daily job alert: 4 new roles",
@@ -149,15 +120,15 @@ class WholeMailboxRoutingTests(unittest.TestCase):
         self.assertTrue(result.records[0].routed)
 
     def test_scan_failure_is_degraded_and_checkpoint_cannot_advance(self) -> None:
-        class FailingScanMailbox(FakeMailbox):
+        class FailingScanMailbox(Mailbox):
             def scan_window(self, start: datetime, end: datetime):
                 raise TimeoutError("synthetic timeout")
 
         gmail = FailingScanMailbox("gmail", [])
-        outlook = FakeMailbox(
+        outlook = Mailbox(
             "outlook",
             [
-                message(
+                mail_message(
                     "outlook",
                     "synthetic-o-ok",
                     "Job alert: new jobs",
@@ -184,14 +155,14 @@ class WholeMailboxRoutingTests(unittest.TestCase):
         self.assertEqual(result.errors[0].detail, "no-mailbox-providers")
 
     def test_route_failure_is_degraded_and_never_marks_message_routed(self) -> None:
-        class FailingMailbox(FakeMailbox):
+        class FailingMailbox(Mailbox):
             def route_to_newsletters(self, message_id: str, boundary_name: str) -> None:
                 raise TimeoutError("synthetic timeout")
 
         mailbox = FailingMailbox(
             "gmail",
             [
-                message(
+                mail_message(
                     "gmail",
                     "synthetic-g-fail",
                     "Job alert: new jobs",
