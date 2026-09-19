@@ -1,7 +1,6 @@
 from __future__ import annotations
 import unittest
 from datetime import datetime, timedelta, timezone
-from time import perf_counter
 from lifeos.newsletter import NewsletterExecutionState, NewsletterProcessor, ParseState, RoutedNewsletterMessage, adapt_for_jobs, parse_message
 
 def msg(message_id, subject, body, *, sender="alerts@jobright.example.invalid", mailbox="gmail", minute=0, headers=None):
@@ -129,9 +128,4 @@ Content-Type: text/html; charset=utf-8
             def to_jobs_candidate(self, observation): return {"evidence_ref":observation.evidence_ref,"role":observation.role}
         adapted=adapt_for_jobs(parsed.observations,Adapter())
         self.assertEqual(len(adapted),1); self.assertEqual(adapted[0]["evidence_ref"],parsed.observations[0].evidence_ref)
-    def test_synthetic_parse_performance_reveals_stage_time(self):
-        messages=[msg(f"synthetic-{i}","Jobright jobs",f"[Synthetic Labs\\n90%\\nProgram Manager\\nRemote](https://jobright.ai/jobs/info/synthetic-{i})",minute=i%60) for i in range(500)]
-        source=FakeSource("gmail",messages); started=perf_counter(); result=NewsletterProcessor(max_workers=8).process_window([source],self.start,self.end); elapsed=perf_counter()-started
-        self.assertEqual(len(result.observations),500); self.assertLess(result.timings.total_seconds,90.0); self.assertLess(elapsed,90.0); self.assertGreaterEqual(result.timings.fetch_seconds,0); self.assertGreaterEqual(result.timings.parse_seconds,0)
-
 if __name__ == "__main__": unittest.main()

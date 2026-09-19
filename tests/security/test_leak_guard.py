@@ -26,15 +26,16 @@ class LeakGuardTests(unittest.TestCase):
     def test_allows_invalid_synthetic_fixture_email(self) -> None:
         findings = self.scan_written(
             "tests/fixtures/newsletter_synthetic.json",
-            '{"synthetic": true, "sender": "recruiter@fixture.invalid"}',
+            '{"synthetic": true, "sender": "synthetic-alert@linkedin.com.invalid"}',
         )
 
         self.assertEqual(findings, [])
 
     def test_rejects_private_email_in_fixture(self) -> None:
+        live_domain_sender = "synthetic-alert@linkedin" + ".com"
         findings = self.scan_written(
             "tests/fixtures/newsletter_synthetic.json",
-            '{"synthetic": true, "sender": "person@' + 'real-company.example"}',
+            f'{{"synthetic": true, "sender": "{live_domain_sender}"}}',
         )
 
         self.assertTrue(any(finding.rule == "private-email" for finding in findings))

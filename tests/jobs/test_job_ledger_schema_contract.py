@@ -66,6 +66,16 @@ def test_repository_writes_only_contract_properties_and_types():
         if actual_type != expected_type:
             mismatches.append(f"{name}: expected {expected_type}, got {actual_type}")
     assert mismatches == []
+    required = {"Job", "Stable Job Key", "Company", "Role", "LIFE OS Fit", "Fit Authority", "Provider Score"}
+    assert required <= set(properties)
+    provenance = _properties(
+        source_lanes=("Synthetic-Remote", "Newsletter"),
+        source_types=("LinkedIn Jobs", "Gmail Alert"),
+    )
+    names = {item["name"] for item in provenance["Source Types"]["multi_select"]}
+    assert names == {"LinkedIn Jobs", "Gmail Alert"}
+    assert "Synthetic-Remote" not in names
+    assert "Newsletter" not in names
 
 
 def test_repository_select_values_match_canonical_contract():
@@ -84,34 +94,6 @@ def test_repository_select_values_match_canonical_contract():
     assert authoritative == "Authoritative"
     assert non_authoritative == "Non-Authoritative"
     assert {authoritative, non_authoritative} <= set(SCHEMA["Fit Authority"]["allowed_values"])
-
-
-def test_internal_enum_wire_values_are_not_canonical_contract_values():
     assert "remote" not in SCHEMA["Work Mode"]["allowed_values"]
     assert "admitted" not in SCHEMA["Admission Status"]["allowed_values"]
     assert "passed_review" not in SCHEMA["Admission Status"]["allowed_values"]
-
-
-def test_required_identity_and_fit_properties_are_always_present():
-    properties = _properties()
-    required = {
-        "Job",
-        "Stable Job Key",
-        "Company",
-        "Role",
-        "LIFE OS Fit",
-        "Fit Authority",
-        "Provider Score",
-    }
-    assert required <= set(properties)
-
-
-def test_source_types_persist_acquisition_provenance_not_internal_lanes():
-    properties = _properties(
-        source_lanes=("Synthetic-Remote", "Newsletter"),
-        source_types=("LinkedIn Jobs", "Gmail Alert"),
-    )
-    names = {item["name"] for item in properties["Source Types"]["multi_select"]}
-    assert names == {"LinkedIn Jobs", "Gmail Alert"}
-    assert "Synthetic-Remote" not in names
-    assert "Newsletter" not in names

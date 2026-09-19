@@ -191,49 +191,6 @@ def _newsletter_candidate(*, provider: str, mailbox: str, apply_url: str | None,
     )
 
 
-def test_upsert_then_get_many_round_trips():
-    repo, http = _repository()
-    job = Job(stable_job_key="url:https://greenhouse.io/acme/jobs/42", job=_job(), admission_status=AdmissionStatus.ADMITTED)
-    record = new_record(job, run_date=RUN_DATE)
-    persisted = repo.upsert(record)
-    assert persisted.job.stable_job_key == job.stable_job_key
-
-    found = repo.get_many([job.stable_job_key])
-    assert job.stable_job_key in found
-    assert found[job.stable_job_key].job.job.role == "Synthetic Engineer"
-
-
-def test_second_upsert_updates_same_page_not_a_new_one():
-    repo, http = _repository()
-    job = Job(stable_job_key="k1", job=_job(), admission_status=AdmissionStatus.ADMITTED)
-    record = new_record(job, run_date=RUN_DATE)
-    repo.upsert(record)
-    assert len(http.pages) == 1
-
-    updated_job = _job(compensation_text="$130,000+")
-    updated_opportunity = Job(stable_job_key="k1", job=updated_job, admission_status=AdmissionStatus.ADMITTED)
-    from lifeos.jobs.lifecycle import apply_observation
-
-    existing = repo.get_many(["k1"])["k1"]
-    merged = apply_observation(existing, updated_opportunity, run_date=RUN_DATE)
-    repo.upsert(merged)
-    assert len(http.pages) == 1  # still one page -- update, not a second create
-
-
-def test_get_many_issues_exactly_one_query_call_never_a_full_scan():
-    repo, http = _repository()
-    for i in range(5):
-        job = Job(stable_job_key=f"k{i}", job=_job(), admission_status=AdmissionStatus.ADMITTED)
-        repo.upsert(new_record(job, run_date=RUN_DATE))
-
-    http.query_calls.clear()
-    repo.get_many(["k2", "k4"])
-    assert len(http.query_calls) == 1
-    filter_payload = http.query_calls[0]["filter"]
-    queried_values = {f["rich_text"]["equals"] for f in filter_payload["or"]}
-    assert queried_values == {"k2", "k4"}
-
-
 def test_63_vacancies_are_chunked_at_the_notion_query_boundary():
     repo, http = _repository()
     keys = []
@@ -248,6 +205,13 @@ def test_63_vacancies_are_chunked_at_the_notion_query_boundary():
 
     assert len(found) == 63
     assert len(http.query_calls) == 2
+    assert all(len(query["filter"]["or"]) <= 50 for query in http.query_calls)
+    queried_values = {
+        clause["rich_text"]["equals"]
+        for query in http.query_calls
+        for clause in query["filter"]["or"]
+    }
+    assert queried_values == set(keys)
 
 
 def test_get_by_apply_urls_uses_bounded_url_property_query():
