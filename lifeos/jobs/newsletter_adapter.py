@@ -15,7 +15,15 @@ from lifeos.core.http import HttpClient, RetryPolicy
 from lifeos.core.runtime import DeadlineExceeded, RunContext
 from lifeos.jobs.fit_scoring import FitEvidence, FitProfile
 from lifeos.jobs.fit_scoring import score as score_fit
-from lifeos.jobs.models import Company, FitAuthority, FreshnessStatus, JobObservation, NormalizedCandidate, WorkMode
+from lifeos.jobs.models import (
+    Company,
+    FitAuthority,
+    FitEvidenceKind,
+    FreshnessStatus,
+    JobObservation,
+    NormalizedCandidate,
+    WorkMode,
+)
 from lifeos.jobs.terminal_evidence import (
     Fetcher,
     FetchResponse,
@@ -228,12 +236,24 @@ class NewsletterJobsAdapter:
         # qualify() routes the candidate to PASSED_REVIEW, never a silent
         # admission and never a fabricated score.
         fit: int | None = None
-        if description_text:
+        fit_evidence_kind = FitEvidenceKind.NONE
+        if description_text and description_text.strip():
             fit = score_fit(
                 FitEvidence(role=role, description_text=description_text),
                 profile=cfg.fit_profile,
             ).score
-        fit_authority = FitAuthority.AUTHORITATIVE if fit is not None else FitAuthority.NON_AUTHORITATIVE
+            fit_evidence_kind = FitEvidenceKind.EMPLOYER_ATS_JD
+        elif observation.source_description_text and observation.source_description_text.strip():
+            fit = score_fit(
+                FitEvidence(role=role, description_text=observation.source_description_text),
+                profile=cfg.fit_profile,
+            ).score
+            fit_evidence_kind = FitEvidenceKind.SOURCE_DESCRIPTION
+        fit_authority = (
+            FitAuthority.AUTHORITATIVE
+            if fit_evidence_kind == FitEvidenceKind.EMPLOYER_ATS_JD
+            else FitAuthority.NON_AUTHORITATIVE
+        )
 
         return NormalizedCandidate(
             job=job, fit=fit, market=cfg.market,
@@ -241,6 +261,7 @@ class NewsletterJobsAdapter:
             evidence_ref=observation.evidence_ref,
             unresolved_reason=None,
             fit_authority=fit_authority,
+            fit_evidence_kind=fit_evidence_kind,
             source_types=source_types,
         )
 

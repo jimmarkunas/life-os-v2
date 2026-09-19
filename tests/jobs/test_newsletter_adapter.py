@@ -63,15 +63,25 @@ def test_resolved_observation_produces_populated_candidate():
     assert candidate.job.posting_date is not None and candidate.job.posting_date.isoformat() == "2026-01-10"
     assert candidate.job.description_text == "Synthetic engineer role. widget-alpha."
     assert candidate.fit is not None and candidate.fit >= 70
+    from lifeos.jobs.models import FitAuthority, FitEvidenceKind
+
+    assert candidate.fit_evidence_kind == FitEvidenceKind.EMPLOYER_ATS_JD
+    assert candidate.fit_authority == FitAuthority.AUTHORITATIVE
     assert candidate.job.provider_score == 88
 
 
 def test_missing_source_url_does_not_block_identifiable_candidate():
-    candidate = _adapter(FakeFetcher({})).to_jobs_candidate(_observation(source_apply_url=None))
+    candidate = _adapter(FakeFetcher({})).to_jobs_candidate(
+        _observation(source_apply_url=None, source_description_text="Synthetic engineer role.")
+    )
     # Enrichment could not even be attempted, but company/role/location are
     # still sufficient for identity -- this is not an accounting failure.
     assert candidate.unresolved_reason is None
-    assert candidate.fit is None
+    from lifeos.jobs.models import FitAuthority, FitEvidenceKind
+
+    assert candidate.fit is not None
+    assert candidate.fit_evidence_kind == FitEvidenceKind.SOURCE_DESCRIPTION
+    assert candidate.fit_authority == FitAuthority.NON_AUTHORITATIVE
     assert candidate.job.apply_url is None
 
 
@@ -93,6 +103,10 @@ def test_failed_resolution_does_not_block_identifiable_candidate():
     candidate = _adapter(fetcher).to_jobs_candidate(_observation(source_apply_url="https://linkedin.com/jobs/view/1"))
     assert candidate.unresolved_reason is None
     assert candidate.fit is None
+    from lifeos.jobs.models import FitAuthority, FitEvidenceKind
+
+    assert candidate.fit_evidence_kind == FitEvidenceKind.NONE
+    assert candidate.fit_authority == FitAuthority.NON_AUTHORITATIVE
     assert candidate.job.apply_url is None
 
 
@@ -143,6 +157,9 @@ def test_provider_score_carried_as_evidence_never_used_for_fit():
     low_provider_score = _adapter(fetcher).to_jobs_candidate(_observation(provider_score=1))
     # Same role/description -> identical computed Fit regardless of provider_score.
     assert high_provider_score.fit == low_provider_score.fit
+    from lifeos.jobs.models import FitEvidenceKind
+
+    assert high_provider_score.fit_evidence_kind == FitEvidenceKind.EMPLOYER_ATS_JD
 
 
 def test_same_source_url_terminal_resolution_is_reused_with_one_fetch():
