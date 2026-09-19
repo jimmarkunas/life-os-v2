@@ -141,6 +141,7 @@ def _observation(
         source_apply_url=source_apply_url,
         provider_job_id=_present(card.get("provider_job_id")),
         provider_score=int(provider_score) if isinstance(provider_score, int) else None,
+        source_description_text=_present(card.get("description")),
         issues=tuple(issues),
         source_received_at=message.received_at,
     )
@@ -566,6 +567,15 @@ def _parse_linkedin(text: str) -> tuple[list[dict[str, object]], str | None]:
         if len(previous) < 3:
             continue
         location, company, role = previous[-1], previous[-2], _clean_candidate(previous[-3])
+        description = None
+        if len(previous) == 4:
+            candidate_description = previous[0]
+            if (
+                len(candidate_description.split()) >= 4
+                and candidate_description[-1:] in ".!?"
+                and not _linkedin_auxiliary_line(candidate_description)
+            ):
+                description = candidate_description
         if len(company) < 2 or len(role) < 3:
             continue
         seen.add(job_id)
@@ -578,6 +588,7 @@ def _parse_linkedin(text: str) -> tuple[list[dict[str, object]], str | None]:
                 "location": location,
                 "work_mode": "Remote" if "remote" in location.casefold() else "Unknown",
                 "compensation": compensation,
+                "description": description,
             }
         )
 
