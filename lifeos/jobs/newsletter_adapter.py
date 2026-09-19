@@ -6,12 +6,13 @@ normalization, authoritative Fit, and fail-closed unresolved behavior.
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date
 from threading import Lock
 
 from lifeos.core.http import HttpClient, RetryPolicy
-from lifeos.core.runtime import RunContext
+from lifeos.core.runtime import DeadlineExceeded, RunContext
 from lifeos.jobs.fit_scoring import FitEvidence, FitProfile
 from lifeos.jobs.fit_scoring import score as score_fit
 from lifeos.jobs.models import Company, FitAuthority, FreshnessStatus, JobObservation, NormalizedCandidate, WorkMode
@@ -94,6 +95,27 @@ class NewsletterAdapterConfig:
     market: str
     source_lane: str
     fallback_fetcher: Fetcher | None = None
+
+MAX_ADAPT_WORKERS = 8
+
+def _unresolved_candidate(observation: SourceVacancyObservation, reason: str) -> NormalizedCandidate:
+    return NormalizedCandidate(job=JobObservation(company=Company(name=observation.company or ""), role=observation.role or "", location=observation.location_text, work_mode=WorkMode.UNKNOWN, compensation_text=observation.compensation_text, compensation_minimum=None, posting_date=None, apply_url=None, source_lane="", provider_job_id=observation.provider_job_id), fit=None, market="", freshness_status=FreshnessStatus.UNRESOLVED, evidence_ref=observation.evidence_ref, unresolved_reason=reason)
+
+def _adapt_all(observations: tuple[SourceVacancyObservation, ...], *, adapter: NewsletterJobsAdapter, context: RunContext, max_workers: int) -> list[NormalizedCandidate]:
+    if not observations: return []
+    workers = max(1, min(int(max_workers), MAX_ADAPT_WORKERS)); results: list[NormalizedCandidate | None] = [None] * len(observations)
+    def _resolve_one(index, observation):
+        context.require_time()
+        try: results[index] = adapter.to_jobs_candidate(observation)
+        except Exception as exc: results[index] = _unresolved_candidate(observation, f"adapter raised {type(exc).__name__}")
+    with ThreadPoolExecutor(max_workers=min(workers, len(observations))) as pool:
+        futures = {pool.submit(_resolve_one, index, observation): index for index, observation in enumerate(observations)}
+        for future in as_completed(futures):
+            index = futures[future]
+            try: future.result()
+            except DeadlineExceeded:
+                if results[index] is None: results[index] = _unresolved_candidate(observations[index], "run deadline exhausted")
+    return [candidate if candidate is not None else _unresolved_candidate(observations[i], "adapter did not complete") for i, candidate in enumerate(results)]
 
 
 class NewsletterJobsAdapter:
