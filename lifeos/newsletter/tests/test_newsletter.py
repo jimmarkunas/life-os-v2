@@ -112,6 +112,16 @@ Content-Type: text/html; charset=utf-8
         body="[Senior Product Manager\nSynthetic Systems · Remote](https://www.linkedin.com/jobs/view/123456789/)"
         result=parse_message(msg("synthetic-li","LinkedIn jobs for you",body,sender="jobs@linkedin.example.invalid"))
         self.assertEqual(result.observations[0].provider_job_id,"123456789"); self.assertEqual(result.observations[0].source_apply_url,"https://www.linkedin.com/jobs/view/123456789/")
+
+        cases = (
+            ("description", "Lead cross-functional delivery for platform modernization.", "123456790", "Lead cross-functional delivery for platform modernization."),
+            ("no-description", "", "123456791", None),
+        )
+        for name, description, job_id, expected in cases:
+            with self.subTest(name=name):
+                body = "\n".join(filter(None, (description, "Senior Product Manager", "Synthetic Systems", "Remote - Synthetic Country", f"View job: https://www.linkedin.com/jobs/view/{job_id}/")))
+                parsed = parse_message(msg(f"synthetic-li-{name}", "LinkedIn jobs for you", body, sender="jobs@linkedin.example.invalid"))
+                self.assertEqual(parsed.observations[0].source_description_text, expected)
     def test_no_newsletter_source_ports_is_degraded(self):
         result=NewsletterProcessor().process_window([],self.start,self.end)
         self.assertEqual(result.state,NewsletterExecutionState.DEGRADED); self.assertFalse(result.cleanup_safe)
