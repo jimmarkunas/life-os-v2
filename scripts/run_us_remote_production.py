@@ -13,9 +13,10 @@ import json
 import os
 import sys
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlencode
 
 from lifeos.core.config import ConfigField, ConfigurationError, RuntimeConfig
-from lifeos.core.http import HttpClient, HttpError
+from lifeos.core.http import HttpClient, HttpError, RetryPolicy
 from lifeos.core.runtime import DeadlineExceeded, RunContext
 from lifeos.integrations.gmail import GmailMailboxTransport
 from lifeos.integrations.notion import NotionTransport, NotionTransportError
@@ -25,10 +26,8 @@ from lifeos.jobs.us_remote_runtime import browser_evidence, execute_us_remote, l
 from lifeos.mail.models import MailMessage
 
 from scripts.run_newsletter_production import (
-    _exchange_gmail_access_token,
     _load_private_policy,
     _load_private_policy_from_notion,
-    _require_env,
 )
 
 DEFAULT_TIMEOUT_SECONDS = 45.0
@@ -49,6 +48,21 @@ _RUNTIME_FIELDS = tuple(ConfigField(name) for name in (
 def _require_env() -> dict[str, str]:
     config = RuntimeConfig.load(_RUNTIME_FIELDS)
     return {name: config.require(name) for name in config.declared_names()}
+
+
+_GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+
+
+def _exchange_gmail_access_token(context: RunContext, http: HttpClient, *, client_id: str, client_secret: str, refresh_token: str) -> str:
+    body = urlencode({"client_id": client_id, "client_secret": client_secret, "refresh_token": refresh_token, "grant_type": "refresh_token"}).encode("utf-8")
+    payload = http.request_json(
+        context, "POST", _GOOGLE_TOKEN_URL,
+        headers={"Content-Type": "application/x-www-form-urlencoded"}, body=body,
+        timeout_seconds=10.0, retry=RetryPolicy(max_attempts=1),
+    )
+    if not isinstance(payload, dict) or not payload.get("access_token"):
+        raise ConfigurationError("Gmail token refresh did not return an access token")
+    return str(payload["access_token"])
 
 
 def _args(argv: list[str]) -> argparse.Namespace:
