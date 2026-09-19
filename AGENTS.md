@@ -8,9 +8,17 @@ All current product development, bug fixes, refactors, tests, runtime implementa
 
 V1 may be consulted only when a current V2 task explicitly needs a proven V1 behavior/asset for reuse, when a still-canonical governance/runtime document physically housed there must be read, or when Jim explicitly requests bounded V1 governance/legacy maintenance. When reused, extract only the smallest proven behavior needed by V2; do not port V1 architecture, QA-era scaffolding, orchestration, persistence, tests, or recovery machinery wholesale.
 
-Every implementation handoff must begin:
+## Standard implementation header — mandatory
 
-`Repository: jimmarkunas/life-os-v2`
+Every PM/TL/Codex/Claude implementation prompt and compiled handoff must begin literally with:
+
+```text
+Repository: jimmarkunas/life-os-v2
+Base: fresh origin/main
+V1 use: prohibited unless this handoff explicitly names a V1 asset for reference/reuse
+```
+
+Do not paraphrase, omit, or bury this header. It is the first routing gate before scope, files, mutation, or proof.
 
 If stale context appears to target V1, stop with:
 
