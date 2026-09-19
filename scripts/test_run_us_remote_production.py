@@ -29,7 +29,6 @@ from lifeos.newsletter.models import SourceVacancyObservation
 
 from lifeos.jobs import us_remote_runtime as runtime
 from scripts import run_us_remote_production as entry
-from scripts.run_newsletter_production import _GOOGLE_TOKEN_URL
 
 PRIVATE_POLICY = {
     "market": "Synthetic-US",
@@ -235,7 +234,7 @@ class HistoricalInboxBackend:
 
     # -- HttpClient backend protocol -----------------------------------
     def request(self, method, url, *, headers, body, timeout_seconds) -> HttpResponse:
-        if url == _GOOGLE_TOKEN_URL:
+        if url == entry._GOOGLE_TOKEN_URL:
             return HttpResponse(200, {}, json.dumps({"access_token": "synthetic-access-token"}).encode())
         if "gmail.googleapis.com" in url:
             return self._gmail(method, url, body)
