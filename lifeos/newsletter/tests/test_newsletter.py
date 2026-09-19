@@ -113,15 +113,42 @@ Content-Type: text/html; charset=utf-8
         result=parse_message(msg("synthetic-li","LinkedIn jobs for you",body,sender="jobs@linkedin.example.invalid"))
         self.assertEqual(result.observations[0].provider_job_id,"123456789"); self.assertEqual(result.observations[0].source_apply_url,"https://www.linkedin.com/jobs/view/123456789/")
 
-        cases = (
-            ("description", "Lead cross-functional delivery for platform modernization.", "123456790", "Lead cross-functional delivery for platform modernization."),
-            ("no-description", "", "123456791", None),
+        # Real LinkedIn raw MIME carries a hidden preheader shaped like:
+        #   <span data-email-preheader="true">Company Role: description…</span>
+        # Description attaches only when the prefix exactly and uniquely matches one card.
+        ts = result.observations[0].source_received_at
+        C1 = "Product Manager\nSynthetic Systems\nUnited States (Remote)\nView job: https://www.linkedin.com/jobs/view/123456790/"
+        C2 = "Project Manager\nAcme Corp\nUnited States (Remote)\nView job: https://www.linkedin.com/jobs/view/123456791/"
+        C2b = "Product Manager\nSynthetic Systems\nChicago, IL\nView job: https://www.linkedin.com/jobs/view/123456792/"
+
+        def _li(preheader: str, *cards: str) -> MessageParseResult:
+            ph = f'<span data-email-preheader="true">{preheader}</span>\n' if preheader else ""
+            body = (
+                "From: jobs-noreply@linkedin.example.invalid\r\nSubject: LI\r\n"
+                "MIME-Version: 1.0\r\nContent-Type: text/html; charset=utf-8\r\n\r\n"
+                f"<html><body>{ph}" + "\n".join(cards)
+                + '\n<a href="https://www.linkedin.com/unsubscribe">Unsubscribe</a></body></html>\r\n'
+            )
+            return parse_message(RoutedNewsletterMessage("gmail", "li-ph", ts, "jobs-noreply@linkedin.example.invalid", "LI", body_text="", raw_mime=body))
+
+        # (name, preheader, cards, {job_id: expected_description})
+        ph_cases = (
+            ("preheader-matches-card-1", "Synthetic Systems Product Manager: Drives platform roadmap.", (C1, C2), {"123456790": "Drives platform roadmap.", "123456791": None}),
+            ("preheader-matches-card-2", "Acme Corp Project Manager: Leads cross-functional delivery.", (C1, C2), {"123456790": None, "123456791": "Leads cross-functional delivery."}),
+            ("unmatched-preheader",      "Globex Senior Director: Oversees all divisions.",             (C1, C2), {"123456790": None, "123456791": None}),
+            ("no-preheader",             "",                                                             (C1, C2), {"123456790": None, "123456791": None}),
+            ("ambiguous-preheader",      "Synthetic Systems Product Manager: Matches both.",            (C1, C2b), {"123456790": None, "123456792": None}),
         )
-        for name, description, job_id, expected in cases:
+        for name, preheader, cards, exp in ph_cases:
             with self.subTest(name=name):
-                body = "\n".join(filter(None, (description, "Senior Product Manager", "Synthetic Systems", "Remote - Synthetic Country", f"View job: https://www.linkedin.com/jobs/view/{job_id}/")))
-                parsed = parse_message(msg(f"synthetic-li-{name}", "LinkedIn jobs for you", body, sender="jobs@linkedin.example.invalid"))
-                self.assertEqual(parsed.observations[0].source_description_text, expected)
+                parsed = _li(preheader, *cards)
+                obs_map = {o.provider_job_id: o for o in parsed.observations}
+                self.assertTrue(obs_map, f"{name}: no observations parsed")
+                for jid, exp_desc in exp.items():
+                    if jid in obs_map:
+                        self.assertEqual(obs_map[jid].source_description_text, exp_desc, f"{name}: job {jid}")
+                self.assertIn("123456790", obs_map, f"{name}: card-1 missing")
+                self.assertEqual(obs_map["123456790"].source_apply_url, "https://www.linkedin.com/jobs/view/123456790/", f"{name}: url")
     def test_no_newsletter_source_ports_is_degraded(self):
         result=NewsletterProcessor().process_window([],self.start,self.end)
         self.assertEqual(result.state,NewsletterExecutionState.DEGRADED); self.assertFalse(result.cleanup_safe)
