@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from tests.testkit.boundaries import (
+    AdmissionFakeHttp,
     BacklogFakeHttp,
     DetailRetryFakeHttp,
     FakeHttp,
     GoogleErrorBackend,
+    SerialDetailFakeHttp,
 )
 
 from datetime import datetime, timezone
@@ -13,6 +15,9 @@ from urllib.parse import unquote
 from lifeos.integrations.mailbox import MailboxTransportError
 from lifeos.integrations.gmail import GmailMailboxTransport
 from lifeos.core.http import HttpClient
+import lifeos.integrations.gmail as gmail_module
+from lifeos.core.runtime import RunContext
+from lifeos.integrations.gmail import BACKLOG_MESSAGE_RUNTIME_RESERVE_SECONDS, BACKLOG_PER_MESSAGE_ADMISSION_SECONDS
 from lifeos.newsletter.processor import NewsletterExecutionState, NewsletterProcessor
 from tests.testkit.builders import gmail_mailbox
 
@@ -118,3 +123,21 @@ def test_unprocessed_queue_preserves_safe_google_error_reason() -> None:
     assert "message=User rate limit exceeded for <redacted>" in detail
     assert "synthetic-secret-token" not in detail
     assert "https://gmail.googleapis.com" not in detail
+
+def test_backlog_admission_is_oldest_first_and_safe_under_deadline(monkeypatch) -> None:
+    monkeypatch.setattr(gmail_module, "sleep", lambda _: None)
+    http = AdmissionFakeHttp(); values = iter((0.0, 0.0, 5.0, 6.0))
+    mailbox = GmailMailboxTransport(context=RunContext.start(timeout_seconds=30, monotonic_clock=lambda: next(values, 6.0)), http=http, access_token="synthetic-token", message_factory=lambda **kwargs: kwargs, max_workers=8)
+    messages = mailbox.fetch_unprocessed(datetime(2026,9,15,tzinfo=timezone.utc), datetime(2026,9,16,tzinfo=timezone.utc), "J Newsletters")
+    assert [m.message_id for m in messages] == ["A", "B"] and http.detail_ids == ["A", "B"]
+    assert mailbox.enumerate_unprocessed_ids("J Newsletters") == ("A", "B", "C", "D", "E")
+    threshold = BACKLOG_MESSAGE_RUNTIME_RESERVE_SECONDS + BACKLOG_PER_MESSAGE_ADMISSION_SECONDS
+    clock = iter((0.0, 30.0-threshold))
+    empty = GmailMailboxTransport(context=RunContext.start(timeout_seconds=30, monotonic_clock=lambda: next(clock, 30.0-threshold)), http=http, access_token="synthetic-token", message_factory=lambda **kwargs: kwargs)
+    assert empty.fetch_unprocessed(datetime(2026,9,15,tzinfo=timezone.utc), datetime(2026,9,16,tzinfo=timezone.utc), "J Newsletters") == ()
+
+def test_backlog_detail_hydration_is_serial(monkeypatch) -> None:
+    monkeypatch.setattr(gmail_module, "sleep", lambda _: None)
+    http = SerialDetailFakeHttp(); mailbox = GmailMailboxTransport(context=RunContext.start(timeout_seconds=45), http=http, access_token="synthetic-token", message_factory=lambda **kwargs: kwargs, max_workers=8)
+    messages = mailbox.fetch_unprocessed(datetime(2026,9,15,tzinfo=timezone.utc), datetime(2026,9,16,tzinfo=timezone.utc), "J Newsletters")
+    assert [m.message_id for m in messages] == ["A","B","C","D","E"] and http.max_active == 1

@@ -1,5 +1,7 @@
 import base64
 import json
+import threading
+import time
 from urllib.parse import unquote
 from lifeos.core.http import HttpResponse
 
@@ -49,3 +51,25 @@ class GoogleErrorBackend:
         if method == "GET" and "/messages?" in url: return HttpResponse(200,{},json.dumps({"messages":[{"id":"msg-stuck"}]}).encode())
         if method == "GET" and "/messages/msg-stuck?format=full" in url: return HttpResponse(403,{},json.dumps({"error":{"code":403,"message":"User rate limit exceeded for https://gmail.googleapis.com Authorization: Bearer synthetic-secret-token","errors":[{"domain":"usageLimits","reason":"rateLimitExceeded","message":"User rate limit exceeded"}],"status":"PERMISSION_DENIED"}}).encode())
         raise AssertionError((method,url))
+
+class AdmissionFakeHttp:
+    def __init__(self): self.detail_ids=[]; self.processed=set()
+    def request_json(self, context, method, url, **kwargs):
+        if method == "GET" and url.endswith("/labels"): return {"labels":[{"id":"label-news","name":"J Newsletters"},{"id":"label-processed","name":"J Newsletters/Processed"}]}
+        if method == "GET" and "/messages?" in url:
+            remaining=[x for x in ("E","D","C","B","A") if x not in self.processed]; return {"messages":[{"id":x} for x in remaining]}
+        if method == "GET" and "?format=full" in url:
+            mid=url.split("/messages/",1)[1].split("?",1)[0]; self.detail_ids.append(mid); data=base64.urlsafe_b64encode(f"body {mid}".encode()).decode().rstrip("=")
+            return {"id":mid,"internalDate":"1700000000000","payload":{"mimeType":"text/plain","headers":[{"name":"From","value":"alerts@example.invalid"},{"name":"Subject","value":mid}],"body":{"data":data}}}
+        if method == "POST" and url.endswith("/modify"):
+            mid=url.split("/messages/",1)[1].split("/modify",1)[0]; self.processed.add(mid); return {"id":mid}
+        raise AssertionError((method,url,kwargs))
+
+class SerialDetailFakeHttp(AdmissionFakeHttp):
+    def __init__(self): super().__init__(); self.active=0; self.max_active=0; self.gaps=[]
+    def request_json(self, context, method, url, **kwargs):
+        if method == "GET" and "?format=full" in url:
+            self.active += 1; self.max_active=max(self.max_active,self.active); started=time.monotonic()
+            try: return super().request_json(context,method,url,**kwargs)
+            finally: self.active -= 1; self.gaps.append(time.monotonic()-started)
+        return super().request_json(context,method,url,**kwargs)
