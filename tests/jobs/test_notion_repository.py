@@ -547,7 +547,8 @@ def test_package_c_missing_then_stronger_evidence_fills_canonical_row():
         run_date=RUN_DATE + timedelta(days=1),
     )
     assert second[0].disposition == Disposition.CREATED
-    record = _fresh_record(http, key)
+    assert second[0].stable_job_key == "url:https://greenhouse.io/acme/jobs/123"
+    record = _fresh_record(http, second[0].stable_job_key)
     assert record.job.job.apply_url == "https://greenhouse.io/acme/jobs/123"
     assert record.job.job.posting_date == date(2026, 1, 10)
     assert record.job.fit == 86
