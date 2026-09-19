@@ -12,7 +12,9 @@ Stages may be combined when they add no value. A feature must not create an orch
 
 ## Runtime model
 
-- ChatGPT remains the recurring scheduler/orchestrator unless explicitly changed.
+- `LIFE OS Daily Runs` remains the sole recurring scheduler under `jimmarkunas/life-os-automation/docs/life-os-production-contract.md`.
+- ChatGPT owns scheduling, judgment, decomposition, review, approval-aware orchestration, and acceptance; it does not become the deterministic production runtime, recovery engine, classifier, or lane-by-lane execution loop.
+- Standard free public GitHub-hosted Actions may execute approved bounded v2 production code from protected `main`; Actions do not schedule production or own canonical state.
 - A scheduled feature request starts one bounded runtime execution.
 - One execution owns the feature transaction from source read through canonical write/read-back.
 - No feature may depend on a chain of GitHub jobs for internal state transitions.

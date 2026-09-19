@@ -45,31 +45,23 @@ Payment card data and sensitive authentication data are prohibited from this rep
 
 No implementation diary or duplicate roadmap is created.
 
-## D-009 — Parallel delivery with strict ownership
+## D-009 — Parallel delivery with strict ownership — HISTORICAL
 
-v2 development uses parallel workstreams with non-overlapping mutation surfaces.
+This decision recorded the initial v2 build-phase ownership model and is retained for provenance only. Named-agent assignments are superseded by D-013. The durable invariant that survives is: **one implementation owner per package; review is consolidated; no parallel implementations of the same behavior.**
 
-- Tech Lead 1 owns architecture, integration, merge/cutover decisions, and production-boundary acceptance.
-- Tech Lead 2 is the independent reviewer/second pair of eyes and does not implement by default.
-- Product Manager owns requirements decomposition and UAT.
-- Agent 1 owns shared platform core/integrations.
-- Agent 2 owns Mail Intelligence and Newsletter.
-- Claude Code owns heavy multi-file Career/Jobs implementation and sanitized logic harvest.
-- Codex owns public-repo security, CI, synthetic-data protection, and performance/security harnesses.
-
-One implementation owner exists per package. Review is consolidated rather than creating reviewer chains, duplicate agents, or parallel implementations of the same behavior.
+Historical build-phase assignments included Tech Lead 1, Tech Lead 2, Product Manager, Agent 1, Agent 2, Claude Code, and Codex. Those role-to-agent bindings are no longer architecture and must not be used to create unnecessary agent choreography.
 
 ## D-010 — Newsletter Wave 1 integration contracts
 
 The minimum cross-owner contracts for the Newsletter vertical slice are fixed before implementation diverges.
 
 - **Canonical Jobs package:** shared vacancy identity, normalization, qualification, lifecycle, final employer/ATS URL resolution, Posting Date interpretation, Job Ledger persistence, and read-back live under `lifeos/jobs/**`. Earlier `lifeos/career/**` path references are naming residue, not a second domain or package.
-- **Platform Core → all domains:** Agent 1 provides only reusable execution mechanics: `RunContext`/deadline budget, bounded HTTP/retry behavior, validated runtime config, redaction, and a standard execution status/result shape. Core does not sequence Newsletter stages or own Jobs policy.
-- **Mail/Newsletter → Jobs:** Agent 2 owns whole-mailbox acquisition, message classification/routing, routed-newsletter parsing, and source-specific extraction. It emits in-memory vacancy observations into the Jobs-owned request contract. It does not compute Stable Job Keys, own shared final-vacancy resolution, qualify lifecycle, or write the Job Ledger.
-- **Jobs → Mail/Newsletter:** Claude Code owns normalization, Stable Job Key generation, cross-source dedupe, shared employer/ATS and Posting Date resolution, qualification/lifecycle, idempotent Job Ledger persistence, and authoritative read-back. The Jobs result must account for every input observation with exactly one terminal disposition: `created`, `updated`, `duplicate`, `excluded`, or `REVIEW-DEGRADED`.
+- **Platform Core → all domains:** shared infrastructure provides only reusable execution mechanics: `RunContext`/deadline budget, bounded HTTP/retry behavior, validated runtime config, redaction, and a standard execution status/result shape. Core does not sequence Newsletter stages or own Jobs policy.
+- **Mail/Newsletter → Jobs:** Mail/Newsletter owns whole-mailbox acquisition, message classification/routing, routed-newsletter parsing, and source-specific extraction. It emits in-memory vacancy observations into the Jobs-owned request contract. It does not compute Stable Job Keys, own shared final-vacancy resolution, qualify lifecycle, or write the Job Ledger.
+- **Jobs → Mail/Newsletter:** Jobs owns normalization, Stable Job Key generation, cross-source dedupe, shared employer/ATS and Posting Date resolution, qualification/lifecycle, idempotent Job Ledger persistence, and authoritative read-back. The Jobs result must account for every input observation with exactly one terminal disposition: `created`, `updated`, `duplicate`, `excluded`, or `REVIEW-DEGRADED`.
 - **One vacancy invariant:** multiple source observations may resolve to one Stable Job Key. The Jobs Engine performs at most one canonical mutation per Stable Job Key for a reconciliation batch and merges provenance rather than creating source-specific canonical vacancies.
 - **Cleanup gate:** Mail/Newsletter may mark/archive/checkpoint a source message only after the Jobs result proves complete accounting for that source and proves authoritative read-back for every canonical mutation or existing canonical record required by the reconciliation. The Jobs contract exposes a single cleanup-safe/reconciled signal; Mail/Newsletter does not recreate persistence verification itself.
-- **Security/CI boundary:** Codex owns synthetic-fixture enforcement, leak/secret checks, PR-safe CI, and shared security/performance harnesses. Those harnesses may validate public contracts and budgets but must not contain domain business logic or production/private identifiers.
+- **Security/CI boundary:** shared security/performance harnesses may validate public contracts and budgets but must not contain domain business logic or production/private identifiers.
 
 No trigger file, handoff manifest, event bus, workflow engine, secondary persistence layer, or recovery subsystem is introduced to connect these contracts.
 
@@ -91,3 +83,16 @@ Jim explicitly approved standard GitHub-hosted Actions in the public `life-os-v2
 - One requested feature/run maps to one bounded job. Do not split domain stages into workflow chains or rebuild v1 trigger/recovery architecture.
 - Runtime retains the 45-second normal benchmark and five-minute absolute application limit; timeout/failure is DEGRADED.
 - A minimal transport event may wake the executor, but that event is not a datastore, scheduler, workflow engine, or canonical state. Runtime truth comes from source mutation plus authoritative read-back.
+
+## D-013 — One implementer; agents are execution resources, not architecture
+
+Named AI products or agent labels are not durable architecture ownership.
+
+- One coherent mutation has one implementation owner by default.
+- Tech Lead / ChatGPT compiles architecture, exact mutation surface, and proof before delegating when possible.
+- Claude, Codex, or another coding executor may implement the bounded handoff; the tool choice is operational, not architectural.
+- Do not run parallel rediscovery or parallel implementations of the same surface.
+- Add a second reviewer only for a distinct safety reason, not because another agent exists.
+- Current ownership/concurrency belongs only in Notion `Development Projects`; it does not belong in this decision log.
+
+This decision supersedes the named-agent assignment portion of D-009 while preserving D-009's one-owner/no-parallel-implementation invariant.
