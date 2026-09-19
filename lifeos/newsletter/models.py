@@ -44,6 +44,8 @@ class SourceVacancyObservation:
     source_apply_url: str | None
     provider_job_id: str | None = None
     provider_score: int | None = None
+    source_description_text: str | None = None
+    """Meaningful source vacancy text; not canonical employer/ATS JD truth."""
     issues: tuple[str, ...] = ()
     source_received_at: datetime | None = None
 

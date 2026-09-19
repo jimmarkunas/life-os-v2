@@ -41,6 +41,12 @@ class FitAuthority(str, Enum):
     NON_AUTHORITATIVE = "non_authoritative"
 
 
+class FitEvidenceKind(str, Enum):
+    NONE = "none"
+    SOURCE_DESCRIPTION = "source_description"
+    EMPLOYER_ATS_JD = "employer_ats_jd"
+
+
 @dataclass(frozen=True)
 class Company:
     """A hiring organization. Identity is the normalized display name until a
@@ -111,6 +117,8 @@ class NormalizedCandidate:
     """Whether this candidate's LIFE OS Fit came from authoritative Jobs
     evidence. Provider percentages and weak source snippets are never
     authoritative."""
+    fit_evidence_kind: FitEvidenceKind = FitEvidenceKind.NONE
+    """Evidence class used to produce Fit, without changing authority."""
     source_types: tuple[str, ...] = field(default_factory=tuple)
     """Acquisition provenance labels observed for this candidate, such as
     provider name and mailbox alert type. These are not source-lane names."""
