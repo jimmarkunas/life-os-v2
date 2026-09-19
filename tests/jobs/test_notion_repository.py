@@ -234,6 +234,22 @@ def test_get_many_issues_exactly_one_query_call_never_a_full_scan():
     assert queried_values == {"k2", "k4"}
 
 
+def test_63_vacancies_are_chunked_at_the_notion_query_boundary():
+    repo, http = _repository()
+    keys = []
+    for i in range(63):
+        key = f"k{i}"
+        keys.append(key)
+        job = Job(stable_job_key=key, job=_job(), admission_status=AdmissionStatus.ADMITTED)
+        repo.upsert(new_record(job, run_date=RUN_DATE))
+
+    http.query_calls.clear()
+    found = repo.get_many(keys)
+
+    assert len(found) == 63
+    assert len(http.query_calls) == 2
+
+
 def test_get_by_apply_urls_uses_bounded_url_property_query():
     repo, http = _repository()
     job = Job(

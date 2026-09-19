@@ -133,6 +133,35 @@ def test_multi_hop_intermediary_chain_bounded_and_resolves():
     assert len(fetcher.calls) == 2
 
 
+def test_unknown_host_job_looking_urls_converge_via_verified_redirect():
+    class TrackingRedirectFetcher:
+        def __init__(self):
+            self.calls: list[str] = []
+
+        def get(self, url: str) -> FetchResponse:
+            self.calls.append(url)
+            return FetchResponse(final_url="https://greenhouse.io/acme/jobs/99", body=JOBPOSTING_HTML)
+
+    fetcher = TrackingRedirectFetcher()
+    first = resolve_final_vacancy_url("https://track.example/apply?id=aaa", fetcher=fetcher)
+    second = resolve_final_vacancy_url("https://track.example/apply?id=bbb", fetcher=fetcher)
+
+    assert first.final_url == "https://greenhouse.io/acme/jobs/99"
+    assert second.final_url == first.final_url
+    assert "https://track.example/apply?id=aaa" in fetcher.calls
+    assert "https://track.example/apply?id=bbb" in fetcher.calls
+
+
+def test_unknown_host_job_looking_url_fails_closed_without_verified_redirect():
+    class SameHostFetcher:
+        def get(self, url: str) -> FetchResponse:
+            return FetchResponse(final_url=url, body="<html></html>")
+
+    result = resolve_final_vacancy_url("https://track.example/apply?id=aaa", fetcher=SameHostFetcher())
+
+    assert result.final_url is None
+
+
 def test_loop_detection_fails_closed():
     fetcher = FakeFetcher({
         "https://linkedin.com/jobs/view/1": FetchResponse(final_url="https://linkedin.com/jobs/view/1", body='<a href="https://lensa.com/job/2">next</a>'),
