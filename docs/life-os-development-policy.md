@@ -16,9 +16,17 @@ All current product development, bug fixes, refactors, tests, runtime implementa
 
 `jimmarkunas/life-os-automation` is V1/reference-only implementation code. It may be consulted only for explicit V1→V2 reuse/comparison, for still-canonical governance/runtime documents physically housed there, or for bounded V1 governance/legacy maintenance explicitly requested by Jim. Historical V1 code, old handoffs, or search results are never sufficient reason to move implementation back to V1.
 
-Every implementation handoff must begin:
+## Standard implementation header — mandatory
 
-`Repository: jimmarkunas/life-os-v2`
+Every PM/TL/Codex/Claude implementation prompt and compiled handoff must begin literally with:
+
+```text
+Repository: jimmarkunas/life-os-v2
+Base: fresh origin/main
+V1 use: prohibited unless this handoff explicitly names a V1 asset for reference/reuse
+```
+
+This header is mandatory and comes before outcome, scope, files, mutation, proof, or stop conditions. Do not paraphrase or omit it.
 
 If stale context appears to target V1, stop with:
 
@@ -51,9 +59,9 @@ Do not use `life-os-automation` implementation as a second active codebase. It m
 
 ## Compiled implementation handoffs
 
-For pre-scoped Codex/Claude work, the Tech Lead compiles the context first. Default handoff:
+For pre-scoped PM/TL/Codex/Claude work, the handoff starts with the mandatory three-line header above. After that, use:
 
-`Repository: jimmarkunas/life-os-v2 → exact base → exact files/symbols → exact mutation → exact proof → stop`
+`exact outcome → exact files/symbols → exact mutation → exact proof → stop`
 
 Implementers edit and prove; they do not rediscover LIFE OS architecture. One implementer owns one mutation by default.
 
