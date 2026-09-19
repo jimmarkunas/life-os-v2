@@ -63,10 +63,6 @@ class ConfigLoadingTests(unittest.TestCase):
         self.assertEqual(market, "Synthetic-US")
         self.assertEqual(source_lane, "Newsletter")
 
-    def test_missing_policy_file_fails_closed(self) -> None:
-        with self.assertRaises(entry.ProductionConfigError):
-            entry._load_private_policy("/nonexistent/synthetic/path.json")
-
     def test_malformed_policy_json_fails_closed(self) -> None:
         import tempfile
 

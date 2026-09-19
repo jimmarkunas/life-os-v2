@@ -19,16 +19,13 @@ from lifeos.core.config import ConfigField, ConfigurationError, RuntimeConfig
 from lifeos.core.http import HttpClient, HttpError, RetryPolicy
 from lifeos.core.runtime import DeadlineExceeded, RunContext
 from lifeos.integrations.gmail import GmailMailboxTransport
-from lifeos.integrations.notion import NotionTransport, NotionTransportError
+from lifeos.integrations.notion import NotionIdentityQuery, NotionTransport, NotionTransportError
+from lifeos.jobs.fit_scoring import FitProfile, PenaltyRule, RoleFamily, ScopeCategory
 from lifeos.jobs.newsletter_runtime import execute_newsletter
+from lifeos.jobs.qualification import LaneConfig
 from lifeos.jobs.us_remote_acquisition import USRemoteAcquirer
 from lifeos.jobs.us_remote_runtime import browser_evidence, execute_us_remote, load_registry
 from lifeos.mail.models import MailMessage
-
-from scripts.run_newsletter_production import (
-    _load_private_policy,
-    _load_private_policy_from_notion,
-)
 
 DEFAULT_TIMEOUT_SECONDS = 45.0
 MAX_TIMEOUT_SECONDS = 300.0
@@ -43,6 +40,7 @@ _RUNTIME_FIELDS = tuple(ConfigField(name) for name in (
     "NOTION_API_TOKEN",
     "NOTION_JOB_LEDGER_DATA_SOURCE_ID",
 ))
+ProductionConfigError = ConfigurationError
 
 
 def _require_env() -> dict[str, str]:
@@ -51,7 +49,8 @@ def _require_env() -> dict[str, str]:
 
 
 _GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
-
+_NOTION_SEARCH_URL, _NOTION_VERSION = "https://api.notion.com/v1/search", "2026-03-11"
+_POLICY_DATABASE_TITLE, _POLICY_LANE, _POLICY_FILE_PROPERTY = "Job Lane Configuration", "US Remote", "Private Policy File"
 
 def _exchange_gmail_access_token(context: RunContext, http: HttpClient, *, client_id: str, client_secret: str, refresh_token: str) -> str:
     body = urlencode({"client_id": client_id, "client_secret": client_secret, "refresh_token": refresh_token, "grant_type": "refresh_token"}).encode("utf-8")
@@ -63,6 +62,49 @@ def _exchange_gmail_access_token(context: RunContext, http: HttpClient, *, clien
     if not isinstance(payload, dict) or not payload.get("access_token"):
         raise ConfigurationError("Gmail token refresh did not return an access token")
     return str(payload["access_token"])
+
+
+def _parse_private_policy(raw: dict) -> tuple[LaneConfig, dict[str, int], FitProfile, str, str]:
+    try:
+        lane_raw = raw["lane"]
+        lane = LaneConfig(name=lane_raw["name"], market=lane_raw["market"], fit_floor=lane_raw["fit_floor"], target_review_floor=lane_raw.get("target_review_floor"), work_mode_policy=lane_raw["work_mode_policy"], compensation_floor=lane_raw.get("compensation_floor"), freshness_gate=lane_raw["freshness_gate"], freshness_max_days=lane_raw.get("freshness_max_days"), is_target_bucket=lane_raw.get("is_target_bucket", False))
+        lane_priority = {str(k): int(v) for k, v in raw["lane_priority"].items()}
+        fit_raw = raw["fit_profile"]
+        fit_profile = FitProfile(model_version=fit_raw["model_version"], role_families=tuple(RoleFamily(patterns=tuple(rf["patterns"]), base_score=rf["base_score"], label=rf["label"]) for rf in fit_raw.get("role_families", [])), default_role_base=fit_raw["default_role_base"], default_role_label=fit_raw["default_role_label"], scope_categories=tuple(ScopeCategory(name=sc["name"], term_groups=tuple((tuple(group[0]), group[1], group[2]) for group in sc["term_groups"]), cap=sc["cap"]) for sc in fit_raw.get("scope_categories", [])), penalties=tuple(PenaltyRule(terms=tuple(p["terms"]), penalty=p["penalty"], reason=p["reason"], min_hits=p.get("min_hits", 1)) for p in fit_raw.get("penalties", [])))
+        return lane, lane_priority, fit_profile, str(raw["market"]), str(raw["source_lane"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ConfigurationError(f"private policy is invalid: {type(exc).__name__}") from exc
+
+def _load_private_policy(path: str) -> tuple[LaneConfig, dict[str, int], FitProfile, str, str]:
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            raw = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc: raise ConfigurationError(f"could not read private policy fixture: {type(exc).__name__}") from exc
+    if not isinstance(raw, dict): raise ConfigurationError("private policy fixture was not an object")
+    return _parse_private_policy(raw)
+def _plain_title(item: dict) -> str:
+    return "".join(str(part.get("plain_text") or "") for part in (item.get("title") or []) if isinstance(part, dict)).strip()
+
+def _policy_file_url(page: dict) -> str:
+    files = (((page.get("properties") or {}).get(_POLICY_FILE_PROPERTY) or {}).get("files") or [])
+    if len(files) != 1 or not isinstance(files[0], dict): raise ConfigurationError("US Remote private policy file is missing or ambiguous")
+    entry = files[0]
+    payload = entry.get("file") if entry.get("type") == "file" else entry.get("external")
+    url = payload.get("url") if isinstance(payload, dict) else None
+    if not url: raise ConfigurationError("US Remote private policy file has no readable URL")
+    return str(url)
+
+
+def _load_private_policy_from_notion(context, http, notion, *, notion_token: str):
+    search = http.request_json(context, "POST", _NOTION_SEARCH_URL, headers={"Authorization": f"Bearer {notion_token}", "Notion-Version": _NOTION_VERSION, "Accept": "application/json", "Content-Type": "application/json"}, json_body={"query": _POLICY_DATABASE_TITLE, "filter": {"property": "object", "value": "data_source"}, "page_size": 20}, timeout_seconds=10.0, retry=RetryPolicy(max_attempts=2, backoff_seconds=0.1, max_backoff_seconds=1.0))
+    if not isinstance(search, dict): raise ConfigurationError("Notion configuration search returned an invalid response")
+    matches = [item for item in (search.get("results") or []) if isinstance(item, dict) and _plain_title(item) == _POLICY_DATABASE_TITLE and item.get("id")]
+    if len(matches) != 1: raise ConfigurationError("canonical Job Lane Configuration data source was not uniquely resolvable")
+    rows = notion.query_data_source(str(matches[0]["id"]), NotionIdentityQuery(property_name="Lane", property_type="title", values=(_POLICY_LANE,)), page_size=10)
+    if len(rows) != 1: raise ConfigurationError("canonical US Remote lane was not uniquely resolvable")
+    raw = http.request_json(context, "GET", _policy_file_url(rows[0]), timeout_seconds=10.0, retry=RetryPolicy(max_attempts=2, backoff_seconds=0.1, max_backoff_seconds=1.0))
+    if not isinstance(raw, dict): raise ConfigurationError("canonical private policy was not a JSON object")
+    return _parse_private_policy(raw)
 
 
 def _args(argv: list[str]) -> argparse.Namespace:
