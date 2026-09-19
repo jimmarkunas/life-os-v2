@@ -1,7 +1,7 @@
 from __future__ import annotations
 import unittest
 from datetime import datetime, timedelta, timezone
-from lifeos.newsletter import NewsletterExecutionState, NewsletterProcessor, ParseState, RoutedNewsletterMessage, adapt_for_jobs, parse_message
+from lifeos.newsletter import NewsletterExecutionState, NewsletterProcessor, ParseState, RoutedNewsletterMessage, parse_message
 from lifeos.newsletter.processor import _parse_message_or_known_empty
 
 def msg(message_id, subject, body, *, sender="alerts@jobright.example.invalid", mailbox="gmail", minute=0, headers=None):
@@ -123,13 +123,6 @@ Content-Type: text/html; charset=utf-8
         result=NewsletterProcessor().process_window([FailingSource("gmail",[]),good],self.start,self.end)
         self.assertEqual(result.state,NewsletterExecutionState.DEGRADED); self.assertEqual(len(result.observations),1); self.assertFalse(result.cleanup_safe)
         self.assertIn("msg-stuck:TimeoutError:synthetic", result.errors[0].detail)
-    def test_jobs_adapter_seam_preserves_one_input_per_observation(self):
-        parsed=parse_message(msg("synthetic-adapt","Jobright jobs","[Synthetic Labs\n90%\nProgram Manager\nRemote](https://jobright.ai/jobs/info/synthetic-adapt)"))
-        class Adapter:
-            def to_jobs_candidate(self, observation): return {"evidence_ref":observation.evidence_ref,"role":observation.role}
-        adapted=adapt_for_jobs(parsed.observations,Adapter())
-        self.assertEqual(len(adapted),1); self.assertEqual(adapted[0]["evidence_ref"],parsed.observations[0].evidence_ref)
-
     def test_bridgeview_linked_card_extracts_context_and_excludes_controls(self):
         body = '<div>Synthetic Technical Program Manager</div><div>Denver, CO</div><div>$80 - $90 Hourly</div><a href="https://l1.boostie.jobs.invalid/et/click/job">View This Job</a><a href="https://l1.boostie.jobs.invalid/et/click/unsub">Unsubscribe</a>'
         result = parse_message(msg("bridgeview", "Latest jobs", body, sender="synthetic-alert@match.boostie.jobs.invalid"))

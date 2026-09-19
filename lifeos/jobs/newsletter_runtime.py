@@ -15,7 +15,7 @@ from lifeos.integrations.notion import NotionTransport
 from lifeos.jobs.fit_scoring import FitProfile
 from lifeos.jobs.newsletter_adapter import HttpClientFetcher, NewsletterAdapterConfig, NewsletterJobsAdapter
 from lifeos.jobs.newsletter_contract import Disposition, IngestResult, ingest
-from lifeos.jobs.newsletter_feature import _adapt_all
+from lifeos.jobs.newsletter_adapter import _adapt_all
 from lifeos.jobs.notion_repository import NotionCareerRepository, NotionCareerRepositoryConfig
 from lifeos.jobs.qualification import LaneConfig
 from lifeos.jobs.terminal_evidence import fallback_fetcher
