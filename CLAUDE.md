@@ -8,11 +8,17 @@ All current product development, bug fixes, refactors, tests, runtime implementa
 
 `jimmarkunas/life-os-automation` is V1/reference-only implementation code. Consult it only when a current V2 task explicitly needs a proven old behavior/asset for reuse, when a still-canonical governance/runtime document physically housed there must be read, or when Jim explicitly requests bounded V1 governance/legacy maintenance. Never switch implementation into V1 because an old handoff, search result, or historical file points there.
 
-Every implementation handoff must begin:
+## Standard implementation header — mandatory
 
-`Repository: jimmarkunas/life-os-v2`
+Every PM/TL/Codex/Claude implementation prompt and compiled handoff must begin literally with:
 
-If stale context appears to direct ordinary implementation into V1, stop with:
+```text
+Repository: jimmarkunas/life-os-v2
+Base: fresh origin/main
+V1 use: prohibited unless this handoff explicitly names a V1 asset for reference/reuse
+```
+
+Do not paraphrase or omit this header. If stale context appears to direct ordinary implementation into V1, stop with:
 
 `WRONG_REPOSITORY_STOP — active LIFE OS development belongs in jimmarkunas/life-os-v2`
 
@@ -38,7 +44,7 @@ This file is a thin execution guide. It does not duplicate or override LIFE OS g
 - Default production mutation surface: **≤3 files**; default test surface: **≤2 files**.
 - Claude/Codex: **≤2%** of the active five-hour allowance per run when telemetry exists; target stop 1.8%.
 - One implementer per mutation. No duplicate Claude/Codex rediscovery.
-- Tech Lead handoff should be approximately: `exact repo/base → exact files/symbols → mutation → proof → stop`.
+- Tech Lead handoff should be approximately: `standard implementation header → exact files/symbols → mutation → proof → stop`.
 - No repository-wide archaeology, open-ended debugging, or speculative cleanup.
 - One failure boundary gets one bounded retry. Then stop with the exact blocker.
 
