@@ -1,186 +1,20 @@
 from __future__ import annotations
 
-import base64
-import json
+from tests.testkit.boundaries import (
+    BacklogFakeHttp,
+    DetailRetryFakeHttp,
+    FakeHttp,
+    GoogleErrorBackend,
+)
+
 from datetime import datetime, timezone
 from urllib.parse import unquote
 
-from lifeos.core.http import HttpClient, HttpResponse
-from lifeos.core.runtime import RunContext
-from lifeos.integrations.gmail import GmailMailboxTransport
 from lifeos.integrations.mailbox import MailboxTransportError
+from lifeos.integrations.gmail import GmailMailboxTransport
+from lifeos.core.http import HttpClient
 from lifeos.newsletter.processor import NewsletterExecutionState, NewsletterProcessor
 from tests.testkit.builders import gmail_mailbox
-
-
-class FakeHttp:
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, str, dict]] = []
-        self.created_processed = False
-
-    def request_json(self, context, method, url, **kwargs):
-        self.calls.append((method, url, kwargs))
-        if method == "GET" and url.endswith("/labels"):
-            labels = [{"id": "label-news", "name": "J Newsletters"}]
-            if self.created_processed:
-                labels.append({"id": "label-processed", "name": "J Newsletters/Processed"})
-            return {"labels": labels}
-        if method == "POST" and url.endswith("/labels"):
-            assert kwargs["json_body"]["name"] == "J Newsletters/Processed"
-            self.created_processed = True
-            return {"id": "label-processed", "name": "J Newsletters/Processed"}
-        if method == "GET" and "/messages?" in url:
-            decoded = unquote(url)
-            assert "labelIds=label-news" in decoded
-            if self.created_processed:
-                assert '-label:"J+Newsletters/Processed"' in decoded or '-label:"J Newsletters/Processed"' in decoded
-            return {"messages": [{"id": "msg-1"}]}
-        if method == "GET" and "/messages/msg-1?format=full" in url:
-            body = base64.urlsafe_b64encode(b"synthetic job alert").decode("ascii").rstrip("=")
-            return {
-                "id": "msg-1",
-                "internalDate": "1789574400000",
-                "payload": {
-                    "mimeType": "text/plain",
-                    "headers": [
-                        {"name": "From", "value": "alerts@example.invalid"},
-                        {"name": "Subject", "value": "Synthetic"},
-                    ],
-                    "body": {"data": body},
-                },
-            }
-        if method == "POST" and url.endswith("/messages/msg-1/modify"):
-            return {"id": "msg-1"}
-        raise AssertionError((method, url, kwargs))
-
-
-class BacklogFakeHttp(FakeHttp):
-    def request_json(self, context, method, url, **kwargs):
-        self.calls.append((method, url, kwargs))
-        if method == "GET" and url.endswith("/labels"):
-            return {
-                "labels": [
-                    {"id": "label-news", "name": "J Newsletters"},
-                    {"id": "label-processed", "name": "J Newsletters/Processed"},
-                ]
-            }
-        if method == "GET" and "/messages?" in url:
-            decoded = unquote(url)
-            assert "labelIds=label-news" in decoded
-            assert "after:" not in decoded
-            assert "before:" not in decoded
-            if '-label:"J+Newsletters/Processed"' in decoded or '-label:"J Newsletters/Processed"' in decoded:
-                if "pageToken=page-2" in decoded:
-                    return {"messages": [{"id": "msg-new"}]}
-                return {"messages": [{"id": "msg-old"}, {"id": "msg-recent"}], "nextPageToken": "page-2"}
-            return {
-                "messages": [
-                    {"id": "msg-old"},
-                    {"id": "msg-recent"},
-                    {"id": "msg-new"},
-                    {"id": "msg-processed"},
-                ]
-            }
-        for message_id, internal_date in {
-            "msg-old": "1609459200000",
-            "msg-recent": "1789488000000",
-            "msg-new": "1789574400000",
-            "msg-processed": "1789574400000",
-        }.items():
-            if method == "GET" and f"/messages/{message_id}?format=full" in url:
-                body = (
-                    "[Synthetic Labs\n90%\nProgram Manager\nRemote]"
-                    f"(https://jobright.ai/jobs/info/{message_id})\n"
-                    "View More Opportunities"
-                )
-                encoded = base64.urlsafe_b64encode(body.encode("utf-8")).decode("ascii").rstrip("=")
-                return {
-                    "id": message_id,
-                    "internalDate": internal_date,
-                    "payload": {
-                        "mimeType": "text/plain",
-                        "headers": [
-                            {"name": "From", "value": "alerts@jobright.example.invalid"},
-                            {"name": "Subject", "value": "Jobright jobs"},
-                        ],
-                        "body": {"data": encoded},
-                    },
-                }
-        raise AssertionError((method, url, kwargs))
-
-
-class DetailRetryFakeHttp(FakeHttp):
-    def __init__(self, *, fail_message_id: str, permanent: bool = False) -> None:
-        super().__init__()
-        self.fail_message_id = fail_message_id
-        self.permanent = permanent
-        self.detail_attempts: dict[str, int] = {}
-
-    def request_json(self, context, method, url, **kwargs):
-        if method == "GET" and "/messages?" in url:
-            return {"messages": [{"id": "msg-ok"}, {"id": self.fail_message_id}]}
-        for message_id in ("msg-ok", self.fail_message_id):
-            if method == "GET" and f"/messages/{message_id}?format=full" in url:
-                self.detail_attempts[message_id] = self.detail_attempts.get(message_id, 0) + 1
-                if message_id == self.fail_message_id and (self.permanent or self.detail_attempts[message_id] == 1):
-                    raise TimeoutError(f"synthetic detail timeout for {message_id}")
-                body = base64.urlsafe_b64encode(f"body {message_id}".encode("utf-8")).decode("ascii").rstrip("=")
-                return {
-                    "id": message_id,
-                    "internalDate": "1789574400000",
-                    "payload": {
-                        "mimeType": "text/plain",
-                        "headers": [
-                            {"name": "From", "value": "alerts@example.invalid"},
-                            {"name": "Subject", "value": f"Synthetic {message_id}"},
-                        ],
-                        "body": {"data": body},
-                    },
-                }
-        return super().request_json(context, method, url, **kwargs)
-
-
-class GoogleErrorBackend:
-    def request(self, method, url, *, headers, body, timeout_seconds):
-        if method == "GET" and url.endswith("/labels"):
-            return HttpResponse(
-                200,
-                {},
-                json.dumps(
-                    {
-                        "labels": [
-                            {"id": "label-news", "name": "J Newsletters"},
-                            {"id": "label-processed", "name": "J Newsletters/Processed"},
-                        ]
-                    }
-                ).encode("utf-8"),
-            )
-        if method == "GET" and "/messages?" in url:
-            return HttpResponse(200, {}, json.dumps({"messages": [{"id": "msg-stuck"}]}).encode("utf-8"))
-        if method == "GET" and "/messages/msg-stuck?format=full" in url:
-            return HttpResponse(
-                403,
-                {},
-                json.dumps(
-                    {
-                        "error": {
-                            "code": 403,
-                            "message": "User rate limit exceeded for https://gmail.googleapis.com Authorization: Bearer synthetic-secret-token",
-                            "errors": [
-                                {
-                                    "domain": "usageLimits",
-                                    "reason": "rateLimitExceeded",
-                                    "message": "User rate limit exceeded",
-                                }
-                            ],
-                            "status": "PERMISSION_DENIED",
-                        }
-                    }
-                ).encode("utf-8"),
-            )
-        raise AssertionError((method, url))
-
-from tests.testkit.boundaries import BacklogFakeHttp, DetailRetryFakeHttp, FakeHttp, GoogleErrorBackend
 
 
 def _mailbox(http: FakeHttp) -> GmailMailboxTransport:
