@@ -10,6 +10,7 @@ from lifeos.core.runtime import RunContext
 from lifeos.integrations.gmail import GmailMailboxTransport
 from lifeos.integrations.mailbox import MailboxTransportError
 from lifeos.newsletter.processor import NewsletterExecutionState, NewsletterProcessor
+from tests.testkit.builders import gmail_mailbox
 
 
 class FakeHttp:
@@ -181,21 +182,11 @@ class GoogleErrorBackend:
 
 
 def _mailbox(http: FakeHttp) -> GmailMailboxTransport:
-    return GmailMailboxTransport(
-        context=RunContext.start(timeout_seconds=45),
-        http=http,
-        access_token="synthetic-token",
-        message_factory=lambda **kwargs: kwargs,
-    )
+    return gmail_mailbox(http)
 
 
 def _mailbox_with_client(http: HttpClient) -> GmailMailboxTransport:
-    return GmailMailboxTransport(
-        context=RunContext.start(timeout_seconds=45),
-        http=http,
-        access_token="synthetic-token",
-        message_factory=lambda **kwargs: kwargs,
-    )
+    return gmail_mailbox(http)
 
 
 def test_staging_and_processed_state_are_distinct() -> None:
