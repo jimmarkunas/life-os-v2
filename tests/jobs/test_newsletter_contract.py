@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from lifeos.jobs.lifecycle import new_record
 from lifeos.jobs.models import AdmissionStatus, Job, WorkMode
 from lifeos.jobs.newsletter_contract import Disposition, ingest
 from lifeos.jobs.repository import InMemoryCareerRepository
-from tests.jobs.fixtures import REMOTE_LANE, RUN_DATE, make_candidate, make_job
+from tests.jobs.fixtures import ANY_MODE_LANE, REMOTE_LANE, RUN_DATE, make_candidate, make_job
 
 LANE_PRIORITY = {"Synthetic-Remote": 0}
 
@@ -48,10 +50,50 @@ def test_every_candidate_receives_exactly_one_disposition():
 
 
 def test_new_candidate_is_created():
-    candidates = [make_candidate(evidence_ref="ev:1")]
     repo = InMemoryCareerRepository()
-    results = ingest(candidates, lane=REMOTE_LANE, lane_priority=LANE_PRIORITY, repository=repo, run_date=RUN_DATE)
-    assert results[0].disposition == Disposition.CREATED
+    qualifying = ingest(
+        [make_candidate(fit=78, evidence_ref="ev:qualifying")],
+        lane=REMOTE_LANE,
+        lane_priority=LANE_PRIORITY,
+        repository=repo,
+        run_date=RUN_DATE,
+    )
+    below_floor = ingest(
+        [make_candidate(fit=77, job=make_job(apply_url="https://boards.example/below"), evidence_ref="ev:below")],
+        lane=REMOTE_LANE,
+        lane_priority=LANE_PRIORITY,
+        repository=repo,
+        run_date=RUN_DATE,
+    )
+    unresolved = ingest(
+        [make_candidate(fit=None, job=make_job(apply_url="https://boards.example/unresolved"), evidence_ref="ev:none")],
+        lane=REMOTE_LANE,
+        lane_priority=LANE_PRIORITY,
+        repository=repo,
+        run_date=RUN_DATE,
+    )
+    assert qualifying[0].disposition == Disposition.CREATED
+    assert below_floor[0].disposition == Disposition.EXCLUDED
+    assert unresolved[0].disposition == Disposition.REVIEW_DEGRADED
+
+    scale_lane = replace(ANY_MODE_LANE, fit_floor=68)
+    scale_priority = {"Synthetic-Any": 0}
+    scale_low = ingest(
+        [make_candidate(fit=67, market="Synthetic-Other", job=make_job(apply_url="https://boards.example/scale-low"), evidence_ref="ev:scale-low")],
+        lane=scale_lane,
+        lane_priority=scale_priority,
+        repository=repo,
+        run_date=RUN_DATE,
+    )
+    scale_floor = ingest(
+        [make_candidate(fit=68, market="Synthetic-Other", job=make_job(apply_url="https://boards.example/scale-floor"), evidence_ref="ev:scale-floor")],
+        lane=scale_lane,
+        lane_priority=scale_priority,
+        repository=repo,
+        run_date=RUN_DATE,
+    )
+    assert scale_low[0].disposition == Disposition.EXCLUDED
+    assert scale_floor[0].disposition == Disposition.CREATED
 
 
 def test_reingesting_same_candidate_is_updated_not_duplicated_across_runs():
@@ -216,7 +258,7 @@ def test_existing_fallback_identity_later_canonical_url_updates_same_job():
         apply_url=None,
     )
     first = ingest(
-        [make_candidate(job=fallback_job, fit=None, evidence_ref="ev:first")],
+        [make_candidate(job=fallback_job, fit=85, evidence_ref="ev:first")],
         lane=REMOTE_LANE,
         lane_priority=LANE_PRIORITY,
         repository=repo,
@@ -333,7 +375,7 @@ def test_no_existing_match_keeps_current_stable_job_key_priority():
         run_date=RUN_DATE,
     )
     fallback_result = ingest(
-        [make_candidate(job=make_job(apply_url=None, role="Technical Program Manager", location="Remote"), fit=None, evidence_ref="ev:fallback")],
+        [make_candidate(job=make_job(apply_url=None, role="Technical Program Manager", location="Remote"), fit=85, evidence_ref="ev:fallback")],
         lane=REMOTE_LANE,
         lane_priority=LANE_PRIORITY,
         repository=repo,

@@ -204,6 +204,26 @@ def ingest(
         existing = existing_records.get(key)
         try:
             if existing is None:
+                if reconciled_job.best_fit is None:
+                    for i in same_key_indices:
+                        candidate, _ = live_by_index[i]
+                        results[i] = IngestResult(
+                            candidate.evidence_ref,
+                            Disposition.REVIEW_DEGRADED,
+                            key,
+                            "new canonical Job requires a LIFE OS Fit score",
+                        )
+                    continue
+                if reconciled_job.best_fit < lane.fit_floor:
+                    for i in same_key_indices:
+                        candidate, _ = live_by_index[i]
+                        results[i] = IngestResult(
+                            candidate.evidence_ref,
+                            Disposition.EXCLUDED,
+                            key,
+                            f"Fit {reconciled_job.best_fit} is below configured {lane.fit_floor} floor",
+                        )
+                    continue
                 record = new_record(reconciled_job.job, run_date=run_date)
                 persisted = repository.upsert(record)
                 primary_disposition = Disposition.CREATED
