@@ -180,6 +180,8 @@ class GoogleErrorBackend:
             )
         raise AssertionError((method, url))
 
+from tests.testkit.boundaries import BacklogFakeHttp, DetailRetryFakeHttp, FakeHttp, GoogleErrorBackend
+
 
 def _mailbox(http: FakeHttp) -> GmailMailboxTransport:
     return gmail_mailbox(http)
