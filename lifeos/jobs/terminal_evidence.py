@@ -293,6 +293,7 @@ class ResolutionResult:
     final_url: str | None
     chain: tuple[str, ...]
     verified_body: str | None = None
+    provider_source_description: str | None = None
 
 
 def extract_job_posting_jsonld(html_text: str) -> dict[str, Any] | None:
@@ -331,6 +332,11 @@ def _extract_terminal_description(html_text: str) -> str | None:
             return text
     text = _html_to_text(html_text)
     return text if len(text) >= 20 else None
+
+
+def _extract_linkedin_source_description(html_text: str) -> str | None:
+    description = _extract_terminal_description(html_text)
+    return description if description and len(description) >= 20 else None
 
 
 def _extract_posting_date_raw(html_text: str) -> str | None:
@@ -424,7 +430,12 @@ def resolve_final_vacancy_url(url: str, *, fetcher: Fetcher) -> ResolutionResult
             return ResolutionResult(final_candidate, tuple(chain), response.body)
         next_hop = _find_next_intermediary_hop(response.body, response.final_url, visited)
         if not next_hop:
-            return ResolutionResult(None, tuple(chain))
+            provider_description = (
+                _extract_linkedin_source_description(response.body)
+                if _is_linkedin_url(current_url)
+                else None
+            )
+            return ResolutionResult(None, tuple(chain), provider_source_description=provider_description)
         if next_hop not in chain: chain.append(next_hop)
         current_url = next_hop
     return ResolutionResult(None, tuple(chain))
@@ -432,16 +443,26 @@ def resolve_final_vacancy_url(url: str, *, fetcher: Fetcher) -> ResolutionResult
 
 @dataclass(frozen=True)
 class TerminalVacancyEvidence:
-    canonical_url: str
+    canonical_url: str | None
     description_text: str
     posting_date_raw: str
     evidence_source: str
     resolution_chain: tuple[str, ...]
+    provider_source_description: str | None = None
 
 
 def _acquire_once(source_url: str, fetcher: Fetcher) -> TerminalVacancyEvidence | None:
     resolution = resolve_final_vacancy_url(source_url, fetcher=fetcher)
     if not resolution.final_url or is_provider_intermediary_source(resolution.final_url):
+        if resolution.provider_source_description:
+            return TerminalVacancyEvidence(
+                canonical_url=None,
+                description_text="",
+                posting_date_raw="",
+                evidence_source="linkedin_source",
+                resolution_chain=resolution.chain,
+                provider_source_description=resolution.provider_source_description,
+            )
         return None
     body = resolution.verified_body
     if body is None:
