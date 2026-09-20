@@ -327,6 +327,7 @@ class ResolutionResult:
     verified_body: str | None = None
     provider_source_description: str | None = None
     linkedin_dom_candidates: tuple[dict[str, Any], ...] = ()
+    linkedin_page_fingerprint: dict[str, Any] | None = None
 
 
 def extract_job_posting_jsonld(html_text: str) -> dict[str, Any] | None:
@@ -346,6 +347,14 @@ def extract_job_posting_jsonld(html_text: str) -> dict[str, Any] | None:
             if isinstance(item, dict) and item.get("@type") == "JobPosting":
                 return item
     return None
+
+
+def _linkedin_page_fingerprint(html_text: str) -> dict[str, Any]:
+    low = html_text.casefold()
+    title_match = re.search(r"<title[^>]*>(.*?)</title>", html_text, re.I | re.S)
+    title = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", title_match.group(1)))).strip()[:120] if title_match else None
+    markers = {key: term in low for key, term in (("sign_in", "sign in"), ("join_now", "join now"), ("authwall", "authwall"), ("checkpoint", "checkpoint"), ("challenge", "challenge"), ("captcha", "captcha"), ("security_verification", "security verification"), ("access_denied", "access denied"), ("page_not_found", "page not found"), ("job_no_longer_available", "job no longer available"), ("not_accepting_applications", "this job is no longer accepting applications"), ("about_the_job", "about the job"), ("jobs_description", "jobs-description"), ("job_details", "job-details"), ("jobposting", "jobposting"), ("easy_apply", "easy apply"), ("apply", "apply"))}
+    return {"body_length": len(html_text), "title": title, "markers": markers, "jsonld_count": len(_JSONLD_SCRIPT.findall(html_text)), "jobposting_jsonld": extract_job_posting_jsonld(html_text) is not None, "anchor_count": len(re.findall(r"<a\b", low)), "job_identifier_count": len(re.findall(r"<(?:[a-z0-9]+)\b[^>]*(?:id|class)\s*=\s*['\"][^'\"]*job[^'\"]*['\"]", low, re.I)), "description_identifier_count": len(re.findall(r"<(?:[a-z0-9]+)\b[^>]*(?:id|class)\s*=\s*['\"][^'\"]*description[^'\"]*['\"]", low, re.I))}
 
 
 def _html_to_text(html_text: str) -> str:
@@ -472,6 +481,7 @@ def resolve_final_vacancy_url(url: str, *, fetcher: Fetcher) -> ResolutionResult
             return ResolutionResult(
                 final_candidate, tuple(chain), response.body,
                 linkedin_dom_candidates=_linkedin_dom_candidates(response.body),
+                linkedin_page_fingerprint=_linkedin_page_fingerprint(response.body),
             )
         next_hop = _find_next_intermediary_hop(response.body, response.final_url, visited)
         if not next_hop:
@@ -485,6 +495,10 @@ def resolve_final_vacancy_url(url: str, *, fetcher: Fetcher) -> ResolutionResult
                 linkedin_dom_candidates=(
                     _linkedin_dom_candidates(response.body)
                     if _is_linkedin_url(current_url) else ()
+                ),
+                linkedin_page_fingerprint=(
+                    _linkedin_page_fingerprint(response.body)
+                    if _is_linkedin_url(current_url) else None
                 ),
             )
         if next_hop not in chain: chain.append(next_hop)
@@ -501,6 +515,7 @@ class TerminalVacancyEvidence:
     resolution_chain: tuple[str, ...]
     provider_source_description: str | None = None
     linkedin_dom_candidates: tuple[dict[str, Any], ...] = ()
+    linkedin_page_fingerprint: dict[str, Any] | None = None
 
 
 def _acquire_once(source_url: str, fetcher: Fetcher) -> TerminalVacancyEvidence | None:
@@ -515,6 +530,7 @@ def _acquire_once(source_url: str, fetcher: Fetcher) -> TerminalVacancyEvidence 
                 resolution_chain=resolution.chain,
                 provider_source_description=resolution.provider_source_description,
                 linkedin_dom_candidates=resolution.linkedin_dom_candidates,
+                linkedin_page_fingerprint=resolution.linkedin_page_fingerprint,
             )
         return None
     body = resolution.verified_body

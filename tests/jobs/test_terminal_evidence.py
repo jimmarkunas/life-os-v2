@@ -97,6 +97,18 @@ def test_linkedin_easy_apply_with_terminal_evidence_can_remain_linkedin():
     result = resolve_final_vacancy_url("https://linkedin.com/jobs/view/1", fetcher=fetcher)
     assert result.final_url == "https://linkedin.com/jobs/view/1"
     assert result.verified_body == body
+    fingerprint = result.linkedin_page_fingerprint
+    assert fingerprint["markers"]["easy_apply"] is True
+    assert fingerprint["jobposting_jsonld"] is True
+    assert fingerprint["markers"]["about_the_job"] is True
+    assert fingerprint["body_length"] == len(body)
+
+    authwall_body = '<html><head><title>LinkedIn Login</title></head><body>Sign in to LinkedIn. Join now. Authwall checkpoint.</body></html>'
+    authwall = resolve_final_vacancy_url("https://linkedin.com/jobs/view/2", fetcher=FakeFetcher({"https://linkedin.com/jobs/view/2": FetchResponse(final_url="https://linkedin.com/jobs/view/2", body=authwall_body)}))
+    auth_fingerprint = authwall.linkedin_page_fingerprint
+    assert auth_fingerprint["markers"]["sign_in"] and auth_fingerprint["markers"]["join_now"]
+    assert auth_fingerprint["markers"]["authwall"] and auth_fingerprint["markers"]["checkpoint"]
+    assert "Sign in to LinkedIn" not in str(auth_fingerprint)
     assert len(result.linkedin_dom_candidates) <= 10
     candidate = next(item for item in result.linkedin_dom_candidates if item["id"] == "job-details")
     assert candidate["tag"] == "div"
