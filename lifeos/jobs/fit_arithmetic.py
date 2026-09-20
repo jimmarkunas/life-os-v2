@@ -42,10 +42,9 @@ def score(requirements: list[Requirement], title_evidence: str = "UNSUPPORTED",
         rows = [r for r in requirements if r.dimension == dimension]
         if dimension == "role_seniority": budget -= Fraction(29, 4)
         total = sum((PRIORITY[r.priority] for r in rows), 0)
-        dimensions[dimension] = (budget * sum((PRIORITY[r.priority] * EVIDENCE[r.evidence] for r in rows), Fraction()) / total) if total else Fraction()
+        dimensions[dimension] = ((budget * sum((PRIORITY[r.priority] * EVIDENCE[r.evidence] for r in rows), Fraction()) / total) if total else Fraction()) + (title if dimension == "role_seniority" else Fraction())
         for r in rows:
             traces.append({"label": r.label, "dimension": r.dimension, "priority_weight": PRIORITY[r.priority], "evidence_class": r.evidence, "contribution": budget * PRIORITY[r.priority] * EVIDENCE[r.evidence] / total if total else Fraction()})
-    dimensions["role_seniority"] += title
     uncapped = sum(dimensions.values(), Fraction())
     capped = min(uncapped, Fraction(40)) if hard_family_mismatch else uncapped
     return FitResult((capped.numerator * 2 // capped.denominator + 1) // 2, uncapped, capped, capped != uncapped, title, dimensions, tuple(traces))
