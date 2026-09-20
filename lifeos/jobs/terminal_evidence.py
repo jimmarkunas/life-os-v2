@@ -184,38 +184,6 @@ class FetchResponse:
     body: str
 
 
-class _LinkedInDomProbe(HTMLParser):
-    _TERMS = ("responsibilities", "qualifications", "requirements", "about the job", "what you'll do", "what you’ll do", "job description", "preferred qualifications")
-
-    def __init__(self) -> None:
-        super().__init__(); self._stack: list[dict[str, Any]] = []; self.candidates: list[dict[str, Any]] = []
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        attributes = {str(key).casefold(): str(value or "") for key, value in attrs}; parent = self._stack[-1] if self._stack else None
-        if parent: parent["child_count"] += 1
-        self._stack.append({"tag": tag.casefold(), "attributes": attributes, "text": [], "child_count": 0, "parent": parent})
-
-    def handle_data(self, data: str) -> None:
-        if self._stack and data.strip():
-            for node in self._stack: node["text"].append(data)
-
-    def handle_endtag(self, tag: str) -> None:
-        if not self._stack:
-            return
-        node = self._stack.pop(); text = re.sub(r"\s+", " ", " ".join(node["text"])).strip(); attributes = node["attributes"]
-        classes = [item for item in attributes.get("class", "").split() if item]; identifiers = " ".join((attributes.get("id", ""), *classes, attributes.get("role", ""))).casefold(); terms = [term for term in self._TERMS if term in text.casefold()]
-        if not text or not (terms or any(token in identifiers for token in ("description", "details", "show-more", "job"))): return
-        parent = node["parent"] or {}; parent_attrs = parent.get("attributes", {})
-        self.candidates.append({"tag": node["tag"], "id": attributes.get("id") or None, "classes": classes, "data_attributes": {key: value[:80] for key, value in attributes.items() if key.startswith("data-")}, "aria_attributes": {key: value[:80] for key, value in attributes.items() if key.startswith("aria-")}, "role": attributes.get("role") or None, "parent_tag": parent.get("tag"), "parent_id": parent_attrs.get("id") or None, "parent_classes": parent_attrs.get("class", "").split(), "child_count": node["child_count"], "text_length": len(text), "text_prefix": text[:80], "matching_terms": terms})
-
-
-def _linkedin_dom_candidates(html_text: str) -> tuple[dict[str, Any], ...]:
-    probe = _LinkedInDomProbe()
-    try: probe.feed(html_text)
-    except Exception: return ()
-    return tuple(probe.candidates[:10])
-
-
 class Fetcher(Protocol):
     def get(self, url: str) -> FetchResponse: ...
 
@@ -325,9 +293,6 @@ class ResolutionResult:
     final_url: str | None
     chain: tuple[str, ...]
     verified_body: str | None = None
-    provider_source_description: str | None = None
-    linkedin_dom_candidates: tuple[dict[str, Any], ...] = ()
-    linkedin_page_fingerprint: dict[str, Any] | None = None
 
 
 def extract_job_posting_jsonld(html_text: str) -> dict[str, Any] | None:
@@ -349,14 +314,6 @@ def extract_job_posting_jsonld(html_text: str) -> dict[str, Any] | None:
     return None
 
 
-def _linkedin_page_fingerprint(html_text: str) -> dict[str, Any]:
-    low = html_text.casefold()
-    title_match = re.search(r"<title[^>]*>(.*?)</title>", html_text, re.I | re.S)
-    title = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", title_match.group(1)))).strip()[:120] if title_match else None
-    markers = {key: term in low for key, term in (("sign_in", "sign in"), ("join_now", "join now"), ("authwall", "authwall"), ("checkpoint", "checkpoint"), ("challenge", "challenge"), ("captcha", "captcha"), ("security_verification", "security verification"), ("access_denied", "access denied"), ("page_not_found", "page not found"), ("job_no_longer_available", "job no longer available"), ("not_accepting_applications", "this job is no longer accepting applications"), ("about_the_job", "about the job"), ("jobs_description", "jobs-description"), ("job_details", "job-details"), ("jobposting", "jobposting"), ("easy_apply", "easy apply"), ("apply", "apply"))}
-    return {"body_length": len(html_text), "title": title, "markers": markers, "jsonld_count": len(_JSONLD_SCRIPT.findall(html_text)), "jobposting_jsonld": extract_job_posting_jsonld(html_text) is not None, "anchor_count": len(re.findall(r"<a\b", low)), "job_identifier_count": len(re.findall(r"<(?:[a-z0-9]+)\b[^>]*(?:id|class)\s*=\s*['\"][^'\"]*job[^'\"]*['\"]", low, re.I)), "description_identifier_count": len(re.findall(r"<(?:[a-z0-9]+)\b[^>]*(?:id|class)\s*=\s*['\"][^'\"]*description[^'\"]*['\"]", low, re.I))}
-
-
 def _html_to_text(html_text: str) -> str:
     return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", html_text))).strip()
 
@@ -374,20 +331,6 @@ def _extract_terminal_description(html_text: str) -> str | None:
             return text
     text = _html_to_text(html_text)
     return text if len(text) >= 20 else None
-
-
-def _extract_linkedin_source_description(html_text: str) -> str | None:
-    posting = extract_job_posting_jsonld(html_text)
-    if posting:
-        raw = str(posting.get("description") or "").strip()
-        if raw:
-            return _html_to_text(raw)
-    match = _META_DESCRIPTION.search(html_text)
-    if match:
-        description = _html_to_text(match.group(1))
-        if description:
-            return description
-    return None
 
 
 def _extract_posting_date_raw(html_text: str) -> str | None:
@@ -478,29 +421,10 @@ def resolve_final_vacancy_url(url: str, *, fetcher: Fetcher) -> ResolutionResult
             and _has_linkedin_quick_apply_signal(response.body)
         ):
             if final_candidate not in chain: chain.append(final_candidate)
-            return ResolutionResult(
-                final_candidate, tuple(chain), response.body,
-                linkedin_dom_candidates=_linkedin_dom_candidates(response.body),
-                linkedin_page_fingerprint=_linkedin_page_fingerprint(response.body),
-            )
+            return ResolutionResult(final_candidate, tuple(chain), response.body)
         next_hop = _find_next_intermediary_hop(response.body, response.final_url, visited)
         if not next_hop:
-            provider_description = (
-                _extract_linkedin_source_description(response.body)
-                if _is_linkedin_url(current_url)
-                else None
-            )
-            return ResolutionResult(
-                None, tuple(chain), provider_source_description=provider_description,
-                linkedin_dom_candidates=(
-                    _linkedin_dom_candidates(response.body)
-                    if _is_linkedin_url(current_url) else ()
-                ),
-                linkedin_page_fingerprint=(
-                    _linkedin_page_fingerprint(response.body)
-                    if _is_linkedin_url(current_url) else None
-                ),
-            )
+            return ResolutionResult(None, tuple(chain))
         if next_hop not in chain: chain.append(next_hop)
         current_url = next_hop
     return ResolutionResult(None, tuple(chain))
@@ -513,29 +437,11 @@ class TerminalVacancyEvidence:
     posting_date_raw: str
     evidence_source: str
     resolution_chain: tuple[str, ...]
-    provider_source_description: str | None = None
-    linkedin_dom_candidates: tuple[dict[str, Any], ...] = ()
-    linkedin_page_fingerprint: dict[str, Any] | None = None
 
 
 def _acquire_once(source_url: str, fetcher: Fetcher) -> TerminalVacancyEvidence | None:
     resolution = resolve_final_vacancy_url(source_url, fetcher=fetcher)
     if not resolution.final_url or is_provider_intermediary_source(resolution.final_url):
-        if (
-            resolution.provider_source_description
-            or resolution.linkedin_dom_candidates
-            or resolution.linkedin_page_fingerprint is not None
-        ):
-            return TerminalVacancyEvidence(
-                canonical_url=None,
-                description_text="",
-                posting_date_raw="",
-                evidence_source="linkedin_source",
-                resolution_chain=resolution.chain,
-                provider_source_description=resolution.provider_source_description,
-                linkedin_dom_candidates=resolution.linkedin_dom_candidates,
-                linkedin_page_fingerprint=resolution.linkedin_page_fingerprint,
-            )
         return None
     body = resolution.verified_body
     if body is None:
