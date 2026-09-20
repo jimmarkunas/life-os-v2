@@ -157,6 +157,7 @@ def execute_newsletter(
                     "disposition_detail": result.detail if result else None,
                     "stable_job_key": result.stable_job_key if result else None,
                     "linkedin_dom_candidates": [{"evidence_ref": observation.evidence_ref, "provider_job_id": observation.provider_job_id, **metadata} for metadata in (getattr(terminal_evidence, "linkedin_dom_candidates", ()) if observation.source_provider == "LinkedIn Jobs" else ())],
+                    "linkedin_page_fingerprint": getattr(terminal_evidence, "linkedin_page_fingerprint", None) if observation.source_provider == "LinkedIn Jobs" else None,
                 }
             )
         excluded = [
