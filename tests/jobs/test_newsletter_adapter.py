@@ -207,3 +207,18 @@ def test_ambiguous_intermediary_resolution_still_fails_closed_and_is_reused():
     )
     assert visible_candidate.fit is None
     assert visible_candidate.fit_evidence_kind == FitEvidenceKind.NONE
+
+    dom_only_fetcher = FakeFetcher({"https://linkedin.com/jobs/view/3": FetchResponse(
+        final_url="https://linkedin.com/jobs/view/3",
+        body='<html><body><div class="jobs-description-content__text"><h2>About the job</h2>Role details without structured description metadata.</div></body></html>',
+    )})
+    dom_only_adapter = _adapter(dom_only_fetcher)
+    dom_only_candidate = dom_only_adapter.to_jobs_candidate(
+        _observation(source_apply_url="https://linkedin.com/jobs/view/3")
+    )
+    cached = dom_only_adapter._terminal_evidence_cache["https://linkedin.com/jobs/view/3"]
+    assert cached is not None and cached.linkedin_dom_candidates
+    assert dom_only_candidate.fit is None
+    assert dom_only_candidate.fit_evidence_kind == FitEvidenceKind.NONE
+    assert dom_only_candidate.job.apply_url is None
+    assert dom_only_fetcher.calls == ["https://linkedin.com/jobs/view/3"]
