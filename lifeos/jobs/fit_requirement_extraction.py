@@ -24,12 +24,11 @@ def extract_requirements(raw_text: str, dimension_patterns: dict[str, tuple[str,
         key = re.sub(r"\W+", " ", clause.lower()).strip()
         if not clause or key in seen or _match(ignore_patterns, clause): continue
         hits = {d for d in DIMENSIONS if _match(dimension_patterns.get(d, ()), clause)}
-        material = _match(material_patterns, clause) or hits or any(_match(v, clause) for v in evidence_patterns.values()) or _match(hard_family_patterns, clause)
+        material = _match(material_patterns, clause) or hits or any(_match(v, clause) for v in evidence_patterns.values())
         if not material: continue
         if not hits: raise ValueError(f"unclassified material clause: {clause}")
         dimension = next(d for d in DIMENSIONS if d in hits)
         priority = "required" if re.search(r"\b(required|must(?:-have)?|minimum|mandatory)\b|\bat least \d+ years?\b", clause, re.I) else "normal"
         evidence = next((e for e in EVIDENCE if _match(evidence_patterns.get(e, ()), clause)), "UNSUPPORTED")
         rows.append(Requirement(clause, dimension, priority, evidence)); seen.add(key)
-        mismatch |= _match(hard_family_patterns, clause)
     return ExtractionResult(tuple(rows), mismatch)
