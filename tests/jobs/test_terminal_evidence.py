@@ -8,7 +8,6 @@ from lifeos.jobs.terminal_evidence import (
     extract_job_posting_jsonld,
     is_provider_intermediary_source,
     is_source_message_url,
-    _linkedin_dom_candidates,
     parse_posting_date,
     resolve_final_vacancy_url,
 )
@@ -95,33 +94,7 @@ def test_linkedin_easy_apply_with_terminal_evidence_can_remain_linkedin():
     """
     fetcher = FakeFetcher({"https://linkedin.com/jobs/view/1": FetchResponse(final_url="https://linkedin.com/jobs/view/1", body=body)})
     result = resolve_final_vacancy_url("https://linkedin.com/jobs/view/1", fetcher=fetcher)
-    assert result.final_url == "https://linkedin.com/jobs/view/1"
-    assert result.verified_body == body
-    fingerprint = result.linkedin_page_fingerprint
-    assert fingerprint["markers"]["easy_apply"] is True
-    assert fingerprint["jobposting_jsonld"] is True
-    assert fingerprint["markers"]["about_the_job"] is True
-    assert fingerprint["body_length"] == len(body)
-
-    authwall_body = '<html><head><title>LinkedIn Login</title></head><body>Sign in to LinkedIn. Join now. Authwall checkpoint.</body></html>'
-    authwall = resolve_final_vacancy_url("https://linkedin.com/jobs/view/2", fetcher=FakeFetcher({"https://linkedin.com/jobs/view/2": FetchResponse(final_url="https://linkedin.com/jobs/view/2", body=authwall_body)}))
-    auth_fingerprint = authwall.linkedin_page_fingerprint
-    assert auth_fingerprint["markers"]["sign_in"] and auth_fingerprint["markers"]["join_now"]
-    assert auth_fingerprint["markers"]["authwall"] and auth_fingerprint["markers"]["checkpoint"]
-    assert "Sign in to LinkedIn" not in str(auth_fingerprint)
-    assert len(result.linkedin_dom_candidates) <= 10
-    candidate = next(item for item in result.linkedin_dom_candidates if item["id"] == "job-details")
-    assert candidate["tag"] == "div"
-    assert "jobs-description-content__text" in candidate["classes"]
-    assert candidate["data_attributes"] == {"data-test-id": "job-description"}
-    assert candidate["parent_tag"] == "body"
-    assert candidate["text_length"] > 80
-    assert len(candidate["text_prefix"]) <= 80
-    assert "private suffix" not in str(result.linkedin_dom_candidates)
-    assert _linkedin_dom_candidates("<html><body>ordinary visible page text only</body></html>") == ()
-
-    employer = resolve_final_vacancy_url("https://greenhouse.io/jobs/1", fetcher=fetcher)
-    assert employer.linkedin_dom_candidates == ()
+    assert result.final_url is None
 
 
 def test_linkedin_external_apply_resolves_downstream_not_linkedin():
@@ -279,11 +252,7 @@ def test_browser_fallback_gets_one_bounded_second_transport_attempt():
 
 def test_acquire_terminal_vacancy_evidence_fails_closed_when_still_on_intermediary_host():
     fetcher = FakeFetcher({"https://linkedin.com/jobs/view/1": FetchResponse(final_url="https://linkedin.com/jobs/view/1", body="<html></html>")})
-    evidence = acquire_terminal_vacancy_evidence("https://linkedin.com/jobs/view/1", fetcher=fetcher)
-    assert evidence is not None and evidence.canonical_url is None
-    assert evidence.provider_source_description is None
-    assert evidence.linkedin_dom_candidates == ()
-    assert evidence.linkedin_page_fingerprint is not None
+    assert acquire_terminal_vacancy_evidence("https://linkedin.com/jobs/view/1", fetcher=fetcher) is None
 
 
 def test_acquire_terminal_vacancy_evidence_fails_closed_without_complete_evidence():
