@@ -8,6 +8,7 @@ from lifeos.jobs.terminal_evidence import (
     extract_job_posting_jsonld,
     is_provider_intermediary_source,
     is_source_message_url,
+    _linkedin_dom_candidates,
     parse_posting_date,
     resolve_final_vacancy_url,
 )
@@ -88,7 +89,7 @@ def test_jobright_lensa_chain_resolves_to_employer_ats():
 
 def test_linkedin_easy_apply_with_terminal_evidence_can_remain_linkedin():
     body = """
-    <html><body>Easy Apply</body><script type="application/ld+json">
+    <html><body>Easy Apply<div id="job-details" class="jobs-description-content__text" data-test-id="job-description"><h2>About the job</h2>Meaningful role details and responsibilities followed by a private suffix that must not be emitted.</div></body><script type="application/ld+json">
     {"@type": "JobPosting", "description": "Build platform programs.", "datePosted": "2026-01-10"}
     </script></html>
     """
@@ -96,6 +97,19 @@ def test_linkedin_easy_apply_with_terminal_evidence_can_remain_linkedin():
     result = resolve_final_vacancy_url("https://linkedin.com/jobs/view/1", fetcher=fetcher)
     assert result.final_url == "https://linkedin.com/jobs/view/1"
     assert result.verified_body == body
+    assert len(result.linkedin_dom_candidates) <= 10
+    candidate = next(item for item in result.linkedin_dom_candidates if item["id"] == "job-details")
+    assert candidate["tag"] == "div"
+    assert "jobs-description-content__text" in candidate["classes"]
+    assert candidate["data_attributes"] == {"data-test-id": "job-description"}
+    assert candidate["parent_tag"] == "body"
+    assert candidate["text_length"] > 80
+    assert len(candidate["text_prefix"]) <= 80
+    assert "private suffix" not in str(result.linkedin_dom_candidates)
+    assert _linkedin_dom_candidates("<html><body>ordinary visible page text only</body></html>") == ()
+
+    employer = resolve_final_vacancy_url("https://greenhouse.io/jobs/1", fetcher=fetcher)
+    assert employer.linkedin_dom_candidates == ()
 
 
 def test_linkedin_external_apply_resolves_downstream_not_linkedin():

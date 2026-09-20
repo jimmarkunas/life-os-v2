@@ -184,6 +184,38 @@ class FetchResponse:
     body: str
 
 
+class _LinkedInDomProbe(HTMLParser):
+    _TERMS = ("responsibilities", "qualifications", "requirements", "about the job", "what you'll do", "what you’ll do", "job description", "preferred qualifications")
+
+    def __init__(self) -> None:
+        super().__init__(); self._stack: list[dict[str, Any]] = []; self.candidates: list[dict[str, Any]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = {str(key).casefold(): str(value or "") for key, value in attrs}; parent = self._stack[-1] if self._stack else None
+        if parent: parent["child_count"] += 1
+        self._stack.append({"tag": tag.casefold(), "attributes": attributes, "text": [], "child_count": 0, "parent": parent})
+
+    def handle_data(self, data: str) -> None:
+        if self._stack and data.strip():
+            for node in self._stack: node["text"].append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if not self._stack:
+            return
+        node = self._stack.pop(); text = re.sub(r"\s+", " ", " ".join(node["text"])).strip(); attributes = node["attributes"]
+        classes = [item for item in attributes.get("class", "").split() if item]; identifiers = " ".join((attributes.get("id", ""), *classes, attributes.get("role", ""))).casefold(); terms = [term for term in self._TERMS if term in text.casefold()]
+        if not text or not (terms or any(token in identifiers for token in ("description", "details", "show-more", "job"))): return
+        parent = node["parent"] or {}; parent_attrs = parent.get("attributes", {})
+        self.candidates.append({"tag": node["tag"], "id": attributes.get("id") or None, "classes": classes, "data_attributes": {key: value[:80] for key, value in attributes.items() if key.startswith("data-")}, "aria_attributes": {key: value[:80] for key, value in attributes.items() if key.startswith("aria-")}, "role": attributes.get("role") or None, "parent_tag": parent.get("tag"), "parent_id": parent_attrs.get("id") or None, "parent_classes": parent_attrs.get("class", "").split(), "child_count": node["child_count"], "text_length": len(text), "text_prefix": text[:80], "matching_terms": terms})
+
+
+def _linkedin_dom_candidates(html_text: str) -> tuple[dict[str, Any], ...]:
+    probe = _LinkedInDomProbe()
+    try: probe.feed(html_text)
+    except Exception: return ()
+    return tuple(probe.candidates[:10])
+
+
 class Fetcher(Protocol):
     def get(self, url: str) -> FetchResponse: ...
 
@@ -294,6 +326,7 @@ class ResolutionResult:
     chain: tuple[str, ...]
     verified_body: str | None = None
     provider_source_description: str | None = None
+    linkedin_dom_candidates: tuple[dict[str, Any], ...] = ()
 
 
 def extract_job_posting_jsonld(html_text: str) -> dict[str, Any] | None:
@@ -436,7 +469,10 @@ def resolve_final_vacancy_url(url: str, *, fetcher: Fetcher) -> ResolutionResult
             and _has_linkedin_quick_apply_signal(response.body)
         ):
             if final_candidate not in chain: chain.append(final_candidate)
-            return ResolutionResult(final_candidate, tuple(chain), response.body)
+            return ResolutionResult(
+                final_candidate, tuple(chain), response.body,
+                linkedin_dom_candidates=_linkedin_dom_candidates(response.body),
+            )
         next_hop = _find_next_intermediary_hop(response.body, response.final_url, visited)
         if not next_hop:
             provider_description = (
@@ -444,7 +480,13 @@ def resolve_final_vacancy_url(url: str, *, fetcher: Fetcher) -> ResolutionResult
                 if _is_linkedin_url(current_url)
                 else None
             )
-            return ResolutionResult(None, tuple(chain), provider_source_description=provider_description)
+            return ResolutionResult(
+                None, tuple(chain), provider_source_description=provider_description,
+                linkedin_dom_candidates=(
+                    _linkedin_dom_candidates(response.body)
+                    if _is_linkedin_url(current_url) else ()
+                ),
+            )
         if next_hop not in chain: chain.append(next_hop)
         current_url = next_hop
     return ResolutionResult(None, tuple(chain))
@@ -458,12 +500,13 @@ class TerminalVacancyEvidence:
     evidence_source: str
     resolution_chain: tuple[str, ...]
     provider_source_description: str | None = None
+    linkedin_dom_candidates: tuple[dict[str, Any], ...] = ()
 
 
 def _acquire_once(source_url: str, fetcher: Fetcher) -> TerminalVacancyEvidence | None:
     resolution = resolve_final_vacancy_url(source_url, fetcher=fetcher)
     if not resolution.final_url or is_provider_intermediary_source(resolution.final_url):
-        if resolution.provider_source_description:
+        if resolution.provider_source_description or resolution.linkedin_dom_candidates:
             return TerminalVacancyEvidence(
                 canonical_url=None,
                 description_text="",
@@ -471,6 +514,7 @@ def _acquire_once(source_url: str, fetcher: Fetcher) -> TerminalVacancyEvidence 
                 evidence_source="linkedin_source",
                 resolution_chain=resolution.chain,
                 provider_source_description=resolution.provider_source_description,
+                linkedin_dom_candidates=resolution.linkedin_dom_candidates,
             )
         return None
     body = resolution.verified_body
