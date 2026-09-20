@@ -22,7 +22,7 @@ from lifeos.integrations.gmail import GmailMailboxTransport
 from lifeos.integrations.notion import NotionIdentityQuery, NotionTransport, NotionTransportError
 from lifeos.jobs.fit_scoring import FitProfile, PenaltyRule, RoleFamily, ScopeCategory
 from lifeos.jobs.newsletter_runtime import execute_newsletter
-from lifeos.jobs.qualification import LaneConfig
+from lifeos.jobs.qualification import LaneConfig, UNIVERSAL_FIT_FLOOR
 from lifeos.jobs.us_remote_acquisition import USRemoteAcquirer
 from lifeos.jobs.us_remote_runtime import browser_evidence, execute_us_remote, load_registry
 from lifeos.mail.models import MailMessage
@@ -67,7 +67,7 @@ def _exchange_gmail_access_token(context: RunContext, http: HttpClient, *, clien
 def _parse_private_policy(raw: dict) -> tuple[LaneConfig, dict[str, int], FitProfile, str, str]:
     try:
         lane_raw = raw["lane"]
-        lane = LaneConfig(name=lane_raw["name"], market=lane_raw["market"], fit_floor=lane_raw["fit_floor"], target_review_floor=lane_raw.get("target_review_floor"), work_mode_policy=lane_raw["work_mode_policy"], compensation_floor=lane_raw.get("compensation_floor"), freshness_gate=lane_raw["freshness_gate"], freshness_max_days=lane_raw.get("freshness_max_days"), is_target_bucket=lane_raw.get("is_target_bucket", False))
+        lane = LaneConfig(name=lane_raw["name"], market=lane_raw["market"], fit_floor=UNIVERSAL_FIT_FLOOR, target_review_floor=None, work_mode_policy=lane_raw["work_mode_policy"], compensation_floor=lane_raw.get("compensation_floor"), freshness_gate=lane_raw["freshness_gate"], freshness_max_days=lane_raw.get("freshness_max_days"), is_target_bucket=lane_raw.get("is_target_bucket", False))
         lane_priority = {str(k): int(v) for k, v in raw["lane_priority"].items()}
         fit_raw = raw["fit_profile"]
         fit_profile = FitProfile(model_version=fit_raw["model_version"], role_families=tuple(RoleFamily(patterns=tuple(rf["patterns"]), base_score=rf["base_score"], label=rf["label"]) for rf in fit_raw.get("role_families", [])), default_role_base=fit_raw["default_role_base"], default_role_label=fit_raw["default_role_label"], scope_categories=tuple(ScopeCategory(name=sc["name"], term_groups=tuple((tuple(group[0]), group[1], group[2]) for group in sc["term_groups"]), cap=sc["cap"]) for sc in fit_raw.get("scope_categories", [])), penalties=tuple(PenaltyRule(terms=tuple(p["terms"]), penalty=p["penalty"], reason=p["reason"], min_hits=p.get("min_hits", 1)) for p in fit_raw.get("penalties", [])))
@@ -95,16 +95,6 @@ def _policy_file_url(page: dict) -> str:
     return str(url)
 
 
-def _lane_fit_floor(page: dict) -> int:
-    value = (((page.get("properties") or {}).get("Fit Floor") or {}).get("number"))
-    if value is None:
-        raise ConfigurationError("US Remote Fit Floor is missing")
-    floor = int(value)
-    if floor < 0 or floor > 100:
-        raise ConfigurationError("US Remote Fit Floor must be between 0 and 100")
-    return floor
-
-
 def _load_private_policy_from_notion(context, http, notion, *, notion_token: str):
     search = http.request_json(context, "POST", _NOTION_SEARCH_URL, headers={"Authorization": f"Bearer {notion_token}", "Notion-Version": _NOTION_VERSION, "Accept": "application/json", "Content-Type": "application/json"}, json_body={"query": _POLICY_DATABASE_TITLE, "filter": {"property": "object", "value": "data_source"}, "page_size": 20}, timeout_seconds=10.0, retry=RetryPolicy(max_attempts=2, backoff_seconds=0.1, max_backoff_seconds=1.0))
     if not isinstance(search, dict): raise ConfigurationError("Notion configuration search returned an invalid response")
@@ -115,10 +105,6 @@ def _load_private_policy_from_notion(context, http, notion, *, notion_token: str
     row = rows[0]
     raw = http.request_json(context, "GET", _policy_file_url(row), timeout_seconds=10.0, retry=RetryPolicy(max_attempts=2, backoff_seconds=0.1, max_backoff_seconds=1.0))
     if not isinstance(raw, dict): raise ConfigurationError("canonical private policy was not a JSON object")
-    lane_raw = raw.get("lane")
-    if not isinstance(lane_raw, dict): raise ConfigurationError("canonical private policy lane was not an object")
-    raw = dict(raw)
-    raw["lane"] = {**lane_raw, "fit_floor": _lane_fit_floor(row), "target_review_floor": None}
     return _parse_private_policy(raw)
 
 
