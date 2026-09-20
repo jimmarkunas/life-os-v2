@@ -141,7 +141,6 @@ def execute_newsletter(
         diagnostic_observations = []
         for observation in newsletter_result.observations:
             candidate, result = candidates_by_ref.get(observation.evidence_ref), results_by_ref.get(observation.evidence_ref)
-            terminal_evidence = adapter._terminal_evidence_cache.get(observation.source_apply_url) if observation.source_apply_url else None
             diagnostic_observations.append(
                 {
                     "company": observation.company,
@@ -156,8 +155,6 @@ def execute_newsletter(
                     "disposition": result.disposition.value if result else None,
                     "disposition_detail": result.detail if result else None,
                     "stable_job_key": result.stable_job_key if result else None,
-                    "linkedin_dom_candidates": [{"evidence_ref": observation.evidence_ref, "provider_job_id": observation.provider_job_id, **metadata} for metadata in (getattr(terminal_evidence, "linkedin_dom_candidates", ()) if observation.source_provider == "LinkedIn Jobs" else ())],
-                    "linkedin_page_fingerprint": getattr(terminal_evidence, "linkedin_page_fingerprint", None) if observation.source_provider == "LinkedIn Jobs" else None,
                 }
             )
         excluded = [

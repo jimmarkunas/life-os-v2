@@ -112,10 +112,32 @@ def test_failed_resolution_does_not_block_identifiable_candidate():
 
 def test_intermediary_only_resolution_does_not_block_identifiable_candidate():
     fetcher = FakeFetcher({"https://linkedin.com/jobs/view/1": FetchResponse(final_url="https://linkedin.com/jobs/view/1", body="<html>no links here</html>")})
-    candidate = _adapter(fetcher).to_jobs_candidate(_observation(source_apply_url="https://linkedin.com/jobs/view/1"))
-    assert candidate.unresolved_reason is None
-    assert candidate.fit is None
-    assert candidate.job.apply_url is None
+    adapter = _adapter(fetcher)
+    cards = (
+        ("MedRisk", "Technical Project Manager", "4467889425"),
+        ("Symbotic", "Technical Program Manager, New Product Introduction", "4460373455"),
+        ("Globus family of brands", "Program Manager (CRM/MDM)", "4468801345"),
+        ("Swooped", "Senior Program Manager", "4468830856"),
+        ("Ascendion", "Program Manager", "4467896195"),
+        ("Ocient", "Technical Project Manager", "4469200664"),
+    )
+    candidates = [
+        adapter.to_jobs_candidate(_observation(
+            company=company,
+            role=role,
+            provider_job_id=provider_job_id,
+            source_apply_url="https://linkedin.com/jobs/view/1",
+            source_description_text="Synthetic program delivery responsibilities." if provider_job_id == "4467889425" else None,
+            evidence_ref=f"ev:{provider_job_id}",
+        ))
+        for company, role, provider_job_id in cards
+    ]
+    assert len(candidates) == 6
+    assert candidates[0].fit is not None
+    assert candidates[0].fit_evidence_kind.value == "source_description"
+    assert all(candidate.unresolved_reason is None for candidate in candidates)
+    assert all(candidate.job.apply_url is None for candidate in candidates)
+    assert all(candidate.fit is None for candidate in candidates[1:])
 
 
 def test_missing_identity_evidence_is_still_unresolved_via_enrichment_failure():
