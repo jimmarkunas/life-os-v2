@@ -210,15 +210,19 @@ class NewsletterJobsAdapter:
         # above, which signals a parser-level identity problem.
         apply_url: str | None = None
         description_text: str | None = None
+        source_description_text: str | None = observation.source_description_text
         posting_date: date | None = None
 
         if observation.source_apply_url:
             evidence = self._terminal_evidence_for(observation.source_apply_url)
             if evidence is not None:
-                apply_url = evidence.canonical_url
-                description_text = evidence.description_text
-                posting_iso = parse_posting_date(evidence.posting_date_raw, reference_time=observation.source_received_at)
-                posting_date = date.fromisoformat(posting_iso) if posting_iso else None
+                if evidence.evidence_source == "linkedin_source":
+                    source_description_text = evidence.provider_source_description
+                else:
+                    apply_url = evidence.canonical_url
+                    description_text = evidence.description_text
+                    posting_iso = parse_posting_date(evidence.posting_date_raw, reference_time=observation.source_received_at)
+                    posting_date = date.fromisoformat(posting_iso) if posting_iso else None
 
         job = JobObservation(
             company=Company(name=company), role=role, location=location,
@@ -243,9 +247,9 @@ class NewsletterJobsAdapter:
                 profile=cfg.fit_profile,
             ).score
             fit_evidence_kind = FitEvidenceKind.EMPLOYER_ATS_JD
-        elif observation.source_description_text and observation.source_description_text.strip():
+        elif source_description_text and source_description_text.strip():
             fit = score_fit(
-                FitEvidence(role=role, description_text=observation.source_description_text),
+                FitEvidence(role=role, description_text=source_description_text),
                 profile=cfg.fit_profile,
             ).score
             fit_evidence_kind = FitEvidenceKind.SOURCE_DESCRIPTION

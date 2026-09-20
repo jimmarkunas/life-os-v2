@@ -177,7 +177,8 @@ def test_same_source_url_terminal_resolution_is_reused_with_one_fetch():
 
 
 def test_ambiguous_intermediary_resolution_still_fails_closed_and_is_reused():
-    fetcher = FakeFetcher({"https://linkedin.com/jobs/view/1": FetchResponse(final_url="https://linkedin.com/jobs/view/1", body="<html>no external apply</html>")})
+    body = '<html><script type="application/ld+json">{"@type":"JobPosting","description":"Build platform programs for enterprise customers."}</script></html>'
+    fetcher = FakeFetcher({"https://linkedin.com/jobs/view/1": FetchResponse(final_url="https://linkedin.com/jobs/view/1", body=body)})
     adapter = _adapter(fetcher)
 
     first = adapter.to_jobs_candidate(_observation(evidence_ref="ev:1", source_apply_url="https://linkedin.com/jobs/view/1"))
@@ -190,3 +191,19 @@ def test_ambiguous_intermediary_resolution_still_fails_closed_and_is_reused():
     assert second.unresolved_reason is None
     assert first.job.apply_url is None
     assert second.job.apply_url is None
+    from lifeos.jobs.models import FitAuthority, FitEvidenceKind
+
+    assert first.fit is not None
+    assert first.fit_evidence_kind == FitEvidenceKind.SOURCE_DESCRIPTION
+    assert first.fit_authority == FitAuthority.NON_AUTHORITATIVE
+    assert second.fit == first.fit
+
+    visible_only = _adapter(FakeFetcher({"https://linkedin.com/jobs/view/2": FetchResponse(
+        final_url="https://linkedin.com/jobs/view/2",
+        body="<html><body>Sign in to LinkedIn. Explore recommended jobs and grow your network.</body></html>",
+    )}))
+    visible_candidate = visible_only.to_jobs_candidate(
+        _observation(source_apply_url="https://linkedin.com/jobs/view/2")
+    )
+    assert visible_candidate.fit is None
+    assert visible_candidate.fit_evidence_kind == FitEvidenceKind.NONE
