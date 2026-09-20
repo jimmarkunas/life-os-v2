@@ -102,6 +102,21 @@ def is_provider_intermediary_source(url: str) -> bool:
     return host in DISCOVERY_INTERMEDIARY_HOSTS or any(host.endswith(f".{domain}") for domain in DISCOVERY_INTERMEDIARY_HOSTS)
 
 
+def _is_linkedin_url(url: str) -> bool:
+    try:
+        host = _host(url)
+    except ValueError:
+        return False
+    return host == "linkedin.com" or host.endswith(".linkedin.com")
+
+
+def _has_linkedin_quick_apply_signal(body: str) -> bool:
+    text = _html_to_text(body).casefold()
+    if "easy apply is not available" in text or "quick apply is not available" in text:
+        return False
+    return "easy apply" in text or "quick apply" in text
+
+
 def _downstream_score(value: str) -> tuple[int, str | None]:
     candidate = canonical_url(value)
     if not candidate:
@@ -258,13 +273,13 @@ def browser_evidence() -> dict | None:
     try:
         value = json.loads(raw)
     except json.JSONDecodeError as exc:
-        from lifeos.core.config import ConfigurationError
+        from scripts.run_newsletter_production import ProductionConfigError
 
-        raise ConfigurationError("US_REMOTE_BROWSER_EVIDENCE_JSON is invalid") from exc
+        raise ProductionConfigError("US_REMOTE_BROWSER_EVIDENCE_JSON is invalid") from exc
     if not isinstance(value, dict):
-        from lifeos.core.config import ConfigurationError
+        from scripts.run_newsletter_production import ProductionConfigError
 
-        raise ConfigurationError("US_REMOTE_BROWSER_EVIDENCE_JSON must be an object")
+        raise ProductionConfigError("US_REMOTE_BROWSER_EVIDENCE_JSON must be an object")
     return value
 
 
@@ -399,6 +414,14 @@ def resolve_final_vacancy_url(url: str, *, fetcher: Fetcher) -> ResolutionResult
         if candidates:
             if candidates[0] not in chain: chain.append(candidates[0])
             return ResolutionResult(candidates[0], tuple(chain))
+        if (
+            final_candidate
+            and _is_linkedin_url(final_candidate)
+            and _has_complete_vacancy_evidence(response.body)
+            and _has_linkedin_quick_apply_signal(response.body)
+        ):
+            if final_candidate not in chain: chain.append(final_candidate)
+            return ResolutionResult(final_candidate, tuple(chain), response.body)
         next_hop = _find_next_intermediary_hop(response.body, response.final_url, visited)
         if not next_hop:
             return ResolutionResult(None, tuple(chain))
@@ -409,7 +432,7 @@ def resolve_final_vacancy_url(url: str, *, fetcher: Fetcher) -> ResolutionResult
 
 @dataclass(frozen=True)
 class TerminalVacancyEvidence:
-    canonical_url: str | None
+    canonical_url: str
     description_text: str
     posting_date_raw: str
     evidence_source: str
