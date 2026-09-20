@@ -1,15 +1,13 @@
 """Career-owned qualification policy.
 
-MIGRATE/REFACTOR from v1 `jobs/qualification.py`. The gate sequence (fit ->
-market -> work mode -> compensation -> freshness) and the fail-closed
-posture -- unresolved evidence routes to PASSED_REVIEW, never silent
-exclusion -- are proven and reused. Generalized by removing v1's hardcoded
-lane names/numeric floors (US Remote/Scale-up/Skilled Worker, "fit >= 78",
-etc.): those are Jim-specific production policy and must never live in this
-public repository. A `LaneConfig` is now a plain, source-agnostic value the
-caller constructs (from private runtime configuration in production, from
-synthetic fixtures in tests). Career owns the *shape* and *order* of the
-gates; the actual thresholds are injected, never baked in.
+The gate sequence (fit -> market -> work mode -> compensation -> freshness)
+and the fail-closed posture -- unresolved evidence routes to PASSED_REVIEW,
+never silent exclusion -- are shared Jobs behavior. Jim's current product
+decision sets one GitHub-owned universal Jobs Fit floor for all configured
+lanes: ``UNIVERSAL_FIT_FLOOR = 72``. Lane/private runtime configuration owns
+other opportunity-policy fields such as market, work mode, compensation, and
+freshness, but cannot override the Jobs Fit floor or create a lower target
+review persistence band.
 
 Mail/Newsletter may extract facts (fit score, freshness, compensation) but
 must not call this module's gates itself and must not encode its own
@@ -32,8 +30,13 @@ class QualificationError(ValueError):
 
 @dataclass(frozen=True)
 class LaneConfig:
-    """Source-agnostic lane policy. Real values are private runtime
-    configuration; only the shape lives in this public repository."""
+    """Lane opportunity policy with a GitHub-owned universal Fit floor.
+
+    ``fit_floor`` and ``target_review_floor`` remain constructor-compatible for
+    existing callers, but are normalized on construction: the effective Fit
+    floor is always ``UNIVERSAL_FIT_FLOOR`` and no lower review band exists.
+    Other lane policy remains runtime-configurable.
+    """
 
     name: str
     market: str
