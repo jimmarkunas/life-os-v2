@@ -197,3 +197,13 @@ def test_ambiguous_intermediary_resolution_still_fails_closed_and_is_reused():
     assert first.fit_evidence_kind == FitEvidenceKind.SOURCE_DESCRIPTION
     assert first.fit_authority == FitAuthority.NON_AUTHORITATIVE
     assert second.fit == first.fit
+
+    visible_only = _adapter(FakeFetcher({"https://linkedin.com/jobs/view/2": FetchResponse(
+        final_url="https://linkedin.com/jobs/view/2",
+        body="<html><body>Sign in to LinkedIn. Explore recommended jobs and grow your network.</body></html>",
+    )}))
+    visible_candidate = visible_only.to_jobs_candidate(
+        _observation(source_apply_url="https://linkedin.com/jobs/view/2")
+    )
+    assert visible_candidate.fit is None
+    assert visible_candidate.fit_evidence_kind == FitEvidenceKind.NONE

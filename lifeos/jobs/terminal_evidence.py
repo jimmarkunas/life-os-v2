@@ -335,8 +335,17 @@ def _extract_terminal_description(html_text: str) -> str | None:
 
 
 def _extract_linkedin_source_description(html_text: str) -> str | None:
-    description = _extract_terminal_description(html_text)
-    return description if description and len(description) >= 20 else None
+    posting = extract_job_posting_jsonld(html_text)
+    if posting:
+        raw = str(posting.get("description") or "").strip()
+        if raw:
+            return _html_to_text(raw)
+    match = _META_DESCRIPTION.search(html_text)
+    if match:
+        description = _html_to_text(match.group(1))
+        if description:
+            return description
+    return None
 
 
 def _extract_posting_date_raw(html_text: str) -> str | None:
