@@ -23,6 +23,7 @@ class FitResult:
     uncapped_score: Fraction
     capped_score: Fraction
     cap_applied: bool
+    applicable_max: Fraction
     title_contribution: Fraction
     dimensions: dict[str, Fraction]
     requirements: tuple[dict[str, Any], ...]
@@ -37,14 +38,20 @@ def score(requirements: list[Requirement], title_evidence: str = "UNSUPPORTED",
     if title_evidence not in EVIDENCE: raise ValueError(f"unknown evidence class: {title_evidence}")
     for r in requirements: _check(r.dimension, r.evidence, r.priority)
     title = Fraction(29, 4) * EVIDENCE[title_evidence]
+    applicable_max = Fraction(29, 4)
     traces, dimensions = [], {}
     for dimension, budget in DIMENSIONS.items():
         rows = [r for r in requirements if r.dimension == dimension]
         if dimension == "role_seniority": budget -= Fraction(29, 4)
+        if rows: applicable_max += budget
         total = sum((PRIORITY[r.priority] for r in rows), 0)
         dimensions[dimension] = ((budget * sum((PRIORITY[r.priority] * EVIDENCE[r.evidence] for r in rows), Fraction()) / total) if total else Fraction()) + (title if dimension == "role_seniority" else Fraction())
         for r in rows:
             traces.append({"label": r.label, "dimension": r.dimension, "priority_weight": PRIORITY[r.priority], "evidence_class": r.evidence, "contribution": budget * PRIORITY[r.priority] * EVIDENCE[r.evidence] / total if total else Fraction()})
+    scale = Fraction(100) / applicable_max
+    dimensions = {d: value * scale for d, value in dimensions.items()}
+    for trace in traces: trace["contribution"] *= scale
+    title *= scale
     uncapped = sum(dimensions.values(), Fraction())
     capped = min(uncapped, Fraction(40)) if hard_family_mismatch else uncapped
-    return FitResult((capped.numerator * 2 // capped.denominator + 1) // 2, uncapped, capped, capped != uncapped, title, dimensions, tuple(traces))
+    return FitResult((capped.numerator * 2 // capped.denominator + 1) // 2, uncapped, capped, capped != uncapped, applicable_max, title, dimensions, tuple(traces))
