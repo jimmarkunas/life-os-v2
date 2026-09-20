@@ -216,10 +216,13 @@ class NewsletterJobsAdapter:
         if observation.source_apply_url:
             evidence = self._terminal_evidence_for(observation.source_apply_url)
             if evidence is not None:
-                apply_url = evidence.canonical_url
-                description_text = evidence.description_text
-                posting_iso = parse_posting_date(evidence.posting_date_raw, reference_time=observation.source_received_at)
-                posting_date = date.fromisoformat(posting_iso) if posting_iso else None
+                if evidence.evidence_source == "linkedin_source":
+                    source_description_text = evidence.provider_source_description or source_description_text
+                else:
+                    apply_url = evidence.canonical_url
+                    description_text = evidence.description_text
+                    posting_iso = parse_posting_date(evidence.posting_date_raw, reference_time=observation.source_received_at)
+                    posting_date = date.fromisoformat(posting_iso) if posting_iso else None
 
         job = JobObservation(
             company=Company(name=company), role=role, location=location,
@@ -231,11 +234,6 @@ class NewsletterJobsAdapter:
             source_provider=observation.source_provider,
         )
 
-        # LIFE OS Fit is authoritative evidence only: score it from terminal
-        # employer/ATS description text, never from weak source-card/title
-        # text alone. When enrichment did not resolve, fit stays None and
-        # qualify() routes the candidate to PASSED_REVIEW, never a silent
-        # admission and never a fabricated score.
         fit: int | None = None
         fit_evidence_kind = FitEvidenceKind.NONE
         if description_text and description_text.strip():

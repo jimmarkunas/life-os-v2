@@ -117,6 +117,12 @@ def _has_linkedin_quick_apply_signal(body: str) -> bool:
     return "easy apply" in text or "quick apply" in text
 
 
+def _linkedin_guest_url(source_url: str) -> str | None:
+    if not _is_linkedin_url(source_url): return None
+    match = re.search(r"(\d{6,})$", urlsplit(source_url).path.rstrip("/"))
+    return f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{match.group(1)}" if match else None
+
+
 def _downstream_score(value: str) -> tuple[int, str | None]:
     candidate = canonical_url(value)
     if not candidate:
@@ -432,11 +438,12 @@ def resolve_final_vacancy_url(url: str, *, fetcher: Fetcher) -> ResolutionResult
 
 @dataclass(frozen=True)
 class TerminalVacancyEvidence:
-    canonical_url: str
+    canonical_url: str | None
     description_text: str
     posting_date_raw: str
     evidence_source: str
     resolution_chain: tuple[str, ...]
+    provider_source_description: str | None = None
 
 
 def _acquire_once(source_url: str, fetcher: Fetcher) -> TerminalVacancyEvidence | None:
@@ -462,21 +469,30 @@ def _acquire_once(source_url: str, fetcher: Fetcher) -> TerminalVacancyEvidence 
     )
 
 
+def _acquire_linkedin_source_description(source_url: str, fetcher: Fetcher) -> TerminalVacancyEvidence | None:
+    guest_url = _linkedin_guest_url(source_url)
+    if not guest_url: return None
+    try: response = fetcher.get(guest_url)
+    except Exception: return None
+    description = _extract_terminal_description(response.body)
+    if not description or len(description) < 80: return None
+    return TerminalVacancyEvidence(None, "", _extract_posting_date_raw(response.body) or "", "linkedin_source", (source_url, guest_url), description)
+
+
 def acquire_terminal_vacancy_evidence(
     source_url: str,
     *,
     fetcher: Fetcher,
     fallback_fetcher: Fetcher | None = None,
 ) -> TerminalVacancyEvidence | None:
-    """Acquire complete terminal vacancy evidence with one bounded fallback.
-
-    The optional fallback is intended for orchestrator-owned browser rendering
-    when ordinary HTTP is blocked/JS-only. Jobs still owns evidence policy;
-    the fallback only supplies a different transport view of the same URL.
-    """
+    """Acquire authoritative terminal evidence, then one bounded fallback."""
     if not source_url or is_source_message_url(source_url):
         return None
     evidence = _acquire_once(source_url, fetcher)
-    if evidence is not None or fallback_fetcher is None:
+    if evidence is not None:
         return evidence
+    if _is_linkedin_url(source_url):
+        return _acquire_linkedin_source_description(source_url, fetcher)
+    if fallback_fetcher is None:
+        return None
     return _acquire_once(source_url, fallback_fetcher)
