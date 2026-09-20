@@ -25,6 +25,9 @@ class FakeHttp:
         if method == "GET" and "/messages/msg-1?format=full" in url:
             data=base64.urlsafe_b64encode(b"synthetic job alert").decode().rstrip("=")
             return {"id":"msg-1","internalDate":"1789574400000","payload":{"mimeType":"text/plain","headers":[{"name":"From","value":"alerts@example.invalid"},{"name":"Subject","value":"Synthetic"}],"body":{"data":data}}}
+        if method == "GET" and "/messages/msg-1?format=raw" in url:
+            raw=base64.urlsafe_b64encode(b"From: alerts@example.invalid\r\nSubject: Synthetic\r\n\r\nsynthetic job alert").decode().rstrip("=")
+            return {"id":"msg-1","raw":raw}
         if method == "POST" and url.endswith("/messages/msg-1/modify"): return {"id":"msg-1"}
         raise AssertionError((method,url,kwargs))
 
@@ -37,10 +40,13 @@ class BacklogFakeHttp(FakeHttp):
             if method == "GET" and f"/messages/{mid}?format=full" in url:
                 body=f"[Synthetic Labs\n90%\nProgram Manager\nRemote](https://jobright.ai/jobs/info/{mid})\nView More Opportunities"; data=base64.urlsafe_b64encode(body.encode()).decode().rstrip("=")
                 return {"id":mid,"internalDate":date,"payload":{"mimeType":"text/plain","headers":[{"name":"From","value":"alerts@jobright.example.invalid"},{"name":"Subject","value":"Jobright jobs"}],"body":{"data":data}}}
+            if method == "GET" and f"/messages/{mid}?format=raw" in url:
+                raw=base64.urlsafe_b64encode(f"From: alerts@jobright.example.invalid\r\nSubject: Jobright jobs\r\n\r\nSynthetic {mid}".encode()).decode().rstrip("=")
+                return {"id":mid,"raw":raw}
         raise AssertionError((method,url,kwargs))
 
 class DetailRetryFakeHttp(FakeHttp):
-    def __init__(self, *, fail_message_id, permanent=False): super().__init__(); self.fail_message_id=fail_message_id; self.permanent=permanent; self.detail_attempts={}
+    def __init__(self, *, fail_message_id, permanent=False, invalid_raw_id=None): super().__init__(); self.fail_message_id=fail_message_id; self.permanent=permanent; self.invalid_raw_id=invalid_raw_id; self.detail_attempts={}; self.raw_attempts=0
     def request_json(self, context, method, url, **kwargs):
         if method == "GET" and "/messages?" in url: return {"messages":[{"id":"msg-ok"},{"id":self.fail_message_id}]}
         for mid in ("msg-ok",self.fail_message_id):
@@ -49,6 +55,12 @@ class DetailRetryFakeHttp(FakeHttp):
                 if mid == self.fail_message_id and (self.permanent or self.detail_attempts[mid] == 1): raise TimeoutError(f"synthetic detail timeout for {mid}")
                 data=base64.urlsafe_b64encode(f"body {mid}".encode()).decode().rstrip("=")
                 return {"id":mid,"internalDate":"1789574400000","payload":{"mimeType":"text/plain","headers":[{"name":"From","value":"alerts@example.invalid"},{"name":"Subject","value":f"Synthetic {mid}"}],"body":{"data":data}}}
+            if method == "GET" and f"/messages/{mid}?format=raw" in url:
+                self.raw_attempts += 1
+                if mid == self.invalid_raw_id:
+                    return {"id": mid}
+                raw=base64.urlsafe_b64encode(f"From: alerts@example.invalid\r\nSubject: Synthetic {mid}\r\n\r\nbody {mid}".encode()).decode().rstrip("=")
+                return {"id":mid,"raw":raw}
         return super().request_json(context,method,url,**kwargs)
 
 class GoogleErrorBackend:
@@ -67,6 +79,9 @@ class AdmissionFakeHttp:
         if method == "GET" and "?format=full" in url:
             mid=url.split("/messages/",1)[1].split("?",1)[0]; self.detail_ids.append(mid); data=base64.urlsafe_b64encode(f"body {mid}".encode()).decode().rstrip("=")
             return {"id":mid,"internalDate":"1700000000000","payload":{"mimeType":"text/plain","headers":[{"name":"From","value":"alerts@example.invalid"},{"name":"Subject","value":mid}],"body":{"data":data}}}
+        if method == "GET" and "?format=raw" in url:
+            mid=url.split("/messages/",1)[1].split("?",1)[0]; raw=base64.urlsafe_b64encode(f"From: alerts@example.invalid\r\nSubject: {mid}\r\n\r\nbody {mid}".encode()).decode().rstrip("=")
+            return {"id":mid,"raw":raw}
         if method == "POST" and url.endswith("/modify"):
             mid=url.split("/messages/",1)[1].split("/modify",1)[0]; self.processed.add(mid); return {"id":mid}
         raise AssertionError((method,url,kwargs))

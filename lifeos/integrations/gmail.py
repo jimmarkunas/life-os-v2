@@ -408,7 +408,25 @@ class GmailMailboxTransport(Generic[T]):
 
     def _fetch_routed_message(self, message_id: str) -> RoutedNewsletterMessage:
         fields = self._fetch_message_fields(message_id)
+        fields["raw_mime"] = self._fetch_raw_message(message_id)
         return RoutedNewsletterMessage(mailbox=self.provider, **fields)
+
+    def _fetch_raw_message(self, message_id: str) -> str:
+        url = f"{_GMAIL_API}/users/{quote(self._user_id, safe='')}/messages/{quote(message_id, safe='')}?format=raw"
+        payload = self._http.request_json(
+            self._context,
+            "GET",
+            url,
+            headers=self._headers(),
+            timeout_seconds=10.0,
+            retry=_READ_RETRY,
+        )
+        if not isinstance(payload, dict) or not isinstance(payload.get("raw"), str):
+            raise MailboxTransportError("Gmail raw Newsletter message response was invalid")
+        raw_mime = _decode_base64url(payload["raw"])
+        if not raw_mime:
+            raise MailboxTransportError("Gmail raw Newsletter message was empty")
+        return raw_mime
 
     def _fetch_message_fields(self, message_id: str) -> dict[str, Any]:
         url = f"{_GMAIL_API}/users/{quote(self._user_id, safe='')}/messages/{quote(message_id, safe='')}?format=full"

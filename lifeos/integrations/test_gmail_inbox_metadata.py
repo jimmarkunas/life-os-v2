@@ -126,6 +126,7 @@ class MetadataTransportTests(unittest.TestCase):
         self.assertEqual(len(messages), 6)
         self.assertEqual(sorted(http.metadata_fetch_ids), sorted(_mixed_inbox().keys()))
         self.assertEqual(http.full_fetch_ids, [])
+        self.assertFalse(any("format=raw" in url for _, url in http.calls))
         for message in messages:
             self.assertEqual(message.body_text, "")
             self.assertEqual(message.html_text, "")

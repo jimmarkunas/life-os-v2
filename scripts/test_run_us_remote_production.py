@@ -307,6 +307,12 @@ class HistoricalInboxBackend:
                     }
                 ).encode(),
             )
+        if method == "GET" and "?format=raw" in url:
+            message_id = url.split("/messages/", 1)[1].split("?", 1)[0]
+            msg = self._messages[message_id]
+            decoded_body = base64.urlsafe_b64decode((msg["body"] + "===").encode()).decode()
+            raw = f"From: {msg['sender']}\r\nSubject: {msg['subject']}\r\n\r\n{decoded_body}"
+            return HttpResponse(200, {}, json.dumps({"id": message_id, "raw": _b64(raw)}).encode())
         if method == "POST" and url.endswith("/modify"):
             message_id = url.split("/messages/", 1)[1].split("/modify", 1)[0]
             payload = json.loads(body.decode("utf-8")) if body else {}
