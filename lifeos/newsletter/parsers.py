@@ -64,8 +64,16 @@ def parse_message(message: RoutedNewsletterMessage) -> MessageParseResult:
 
     issues: list[ParseIssue] = []
     best_observations: tuple[SourceVacancyObservation, ...] = ()
+    linkedin_preheader = None
+    if provider == "LinkedIn Jobs":
+        for source_text, source_kind in _source_texts(message):
+            if source_kind == "raw-mime-html":
+                linkedin_preheader = _extract_preheader_text(source_text)
+                break
     for source_text, source_kind in _source_texts(message):
-        observations, terminal, parse_issues = _parse_provider(provider, source_text, message, source_kind)
+        observations, terminal, parse_issues = _parse_provider(
+            provider, source_text, message, source_kind, linkedin_preheader=linkedin_preheader
+        )
         if observations and terminal and not fatal_issue_codes(tuple(parse_issues)):
             return MessageParseResult(
                 message_ref,
@@ -90,7 +98,12 @@ def parse_message(message: RoutedNewsletterMessage) -> MessageParseResult:
 
 
 def _parse_provider(
-    provider: str, text: str, message: RoutedNewsletterMessage, source_kind: str
+    provider: str,
+    text: str,
+    message: RoutedNewsletterMessage,
+    source_kind: str,
+    *,
+    linkedin_preheader: str | None = None,
 ) -> tuple[list[SourceVacancyObservation], str | None, list[str]]:
     if provider == "Lensa":
         cards, terminal = _parse_lensa(text)
@@ -98,7 +111,9 @@ def _parse_provider(
         cards, terminal = _parse_jobright(text)
     elif provider == "LinkedIn Jobs":
         raw_mime_html = text if source_kind == "raw-mime-html" else None
-        cards, terminal = _parse_linkedin(text, raw_mime_html=raw_mime_html)
+        cards, terminal = _parse_linkedin(
+            text, raw_mime_html=raw_mime_html, preheader=linkedin_preheader
+        )
     else:
         cards, terminal = _parse_markdown_generic(text)
     issues: list[str] = []
@@ -573,7 +588,9 @@ def _linkedin_auxiliary_line(text: str) -> bool:
     )
 
 
-def _parse_linkedin(text: str, *, raw_mime_html: str | None = None) -> tuple[list[dict[str, object]], str | None]:
+def _parse_linkedin(
+    text: str, *, raw_mime_html: str | None = None, preheader: str | None = None
+) -> tuple[list[dict[str, object]], str | None]:
     card_text = re.sub(r"<[^>]+data-email-preheader\s*=\s*['\"]true['\"][^>]*>.*?</[^>]+>", "", text, flags=re.S | re.I) if raw_mime_html else text
     plain = _plain(card_text)
     low = plain.casefold()
@@ -640,10 +657,8 @@ def _parse_linkedin(text: str, *, raw_mime_html: str | None = None) -> tuple[lis
                     "compensation": "Not disclosed",
                 }
             )
-    if out and raw_mime_html:
-        preheader = _extract_preheader_text(raw_mime_html)
-        if preheader:
-            _apply_preheader_description(preheader, out)
+    if out and preheader:
+        _apply_preheader_description(preheader, out)
     terminal = "unsubscribe" if "unsubscribe" in low else ("linkedin-card" if out else None)
     return out, terminal
 
