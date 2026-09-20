@@ -122,12 +122,14 @@ Content-Type: text/html; charset=utf-8
         C2b = "Product Manager\nSynthetic Systems\nChicago, IL\nView job: https://www.linkedin.com/jobs/view/123456792/"
 
         def _li(preheader: str, *cards: str) -> MessageParseResult:
-            ph = f'<span data-email-preheader="true">{preheader}</span>\n' if preheader else ""
             body = (
                 "From: jobs-noreply@linkedin.example.invalid\r\nSubject: LI\r\n"
-                "MIME-Version: 1.0\r\nContent-Type: text/html; charset=utf-8\r\n\r\n"
-                f"<html><body>{ph}" + "\n".join(cards)
-                + '\n<a href="https://www.linkedin.com/unsubscribe">Unsubscribe</a></body></html>\r\n'
+                "MIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=li-boundary\r\n\r\n"
+                "--li-boundary\r\nContent-Type: text/html; charset=utf-8\r\n\r\n"
+                f'<html><body><span data-email-preheader="true">{preheader}</span></body></html>\r\n'
+                "--li-boundary\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n"
+                + "\n".join(cards)
+                + '\nUnsubscribe\r\n--li-boundary--\r\n'
             )
             return parse_message(RoutedNewsletterMessage("gmail", "li-ph", ts, "jobs-noreply@linkedin.example.invalid", "LI", body_text="", raw_mime=body))
 
