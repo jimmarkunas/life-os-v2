@@ -31,10 +31,6 @@ _YESTERDAY = re.compile(r"\byesterday\b", re.I)
 _RAW_HTTP_URL = re.compile(r"https?://[^\s\"'<>]+", re.I)
 _JSONLD_SCRIPT = re.compile(r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', re.I | re.S)
 _META_DESCRIPTION = re.compile(r'<meta[^>]+(?:name|property)=["\'](?:description|og:description)["\'][^>]+content=["\']([^"\']+)["\']', re.I | re.S)
-_LINKEDIN_GUEST_DESCRIPTION = re.compile(
-    r'<div[^>]+class=["\'][^"\']*(?:show-more-less-html__markup|description__text)[^"\']*["\'][^>]*>(.*?)</div>',
-    re.I | re.S,
-)
 
 MAX_INTERMEDIARY_HOPS = 4
 
@@ -122,13 +118,9 @@ def _has_linkedin_quick_apply_signal(body: str) -> bool:
 
 
 def _linkedin_guest_url(source_url: str) -> str | None:
-    if not _is_linkedin_url(source_url):
-        return None
-    path = urlsplit(source_url).path.rstrip("/")
-    match = re.search(r"(\d{6,})$", path)
-    if not match:
-        return None
-    return f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{match.group(1)}"
+    if not _is_linkedin_url(source_url): return None
+    match = re.search(r"(\d{6,})$", urlsplit(source_url).path.rstrip("/"))
+    return f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{match.group(1)}" if match else None
 
 
 def _downstream_score(value: str) -> tuple[int, str | None]:
@@ -287,13 +279,13 @@ def browser_evidence() -> dict | None:
     try:
         value = json.loads(raw)
     except json.JSONDecodeError as exc:
-        from lifeos.core.config import ConfigurationError
+        from scripts.run_newsletter_production import ProductionConfigError
 
-        raise ConfigurationError("US_REMOTE_BROWSER_EVIDENCE_JSON is invalid") from exc
+        raise ProductionConfigError("US_REMOTE_BROWSER_EVIDENCE_JSON is invalid") from exc
     if not isinstance(value, dict):
-        from lifeos.core.config import ConfigurationError
+        from scripts.run_newsletter_production import ProductionConfigError
 
-        raise ConfigurationError("US_REMOTE_BROWSER_EVIDENCE_JSON must be an object")
+        raise ProductionConfigError("US_REMOTE_BROWSER_EVIDENCE_JSON must be an object")
     return value
 
 
@@ -345,14 +337,6 @@ def _extract_terminal_description(html_text: str) -> str | None:
             return text
     text = _html_to_text(html_text)
     return text if len(text) >= 20 else None
-
-
-def _extract_linkedin_guest_description(html_text: str) -> str | None:
-    match = _LINKEDIN_GUEST_DESCRIPTION.search(html_text)
-    if not match:
-        return None
-    text = _html_to_text(match.group(1))
-    return text if len(text) >= 80 else None
 
 
 def _extract_posting_date_raw(html_text: str) -> str | None:
@@ -487,23 +471,12 @@ def _acquire_once(source_url: str, fetcher: Fetcher) -> TerminalVacancyEvidence 
 
 def _acquire_linkedin_source_description(source_url: str, fetcher: Fetcher) -> TerminalVacancyEvidence | None:
     guest_url = _linkedin_guest_url(source_url)
-    if not guest_url:
-        return None
-    try:
-        response = fetcher.get(guest_url)
-    except Exception:
-        return None
-    description = _extract_linkedin_guest_description(response.body)
-    if not description:
-        return None
-    return TerminalVacancyEvidence(
-        canonical_url=None,
-        description_text="",
-        posting_date_raw=_extract_posting_date_raw(response.body) or "",
-        evidence_source="linkedin_source",
-        resolution_chain=(source_url, guest_url),
-        provider_source_description=description,
-    )
+    if not guest_url: return None
+    try: response = fetcher.get(guest_url)
+    except Exception: return None
+    description = _extract_terminal_description(response.body)
+    if not description or len(description) < 80: return None
+    return TerminalVacancyEvidence(None, "", _extract_posting_date_raw(response.body) or "", "linkedin_source", (source_url, guest_url), description)
 
 
 def acquire_terminal_vacancy_evidence(
@@ -512,13 +485,7 @@ def acquire_terminal_vacancy_evidence(
     fetcher: Fetcher,
     fallback_fetcher: Fetcher | None = None,
 ) -> TerminalVacancyEvidence | None:
-    """Acquire terminal evidence, then one bounded source-evidence fallback.
-
-    Employer/ATS evidence remains authoritative. If ordinary terminal resolution
-    fails for a LinkedIn vacancy, the public logged-out detail fragment may
-    supply exact-job source description text as provisional, non-authoritative
-    evidence. LinkedIn does not receive a browser retry after that fallback.
-    """
+    """Acquire authoritative terminal evidence, then one bounded fallback."""
     if not source_url or is_source_message_url(source_url):
         return None
     evidence = _acquire_once(source_url, fetcher)
