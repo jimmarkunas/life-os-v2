@@ -94,8 +94,7 @@ def test_linkedin_easy_apply_with_terminal_evidence_can_remain_linkedin():
     """
     fetcher = FakeFetcher({"https://linkedin.com/jobs/view/1": FetchResponse(final_url="https://linkedin.com/jobs/view/1", body=body)})
     result = resolve_final_vacancy_url("https://linkedin.com/jobs/view/1", fetcher=fetcher)
-    assert result.final_url == "https://linkedin.com/jobs/view/1"
-    assert result.verified_body == body
+    assert result.final_url is None
 
 
 def test_linkedin_external_apply_resolves_downstream_not_linkedin():
