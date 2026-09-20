@@ -521,7 +521,11 @@ class TerminalVacancyEvidence:
 def _acquire_once(source_url: str, fetcher: Fetcher) -> TerminalVacancyEvidence | None:
     resolution = resolve_final_vacancy_url(source_url, fetcher=fetcher)
     if not resolution.final_url or is_provider_intermediary_source(resolution.final_url):
-        if resolution.provider_source_description or resolution.linkedin_dom_candidates:
+        if (
+            resolution.provider_source_description
+            or resolution.linkedin_dom_candidates
+            or resolution.linkedin_page_fingerprint is not None
+        ):
             return TerminalVacancyEvidence(
                 canonical_url=None,
                 description_text="",

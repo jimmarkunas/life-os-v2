@@ -222,3 +222,21 @@ def test_ambiguous_intermediary_resolution_still_fails_closed_and_is_reused():
     assert dom_only_candidate.fit_evidence_kind == FitEvidenceKind.NONE
     assert dom_only_candidate.job.apply_url is None
     assert dom_only_fetcher.calls == ["https://linkedin.com/jobs/view/3"]
+
+    fingerprint_fetcher = FakeFetcher({"https://linkedin.com/jobs/view/4": FetchResponse(
+        final_url="https://linkedin.com/jobs/view/4",
+        body='<html><head><title>LinkedIn</title></head><body><p>Shell</p></body></html>',
+    )})
+    fingerprint_adapter = _adapter(fingerprint_fetcher)
+    fingerprint_candidate = fingerprint_adapter.to_jobs_candidate(
+        _observation(source_apply_url="https://linkedin.com/jobs/view/4")
+    )
+    fingerprint_cached = fingerprint_adapter._terminal_evidence_cache["https://linkedin.com/jobs/view/4"]
+    assert fingerprint_cached is not None
+    assert fingerprint_cached.linkedin_page_fingerprint is not None
+    assert fingerprint_cached.linkedin_dom_candidates == ()
+    assert fingerprint_cached.provider_source_description is None
+    assert fingerprint_candidate.fit is None
+    assert fingerprint_candidate.fit_evidence_kind == FitEvidenceKind.NONE
+    assert fingerprint_candidate.job.apply_url is None
+    assert fingerprint_fetcher.calls == ["https://linkedin.com/jobs/view/4"]

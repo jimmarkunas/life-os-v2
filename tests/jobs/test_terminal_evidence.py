@@ -279,7 +279,11 @@ def test_browser_fallback_gets_one_bounded_second_transport_attempt():
 
 def test_acquire_terminal_vacancy_evidence_fails_closed_when_still_on_intermediary_host():
     fetcher = FakeFetcher({"https://linkedin.com/jobs/view/1": FetchResponse(final_url="https://linkedin.com/jobs/view/1", body="<html></html>")})
-    assert acquire_terminal_vacancy_evidence("https://linkedin.com/jobs/view/1", fetcher=fetcher) is None
+    evidence = acquire_terminal_vacancy_evidence("https://linkedin.com/jobs/view/1", fetcher=fetcher)
+    assert evidence is not None and evidence.canonical_url is None
+    assert evidence.provider_source_description is None
+    assert evidence.linkedin_dom_candidates == ()
+    assert evidence.linkedin_page_fingerprint is not None
 
 
 def test_acquire_terminal_vacancy_evidence_fails_closed_without_complete_evidence():
