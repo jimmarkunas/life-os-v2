@@ -136,6 +136,28 @@ def execute_newsletter(
         fully_accounted = len(newsletter_results) == attempted_observations
         unresolved = any(item.disposition is Disposition.REVIEW_DEGRADED for item in newsletter_results)
         observations_by_ref = {observation.evidence_ref: observation for observation in newsletter_result.observations}
+        candidates_by_ref = {candidate.evidence_ref: candidate for candidate in candidates}
+        results_by_ref = {result.evidence_ref: result for result in newsletter_results}
+        diagnostic_observations = []
+        for observation in newsletter_result.observations:
+            candidate = candidates_by_ref.get(observation.evidence_ref)
+            result = results_by_ref.get(observation.evidence_ref)
+            diagnostic_observations.append(
+                {
+                    "company": observation.company,
+                    "role": observation.role,
+                    "provider_job_id": observation.provider_job_id,
+                    "source_description_present": bool(observation.source_description_text),
+                    "source_description_length": len(observation.source_description_text or ""),
+                    "fit": candidate.fit if candidate else None,
+                    "fit_evidence_kind": candidate.fit_evidence_kind.value if candidate else None,
+                    "fit_authority": candidate.fit_authority.value if candidate else None,
+                    "unresolved_reason": candidate.unresolved_reason if candidate else None,
+                    "disposition": result.disposition.value if result else None,
+                    "disposition_detail": result.detail if result else None,
+                    "stable_job_key": result.stable_job_key if result else None,
+                }
+            )
         excluded = [
             {
                 "company": getattr(observations_by_ref.get(result.evidence_ref), "company", None),
@@ -231,6 +253,7 @@ def execute_newsletter(
             "jobs": {
                 "observations": attempted_observations,
                 "fully_accounted": fully_accounted,
+                "diagnostic_observations": diagnostic_observations,
                 "dispositions": {
                     disposition.value: sum(item.disposition == disposition for item in newsletter_results)
                     for disposition in Disposition
