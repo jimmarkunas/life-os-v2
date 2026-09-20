@@ -121,6 +121,7 @@ class MailTransportTests(unittest.TestCase):
         self.assertEqual(mailbox.provider, "gmail")
         self.assertEqual([m.message_id for m in messages], ["msg-a", "msg-b"])
         self.assertEqual(messages[0].body_text, "synthetic job alert")
+        self.assertFalse(any("format=raw" in call[1] for call in self.http.calls))
         mailbox.route_to_newsletters("msg-a", "J Newsletters")
 
     def test_gmail_scan_inbox_window_uses_inbox_label_and_existing_hydration(self) -> None:

@@ -80,6 +80,8 @@ def test_unprocessed_queue_retries_transient_detail_failure_and_returns_complete
 
     assert [message.message_id for message in messages] == ["msg-flaky", "msg-ok"]
     assert http.detail_attempts == {"msg-ok": 1, "msg-flaky": 2}
+    assert all(message.raw_mime.startswith("From: alerts@example.invalid") for message in messages)
+    assert http.raw_attempts == 2
 
 
 def test_unprocessed_queue_fails_closed_with_message_id_after_retry_failure() -> None:
@@ -123,6 +125,14 @@ def test_unprocessed_queue_preserves_safe_google_error_reason() -> None:
     assert "message=User rate limit exceeded for <redacted>" in detail
     assert "synthetic-secret-token" not in detail
     assert "https://gmail.googleapis.com" not in detail
+    raw_http = DetailRetryFakeHttp(fail_message_id="unused", invalid_raw_id="msg-ok")
+    raw_mailbox = _mailbox(raw_http)
+    try:
+        raw_mailbox.hydrate_messages(("msg-ok",))
+    except MailboxTransportError as exc:
+        assert "raw Newsletter message response was invalid" in str(exc)
+    else:
+        raise AssertionError("expected invalid raw Newsletter response to fail closed")
 
 def test_backlog_admission_is_oldest_first_and_safe_under_deadline(monkeypatch) -> None:
     monkeypatch.setattr(gmail_module, "sleep", lambda _: None)
