@@ -24,6 +24,7 @@ class FitResult:
     capped_score: Fraction
     cap_applied: bool
     applicable_max: Fraction
+    specialization_bonus: Fraction
     title_contribution: Fraction
     dimensions: dict[str, Fraction]
     requirements: tuple[dict[str, Any], ...]
@@ -34,7 +35,7 @@ def _check(dimension: str, evidence: str, priority: str) -> None:
     if priority not in PRIORITY: raise ValueError(f"unknown priority: {priority}")
 
 def score(requirements: list[Requirement], title_evidence: str = "UNSUPPORTED",
-          hard_family_mismatch: bool = False) -> FitResult:
+          hard_family_mismatch: bool = False, direct_title_specialization: bool = False) -> FitResult:
     if title_evidence not in EVIDENCE: raise ValueError(f"unknown evidence class: {title_evidence}")
     for r in requirements: _check(r.dimension, r.evidence, r.priority)
     title = Fraction(29, 4) * EVIDENCE[title_evidence]
@@ -53,5 +54,7 @@ def score(requirements: list[Requirement], title_evidence: str = "UNSUPPORTED",
     for trace in traces: trace["contribution"] *= scale
     title *= scale
     uncapped = sum(dimensions.values(), Fraction())
-    capped = min(uncapped, Fraction(40)) if hard_family_mismatch else uncapped
-    return FitResult((capped.numerator * 2 // capped.denominator + 1) // 2, uncapped, capped, capped != uncapped, applicable_max, title, dimensions, tuple(traces))
+    specialization_bonus = Fraction(3) if direct_title_specialization else Fraction()
+    post_specialization = min(Fraction(100), uncapped + specialization_bonus)
+    capped = min(post_specialization, Fraction(40)) if hard_family_mismatch else post_specialization
+    return FitResult((capped.numerator * 2 // capped.denominator + 1) // 2, uncapped, capped, hard_family_mismatch and capped < post_specialization, applicable_max, specialization_bonus, title, dimensions, tuple(traces))
