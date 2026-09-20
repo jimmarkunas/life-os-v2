@@ -95,6 +95,16 @@ def _policy_file_url(page: dict) -> str:
     return str(url)
 
 
+def _lane_fit_floor(page: dict) -> int:
+    value = (((page.get("properties") or {}).get("Fit Floor") or {}).get("number"))
+    if value is None:
+        raise ConfigurationError("US Remote Fit Floor is missing")
+    floor = int(value)
+    if floor < 0 or floor > 100:
+        raise ConfigurationError("US Remote Fit Floor must be between 0 and 100")
+    return floor
+
+
 def _load_private_policy_from_notion(context, http, notion, *, notion_token: str):
     search = http.request_json(context, "POST", _NOTION_SEARCH_URL, headers={"Authorization": f"Bearer {notion_token}", "Notion-Version": _NOTION_VERSION, "Accept": "application/json", "Content-Type": "application/json"}, json_body={"query": _POLICY_DATABASE_TITLE, "filter": {"property": "object", "value": "data_source"}, "page_size": 20}, timeout_seconds=10.0, retry=RetryPolicy(max_attempts=2, backoff_seconds=0.1, max_backoff_seconds=1.0))
     if not isinstance(search, dict): raise ConfigurationError("Notion configuration search returned an invalid response")
@@ -102,8 +112,13 @@ def _load_private_policy_from_notion(context, http, notion, *, notion_token: str
     if len(matches) != 1: raise ConfigurationError("canonical Job Lane Configuration data source was not uniquely resolvable")
     rows = notion.query_data_source(str(matches[0]["id"]), NotionIdentityQuery(property_name="Lane", property_type="title", values=(_POLICY_LANE,)), page_size=10)
     if len(rows) != 1: raise ConfigurationError("canonical US Remote lane was not uniquely resolvable")
-    raw = http.request_json(context, "GET", _policy_file_url(rows[0]), timeout_seconds=10.0, retry=RetryPolicy(max_attempts=2, backoff_seconds=0.1, max_backoff_seconds=1.0))
+    row = rows[0]
+    raw = http.request_json(context, "GET", _policy_file_url(row), timeout_seconds=10.0, retry=RetryPolicy(max_attempts=2, backoff_seconds=0.1, max_backoff_seconds=1.0))
     if not isinstance(raw, dict): raise ConfigurationError("canonical private policy was not a JSON object")
+    lane_raw = raw.get("lane")
+    if not isinstance(lane_raw, dict): raise ConfigurationError("canonical private policy lane was not an object")
+    raw = dict(raw)
+    raw["lane"] = {**lane_raw, "fit_floor": _lane_fit_floor(row), "target_review_floor": None}
     return _parse_private_policy(raw)
 
 
