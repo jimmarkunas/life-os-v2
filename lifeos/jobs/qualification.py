@@ -23,6 +23,8 @@ from datetime import date
 
 from lifeos.jobs.models import AdmissionStatus, FreshnessStatus, NormalizedCandidate, WorkMode
 
+UNIVERSAL_FIT_FLOOR = 72
+
 
 class QualificationError(ValueError):
     pass
@@ -42,6 +44,10 @@ class LaneConfig:
     freshness_gate: bool
     freshness_max_days: int | None
     is_target_bucket: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "fit_floor", UNIVERSAL_FIT_FLOOR)
+        object.__setattr__(self, "target_review_floor", None)
 
 
 @dataclass(frozen=True)
@@ -90,12 +96,6 @@ def qualify(candidate: NormalizedCandidate, *, lane: LaneConfig, run_date: date)
 
     fit = candidate.fit
     if fit is not None and fit < lane.fit_floor:
-        if lane.is_target_bucket and lane.target_review_floor is not None and fit >= lane.target_review_floor:
-            return QualificationResult(
-                AdmissionStatus.PASSED_REVIEW,
-                f"Target review band: fit {fit} is below {lane.fit_floor} admission floor",
-                candidate.freshness_status,
-            )
         return QualificationResult(
             AdmissionStatus.EXCLUDED,
             f"Fit {fit} is below configured {lane.fit_floor} floor",
