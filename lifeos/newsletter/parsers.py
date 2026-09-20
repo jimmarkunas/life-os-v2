@@ -97,7 +97,8 @@ def _parse_provider(
     elif provider == "Jobright":
         cards, terminal = _parse_jobright(text)
     elif provider == "LinkedIn Jobs":
-        cards, terminal = _parse_linkedin(text)
+        raw_mime_html = text if source_kind == "raw-mime-html" else None
+        cards, terminal = _parse_linkedin(text, raw_mime_html=raw_mime_html)
     else:
         cards, terminal = _parse_markdown_generic(text)
     issues: list[str] = []
@@ -533,6 +534,34 @@ def _parse_jobright(text: str) -> tuple[list[dict[str, object]], str | None]:
     return out, terminal
 
 
+def _extract_preheader_text(raw_mime_html: str) -> str | None:
+    tag_match = re.search(r"<[^>]+data-email-preheader\s*=\s*['\"]true['\"][^>]*>", raw_mime_html, re.I)
+    if not tag_match:
+        return None
+    rest = raw_mime_html[tag_match.end():]
+    close_match = re.search(r"</[^>]+>", rest)
+    if not close_match:
+        return None
+    text = html.unescape(re.sub(r"<[^>]+>", " ", rest[: close_match.start()]))
+    return re.sub(r"\s+", " ", text).strip() or None
+
+
+def _apply_preheader_description(preheader: str, cards: list[dict[str, object]]) -> None:
+    colon_idx = preheader.find(": ")
+    if colon_idx < 1:
+        return
+    prefix = re.sub(r"\s+", " ", preheader[:colon_idx]).strip()
+    description = re.sub(r"\s+", " ", preheader[colon_idx + 2:]).strip()
+    if not description:
+        return
+    matches = [
+        c for c in cards
+        if re.sub(r"\s+", " ", f"{c.get('company', '')} {c.get('role', '')}").strip().casefold() == prefix.casefold()
+    ]
+    if len(matches) == 1:
+        matches[0]["description"] = description
+
+
 def _linkedin_auxiliary_line(text: str) -> bool:
     low = text.casefold().strip()
     return (
@@ -544,8 +573,9 @@ def _linkedin_auxiliary_line(text: str) -> bool:
     )
 
 
-def _parse_linkedin(text: str) -> tuple[list[dict[str, object]], str | None]:
-    plain = _plain(text)
+def _parse_linkedin(text: str, *, raw_mime_html: str | None = None) -> tuple[list[dict[str, object]], str | None]:
+    card_text = re.sub(r"<[^>]+data-email-preheader\s*=\s*['\"]true['\"][^>]*>.*?</[^>]+>", "", text, flags=re.S | re.I) if raw_mime_html else text
+    plain = _plain(card_text)
     low = plain.casefold()
     lines = _lines(plain)
     out: list[dict[str, object]] = []
@@ -567,15 +597,6 @@ def _parse_linkedin(text: str) -> tuple[list[dict[str, object]], str | None]:
         if len(previous) < 3:
             continue
         location, company, role = previous[-1], previous[-2], _clean_candidate(previous[-3])
-        description = None
-        if len(previous) == 4:
-            candidate_description = previous[0]
-            if (
-                len(candidate_description.split()) >= 4
-                and candidate_description[-1:] in ".!?"
-                and not _linkedin_auxiliary_line(candidate_description)
-            ):
-                description = candidate_description
         if len(company) < 2 or len(role) < 3:
             continue
         seen.add(job_id)
@@ -588,7 +609,6 @@ def _parse_linkedin(text: str) -> tuple[list[dict[str, object]], str | None]:
                 "location": location,
                 "work_mode": "Remote" if "remote" in location.casefold() else "Unknown",
                 "compensation": compensation,
-                "description": description,
             }
         )
 
@@ -620,6 +640,10 @@ def _parse_linkedin(text: str) -> tuple[list[dict[str, object]], str | None]:
                     "compensation": "Not disclosed",
                 }
             )
+    if out and raw_mime_html:
+        preheader = _extract_preheader_text(raw_mime_html)
+        if preheader:
+            _apply_preheader_description(preheader, out)
     terminal = "unsubscribe" if "unsubscribe" in low else ("linkedin-card" if out else None)
     return out, terminal
 
