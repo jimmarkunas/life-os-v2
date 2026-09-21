@@ -10,6 +10,7 @@ from lifeos.jobs.fit_title_semantics import classify_title
 from lifeos.jobs.fit_requirement_extraction import extract_requirements
 from lifeos.jobs.fit_scoreability import compile_fit
 from lifeos.jobs.models import FitEvidenceKind
+from lifeos.jobs.identity import IdentityCollision, derive_identity_evidence, resolve_existing_identity
 
 def msg(message_id, subject, body, *, sender="alerts@jobright.example.invalid", mailbox="gmail", minute=0, headers=None):
     return RoutedNewsletterMessage(mailbox,message_id,datetime(2026,1,15,12,minute,tzinfo=timezone.utc),sender,subject,body,headers or {})
@@ -176,6 +177,13 @@ Content-Type: text/html; charset=utf-8
         hard = classify_title("Software Engineer", profile.title_patterns, profile.direct_specialization_patterns)
         hard_reqs = extract_requirements("Must perform hands-on software development and software engineering", profile.dimension_patterns, profile.evidence_patterns, profile.material_patterns, profile.ignore_patterns, profile.hard_family_patterns).requirements
         self.assertEqual(compile_fit(title="Software Engineer", title_semantics=hard, requirements=list(hard_reqs), evidence_kind=FitEvidenceKind.EMPLOYER_ATS_JD, hard_family_mismatch=True).fit_result.final_score, 40)
+        job = SimpleNamespace(company=SimpleNamespace(name="Sardine"), provider_job_id="4463920520", canonical_identity=None, apply_url=None, role="Technical Program Manager", location="United States")
+        evidence = derive_identity_evidence(job)
+        legacy = SimpleNamespace(job=SimpleNamespace(stable_job_key="Sardine::4463920520"))
+        self.assertEqual(resolve_existing_identity(evidence, records_by_stable_key={"Sardine::4463920520": legacy}, records_by_apply_url={}), "Sardine::4463920520")
+        current = SimpleNamespace(job=SimpleNamespace(stable_job_key="sardine|technical program manager|united states"))
+        with self.assertRaises(IdentityCollision):
+            resolve_existing_identity(evidence, records_by_stable_key={"Sardine::4463920520": legacy, "sardine|technical program manager|united states": current}, records_by_apply_url={})
 
     def test_processor_fetch_failure_is_degraded_and_cleanup_never_parser_authorized(self):
         class FailingSource(FakeSource):

@@ -116,8 +116,8 @@ def derive_identity_evidence(job: JobObservation) -> IdentityEvidence:
     """Return all valid identity evidence for bounded existing-record lookup.
 
     The final fallback key remains exactly the same company|role|location
-    expression used by stable_job_key(); provider IDs are intentionally
-    excluded because they are provenance only.
+    expression used by stable_job_key(); a provider alias is appended only
+    for bounded existing-record lookup and never becomes a new primary key.
     """
     keys: list[str] = []
     urls: list[str] = []
@@ -135,6 +135,10 @@ def derive_identity_evidence(job: JobObservation) -> IdentityEvidence:
     location = job.location or ""
     if company and role and location:
         keys.append(f"{_norm(company)}|{_norm(role)}|{_norm(location)}")
+
+    alias = provider_alias(job)
+    if alias:
+        keys.append(alias)
 
     return IdentityEvidence(
         stable_job_keys=tuple(dict.fromkeys(keys)),
