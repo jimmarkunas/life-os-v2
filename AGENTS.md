@@ -26,6 +26,8 @@ If stale context targets V1, stop with:
 
 The canonical policy owns generic development method and governance. This file owns only V2 repository routing and role-entry mechanics.
 
+V2-specific enforcement may stop with: `LINE_BUDGET_STOP`, `TOKEN_BUDGET_STOP`, or `TEST_BUDGET_STOP`.
+
 ## Optional role triggers
 
 Load a role only when Jim explicitly triggers it:

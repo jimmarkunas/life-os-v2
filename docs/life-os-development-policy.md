@@ -17,7 +17,9 @@ It owns generic development method and governance. This supplement does not dupl
 
 V2 is public code and the sole active implementation repository. Production secrets, private identifiers, canonical records, personal scoring policy, runtime checkpoints, and private payloads remain outside Git, fixtures, logs, Actions artifacts, and caches. V1 implementation is reference-only under the boundary in `AGENTS.md`.
 
-The existing V2 CI development guard at `scripts/ci/development_guard.py` enforces repository-specific budget/test metadata and the 100-test ceiling in addition to the canonical policy. It is an enforcement mechanism, not a second policy owner; its stricter checks may not weaken canonical rules.
+The existing V2 CI guard at `scripts/ci/development_guard.py` enforces repository-level budget metadata, test-ratchet/justification, and `Production-Frozen` surface checks derived from canonical policy. It is an enforcement mechanism, not a policy owner.
+
+V2-specific prohibitions remain: no GitHub Actions workflow chains, and no migration of V1 handoff manifests or Continuity-style coordination into V2. These remain subordinate to the canonical Development Policy, `docs/DECISIONS.md`, and `docs/ARCHITECTURE.md`.
 
 ## V2 TestKit boundary
 
