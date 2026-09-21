@@ -17,8 +17,8 @@ class FakeHttp:
         if method == "POST":
             return {"total": 1, "jobPostings": [{"title": "Workday role", "bulletFields": ["wd-1"], "locationsText": "London", "externalPath": "/job/wd-1", "postedOn": "2026-01-01"}]}
         if "greenhouse" in url: return {"jobs": [{"id": "gh-1", "title": "Greenhouse role", "location": {"name": "London"}, "absolute_url": "https://jobs.invalid/gh-1"}]}
-        if "ashby" in url: return {"jobs": [{"id": "ash-1", "title": "Ashby role", "location": "London", "jobUrl": "https://jobs.invalid/ash-1", "compensation": {"min": 1}}]}
-        if "workable" in url: return {"jobs": [{"shortcode": "wk-1", "title": "Workable role", "city": "London", "application_url": "https://jobs.invalid/wk-1"}]}
+        if "ashby" in url: return {"jobs": [{"id": "ash-1", "title": "Ashby role", "location": "London", "jobUrl": "https://jobs.invalid/ash-1", "applyUrl": "https://jobs.invalid/ash-1/apply", "compensation": {"min": 1}}]}
+        if "workable" in url: return {"jobs": [{"shortcode": "wk-1", "title": "Workable role", "city": "London", "application_url": "https://jobs.invalid/wk-1/apply", "shortlink": "https://jobs.invalid/wk-1/short", "url": "https://jobs.invalid/wk-1/source"}]}
         if "postings.json" in url: return {"data": [{"id": "pp-1", "title": "Pinpoint role", "location": {"name": "London"}, "path": "/pp-1"}]}
         return [{"id": "lv-1", "text": "Lever role", "categories": {"location": "London"}, "hostedUrl": "https://jobs.invalid/lv-1", "applyUrl": "https://jobs.invalid/lv-1/apply"}]
 
@@ -37,6 +37,10 @@ class ScaleUpAcquisitionTests(unittest.TestCase):
         self.assertTrue(all(o.source_description_text is None for o in result.observations))
         workday = next(o for o in result.observations if o.company == "Garrison Technology Ltd")
         self.assertTrue(workday.source_apply_url.endswith("/en-US/external-careers2/job/wd-1"))
+        ashby = next(o for o in result.observations if o.company == "Chattermill Analytics Limited")
+        self.assertEqual(ashby.source_apply_url, "https://jobs.invalid/ash-1/apply")
+        workable = next(o for o in result.observations if o.company == "A Y & J Solicitors")
+        self.assertEqual(workable.source_apply_url, "https://jobs.invalid/wk-1/apply")
 
     def test_shared_ats_api_failure_is_not_complete(self):
         broken = REGISTRY["sources"][0]["canonical_endpoint"]
