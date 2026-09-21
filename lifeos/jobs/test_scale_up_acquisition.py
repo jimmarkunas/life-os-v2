@@ -26,12 +26,17 @@ class ScaleUpAcquisitionTests(unittest.TestCase):
     def test_shared_ats_api_contract_and_observations(self):
         self.assertEqual(len(REGISTRY["sources"]), 13)
         self.assertEqual({s["source_type"] for s in REGISTRY["sources"]}, {"workable_public", "ashby", "workday_public", "greenhouse", "pinpoint_json", "lever_public"})
-        result = ScaleUpAcquirer(context=RunContext.start(now=datetime(2026,1,1,tzinfo=timezone.utc)), http=FakeHttp()).acquire(REGISTRY)
+        acquired_at = datetime(2026,1,1,tzinfo=timezone.utc)
+        result = ScaleUpAcquirer(context=RunContext.start(now=acquired_at), http=FakeHttp()).acquire(REGISTRY, now=acquired_at)
         self.assertTrue(result.complete)
         self.assertEqual(len(result.sources), 13)
         self.assertTrue(all(s.state == "COMPLETE" for s in result.sources))
         self.assertTrue(all(isinstance(o, SourceVacancyObservation) and o.source_mailbox == "public-web" for o in result.observations))
         self.assertTrue(all(o.company and o.role and o.source_apply_url for o in result.observations))
+        self.assertTrue(all(o.source_received_at == acquired_at for o in result.observations))
+        self.assertTrue(all(o.source_description_text is None for o in result.observations))
+        workday = next(o for o in result.observations if o.company == "Garrison Technology Ltd")
+        self.assertTrue(workday.source_apply_url.endswith("/en-US/external-careers2/job/wd-1"))
 
     def test_shared_ats_api_failure_is_not_complete(self):
         broken = REGISTRY["sources"][0]["canonical_endpoint"]
@@ -39,6 +44,9 @@ class ScaleUpAcquisitionTests(unittest.TestCase):
         self.assertFalse(result.complete)
         self.assertEqual(len(result.sources), 13)
         self.assertEqual(result.sources[0].state, "BLOCKED")
+        with self.subTest("truncated registry"):
+            result = ScaleUpAcquirer(context=RunContext.start(), http=FakeHttp()).acquire({"sources": REGISTRY["sources"][:-1]})
+            self.assertFalse(result.complete)
         unknown = {"sources": [{**REGISTRY["sources"][0], "source_type": "unknown"}]}
         result = ScaleUpAcquirer(context=RunContext.start(), http=FakeHttp()).acquire(unknown)
         self.assertFalse(result.complete)
