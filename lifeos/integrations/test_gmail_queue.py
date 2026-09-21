@@ -119,8 +119,8 @@ def test_unprocessed_queue_fails_closed_with_message_id_after_retry_failure() ->
     http = DetailRetryFakeHttp(fail_message_id="msg-stuck", permanent=True)
     http.created_processed = True
     mailbox = _mailbox(http)
-    start = datetime(2026, 9, 15,tzinfo=timezone.utc)
-    end = datetime(2026, 9, 16,tzinfo=timezone.utc)
+    start = datetime(2026, 9, 15, tzinfo=timezone.utc)
+    end = datetime(2026, 9, 16, tzinfo=timezone.utc)
 
     try:
         mailbox.fetch_unprocessed(start, end, "J Newsletters")
