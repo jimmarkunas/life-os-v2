@@ -421,7 +421,7 @@ def execute_us_remote(
                 "staging_safe": staging_ok,
                 "processed": processed_count,
                 "processed_errors": len(processed_errors),
-                "retention_error_codes": retention_errors,
+                "retention_error_count": len(retention_errors), "retention_error_codes": sorted(set(retention_errors)),
                 "pending_source_messages": pending_source_messages,
                 "oldest_pending_age_seconds": oldest_pending_age_seconds,
                 "processed_observations": attempted_newsletter_observations,

@@ -43,12 +43,13 @@ def test_staging_and_processed_state_are_distinct() -> None:
     assert modify_calls[-1][2]["json_body"] == {"addLabelIds": ["label-processed"], "removeLabelIds": ["UNREAD"]}
     now = datetime(2026, 9, 20, tzinfo=timezone.utc)
     class RetentionHttp:
-        def __init__(self): self.calls=[]; self.labels={"old":{"news","processed"},"recent":{"news","processed"},"missing":{"news"},"trash":{"news","processed","TRASH"},"human":{"news","processed"}}; self.dates={"old":now-timedelta(days=60),"recent":now-timedelta(days=59,seconds=1),"missing":now-timedelta(days=90),"trash":now-timedelta(days=90),"human":now-timedelta(days=90)}
+        def __init__(self): self.calls=[]; self.metadata_reads=[]; self.labels={"old":{"news","processed"},"recent":{"news","processed"},"missing":{"news"},"trash":{"news","processed","TRASH"},"human":{"news","processed"}}; self.dates={"old":now-timedelta(days=60),"recent":now-timedelta(days=59,seconds=1),"missing":now-timedelta(days=90),"trash":now-timedelta(days=90),"human":now-timedelta(days=90)}
         def request_json(self, _context, method, url, **kwargs):
             self.calls.append((method,url,kwargs)); mid=url.split("/messages/",1)[1].split("?",1)[0] if "/messages/" in url else None
             if method == "GET" and url.endswith("/labels"): return {"labels":[{"id":"news","name":"J Newsletters"},{"id":"processed","name":"J Newsletters/Processed"}]}
             if method == "GET" and "/messages?" in url: return {"messages":[{"id":key} for key in self.labels]}
-            if method == "GET" and "?format=metadata" in url: return {"id":mid,"internalDate":str(int(self.dates[mid].timestamp()*1000)),"labelIds":list(self.labels[mid]),"payload":{"headers":[{"name":"From","value":"alerts@example.invalid"},{"name":"Subject","value":"Interview invitation" if mid == "human" else "Daily jobs"}]}}
+            if method == "GET" and "?format=metadata" in url:
+                response={"id":mid,"internalDate":str(int(self.dates[mid].timestamp()*1000)),"labelIds":list(self.labels[mid]),"payload":{"headers":[{"name":"From","value":"alerts@example.invalid"},{"name":"Subject","value":"Interview invitation" if mid == "human" else "Daily jobs"}]}}; self.metadata_reads.append((mid, response["labelIds"])); return response
             if method == "POST" and url.endswith(f"/messages/old/trash"): self.labels["old"].add("TRASH"); return {"id":"old"}
             assert "/delete" not in url and not url.endswith("/modify"), (method,url)
             raise AssertionError((method,url,kwargs))
@@ -60,7 +61,9 @@ def test_staging_and_processed_state_are_distinct() -> None:
     assert _retain_processed_newsletters(retention_mailbox, now=now) == []
     trash_calls = [call for call in retention_http.calls if call[0] == "POST"]
     assert len(trash_calls) == 1 and trash_calls[0][1].endswith("/messages/old/trash")
-    assert any(call[0] == "GET" and "/messages/old?format=metadata" in call[1] for call in retention_http.calls[1:])
+    trash_index = next(index for index, call in enumerate(retention_http.calls) if call[0] == "POST" and call[1].endswith("/messages/old/trash"))
+    readbacks = [call for call in retention_http.calls[trash_index + 1:] if call[0] == "GET" and "/messages/old?format=metadata" in call[1]]
+    assert readbacks and any(mid == "old" and "TRASH" in labels for mid, labels in retention_http.metadata_reads if mid == "old")
     assert "TRASH" in retention_http.labels["old"] and not any("/delete" in call[1] or call[1].endswith("/modify") for call in trash_calls)
 
 
