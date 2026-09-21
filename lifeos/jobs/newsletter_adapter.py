@@ -253,10 +253,8 @@ class NewsletterJobsAdapter:
                 compiled = compile_fit(title=role, title_semantics=title, requirements=list(extracted.requirements), evidence_kind=fit_evidence_kind, hard_family_mismatch=hard_family)
                 fit = compiled.fit_result.final_score if compiled.fit_result else None
                 fit_authority = compiled.authority
-                unresolved_reason = compiled.reason
             except ValueError:
-                fit_evidence_kind = FitEvidenceKind.NONE
-                unresolved_reason = "fit evidence is malformed or unclassified"
+                fit = None
         return NormalizedCandidate(
             job=job, fit=fit, market=cfg.market,
             freshness_status=FreshnessStatus.UNRESOLVED,
