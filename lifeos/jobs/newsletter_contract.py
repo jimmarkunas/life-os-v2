@@ -39,16 +39,23 @@ class IngestResult:
 def derive_review_these_jobs(observations: list[SourceVacancyObservation], candidates: list[NormalizedCandidate], results: list[IngestResult]) -> list[dict[str, object]]:
     candidates_by_ref = {item.evidence_ref: item for item in candidates}
     results_by_ref = {item.evidence_ref: item for item in results}
-    rows: dict[tuple[str, str, str], dict[str, object]] = {}
+    rows: dict[tuple[str, str], dict[str, object]] = {}
+    first_seen = {}
     for observation in observations:
         result = results_by_ref.get(observation.evidence_ref)
         if result is None or result.disposition is not Disposition.REVIEW_DEGRADED:
             continue
         candidate = candidates_by_ref.get(observation.evidence_ref)
         evidence = candidate.fit_evidence_kind.value if candidate and candidate.fit_evidence_kind.value != "none" else None
-        key = (observation.source_provider, observation.provider_job_id or observation.source_apply_url or observation.evidence_ref, observation.role or "")
-        rows[key] = {"Role": observation.role, "Company": observation.company, "Source": observation.source_provider, "Apply URL": (candidate.job.apply_url if candidate else None) or observation.source_apply_url, "Review Reason": result.detail, "Evidence Available": [item for item in ("source_description" if observation.source_description_text else None, evidence) if item], "Evidence Missing": ["employer_ats_jd"] if evidence != "employer_ats_jd" else [], "First Surfaced": observation.source_received_at.isoformat() if observation.source_received_at else None, "Retry Status": "retryable"}
-    return list(rows.values())
+        key = (observation.source_provider, observation.provider_job_id or observation.source_apply_url or observation.evidence_ref)
+        surfaced = observation.source_received_at
+        if key in first_seen and (surfaced is None or (first_seen[key] is not None and surfaced >= first_seen[key])):
+            continue
+        if surfaced is not None or key not in first_seen:
+            first_seen[key] = surfaced
+        available = (["job_title"] if observation.role else []) + (["source_description"] if observation.source_description_text else []) + ([evidence] if evidence else [])
+        rows[key] = {"Role": observation.role, "Company": observation.company, "Source": observation.source_provider, "Apply URL": (candidate.job.apply_url if candidate else None) or observation.source_apply_url, "Review Reason": result.detail, "Evidence Available": available, "Evidence Missing": ["employer_ats_jd"] if evidence != "employer_ats_jd" else [], "First Surfaced": surfaced.isoformat() if surfaced else None, "Retry Status": "retryable"}
+    return [rows[key] for key in sorted(rows)]
 
 
 def ingest(
