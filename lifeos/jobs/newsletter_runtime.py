@@ -14,7 +14,7 @@ from lifeos.integrations.gmail import GmailInboxMetadataPort, GmailMailboxTransp
 from lifeos.integrations.notion import NotionTransport
 from lifeos.jobs.fit_scoring import FitProfile
 from lifeos.jobs.newsletter_adapter import HttpClientFetcher, NewsletterAdapterConfig, NewsletterJobsAdapter
-from lifeos.jobs.newsletter_contract import Disposition, IngestResult, ingest
+from lifeos.jobs.newsletter_contract import Disposition, IngestResult, derive_review_these_jobs, ingest
 from lifeos.jobs.newsletter_adapter import _adapt_all
 from lifeos.jobs.notion_repository import NotionCareerRepository, NotionCareerRepositoryConfig
 from lifeos.jobs.qualification import LaneConfig
@@ -220,6 +220,7 @@ def execute_newsletter(
         )
         body: dict[str, Any] = {
             "status": "PASS" if mail_lane_pass else "DEGRADED",
+            "review_these_jobs": derive_review_these_jobs(list(newsletter_result.observations), candidates, newsletter_results),
             "elapsed_seconds": round(context.elapsed_seconds(), 3),
             "mail": {
                 "status": "PASS" if mail_lane_pass else "DEGRADED",
