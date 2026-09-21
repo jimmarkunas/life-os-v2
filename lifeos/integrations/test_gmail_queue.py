@@ -49,7 +49,7 @@ def test_staging_and_processed_state_are_distinct() -> None:
             if method == "GET" and url.endswith("/labels"): return {"labels":[{"id":"news","name":"J Newsletters"},{"id":"processed","name":"J Newsletters/Processed"}]}
             if method == "GET" and "/messages?" in url: return {"messages":[{"id":key} for key in self.labels]}
             if method == "GET" and "?format=metadata" in url:
-                sender = "LinkedIn Job Alerts <jobalerts-noreply@linkedin.com>" if mid == "old" else "alerts@example.invalid"
+                sender = "LinkedIn Job Alerts <jobalerts-noreply@linkedin.com.example.invalid>" if mid == "old" else "alerts@example.invalid"
                 subject = '“project manager”: Planet Pharma - AI Project Manager and more' if mid == "old" else ("Interview invitation" if mid == "human" else "Unclear newsletter")
                 headers = [{"name":"From","value":sender},{"name":"Subject","value":subject}]
                 if mid == "old": headers += [{"name":"List-Unsubscribe","value":"<https://linkedin.com/unsubscribe>"}]
@@ -119,8 +119,8 @@ def test_unprocessed_queue_fails_closed_with_message_id_after_retry_failure() ->
     http = DetailRetryFakeHttp(fail_message_id="msg-stuck", permanent=True)
     http.created_processed = True
     mailbox = _mailbox(http)
-    start = datetime(2026, 9, 15, tzinfo=timezone.utc)
-    end = datetime(2026, 9, 16, tzinfo=timezone.utc)
+    start = datetime(2026, 9, 15,tzinfo=timezone.utc)
+    end = datetime(2026, 9, 16,tzinfo=timezone.utc)
 
     try:
         mailbox.fetch_unprocessed(start, end, "J Newsletters")
