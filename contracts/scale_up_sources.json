@@ -1,0 +1,17 @@
+{
+  "sources": [
+    {"company":"A Y & J Solicitors","source_type":"workable_public","source_key":"ayjsolicitors","canonical_endpoint":"https://www.workable.com/api/accounts/ayjsolicitors?details=false","careers_url":"https://apply.workable.com/ayjsolicitors/?lng=en","completeness_contract":"api_full"},
+    {"company":"Clear Junction Limited","source_type":"workable_public","source_key":"clearjunction","canonical_endpoint":"https://www.workable.com/api/accounts/clearjunction?details=false","careers_url":"https://apply.workable.com/clearjunction/","completeness_contract":"api_full"},
+    {"company":"Chattermill Analytics Limited","source_type":"ashby","source_key":"chattermill","canonical_endpoint":"https://api.ashbyhq.com/posting-api/job-board/chattermill?includeCompensation=true","completeness_contract":"api_full"},
+    {"company":"Eighteen And A Half Limited","source_type":"ashby","source_key":"nous","canonical_endpoint":"https://api.ashbyhq.com/posting-api/job-board/nous?includeCompensation=true","careers_url":"https://www.nous.co/careers","completeness_contract":"api_full"},
+    {"company":"Hyperexponential Ltd","source_type":"ashby","source_key":"hyperexponential","canonical_endpoint":"https://api.ashbyhq.com/posting-api/job-board/hyperexponential?includeCompensation=true","completeness_contract":"api_full"},
+    {"company":"Safi Technologies Ltd","source_type":"ashby","source_key":"safi","canonical_endpoint":"https://api.ashbyhq.com/posting-api/job-board/safi?includeCompensation=true","careers_url":"https://www.safi.co/careers","completeness_contract":"api_full"},
+    {"company":"Tau Marketing Services Limited","source_type":"ashby","source_key":"quantum","canonical_endpoint":"https://api.ashbyhq.com/posting-api/job-board/quantum?includeCompensation=true","completeness_contract":"api_full"},
+    {"company":"Garrison Technology Ltd","source_type":"workday_public","source_key":"evergreenix:external-careers2","canonical_endpoint":"https://evergreenix.wd1.myworkdayjobs.com/en-US/external-careers2","careers_url":"https://www.everfox.com/careers","completeness_contract":"api_full"},
+    {"company":"Godesic Limited T/A Cutover","source_type":"greenhouse","source_key":"cutover","canonical_endpoint":"https://boards-api.greenhouse.io/v1/boards/cutover/jobs?content=true","careers_url":"https://cutover.com/careers","completeness_contract":"api_full"},
+    {"company":"Techary Limited","source_type":"greenhouse","source_key":"techary","canonical_endpoint":"https://boards-api.greenhouse.io/v1/boards/techary/jobs?content=true","completeness_contract":"api_full"},
+    {"company":"Wheely Technologies Ltd","source_type":"greenhouse","source_key":"wheely","canonical_endpoint":"https://boards-api.greenhouse.io/v1/boards/wheely/jobs?content=true","completeness_contract":"api_full"},
+    {"company":"Kido Schools UK Limited","source_type":"pinpoint_json","source_key":"careers.kidoschools.com","canonical_endpoint":"https://careers.kidoschools.com/postings.json","careers_url":"https://careers.kidoschools.com/en","completeness_contract":"api_full"},
+    {"company":"Vivacity Labs Limited","source_type":"lever_public","source_key":"vivacitylabs","canonical_endpoint":"https://api.lever.co/v0/postings/vivacitylabs?mode=json","careers_url":"https://jobs.lever.co/vivacitylabs","completeness_contract":"api_full"}
+  ]
+}
