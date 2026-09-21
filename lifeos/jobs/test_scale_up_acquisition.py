@@ -2,6 +2,7 @@ import json
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from lifeos.core.http import HttpResponse
 
 from lifeos.core.runtime import RunContext
 from lifeos.jobs.scale_up_acquisition import ScaleUpAcquirer
@@ -21,15 +22,26 @@ class FakeHttp:
         if "workable" in url: return {"jobs": [{"shortcode": "wk-1", "title": "Workable role", "city": "London", "application_url": "https://jobs.invalid/wk-1/apply", "shortlink": "https://jobs.invalid/wk-1/short", "url": "https://jobs.invalid/wk-1/source"}]}
         if "postings.json" in url: return {"data": [{"id": "pp-1", "title": "Pinpoint role", "location": {"name": "London"}, "path": "/pp-1"}]}
         return [{"id": "lv-1", "text": "Lever role", "categories": {"location": "London"}, "hostedUrl": "https://jobs.invalid/lv-1", "applyUrl": "https://jobs.invalid/lv-1/apply"}]
+    def request(self, context, method, url, **kwargs):
+        if "beintrepid" in url: body="There are no open positions at Intrepid at the moment"
+        elif "bluestonex" in url: body='<a href="/careers/role">Role Full-Time More Information</a>'
+        elif "join.com" in url: body='<a href="/companies/transreport/job/role">Transreport role</a>'
+        elif "stream.co" in url: body='<a href="/en/careers/role">Stream role</a>'
+        elif "popsa.com" in url: body='<a href="/careers/role">Popsa role</a>'
+        elif "zerogravity" in url or "welcometothejungle" in url: body='<a href="/jobs/role">WTTJ role</a>'
+        elif "teamtailor" in url or "rippling" in url or "careers.blis" in url or "communityfibre" in url or "sanogenetics" in url or "sharegain" in url: body='<a href="/jobs/role">HTML role</a>'
+        else: body='<a href="/careers/role">Static role</a>'
+        return HttpResponse(200, {}, body.encode())
 
 class ScaleUpAcquisitionTests(unittest.TestCase):
     def test_shared_ats_api_contract_and_observations(self):
-        self.assertEqual(len(REGISTRY["sources"]), 13)
-        self.assertEqual({s["source_type"] for s in REGISTRY["sources"]}, {"workable_public", "ashby", "workday_public", "greenhouse", "pinpoint_json", "lever_public"})
+        self.assertEqual(len(REGISTRY["sources"]), 30)
+        self.assertEqual(len({s["company"] for s in REGISTRY["sources"]}), 30)
+        self.assertEqual(len({s["source_type"] for s in REGISTRY["sources"]}), 14)
         acquired_at = datetime(2026,1,1,tzinfo=timezone.utc)
         result = ScaleUpAcquirer(context=RunContext.start(now=acquired_at), http=FakeHttp()).acquire(REGISTRY, now=acquired_at)
         self.assertTrue(result.complete)
-        self.assertEqual(len(result.sources), 13)
+        self.assertEqual(len(result.sources), 30)
         self.assertTrue(all(s.state == "COMPLETE" for s in result.sources))
         self.assertTrue(all(isinstance(o, SourceVacancyObservation) and o.source_mailbox == "public-web" for o in result.observations))
         self.assertTrue(all(o.company and o.role and o.source_apply_url for o in result.observations))
@@ -46,7 +58,7 @@ class ScaleUpAcquisitionTests(unittest.TestCase):
         broken = REGISTRY["sources"][0]["canonical_endpoint"]
         result = ScaleUpAcquirer(context=RunContext.start(), http=FakeHttp(broken)).acquire(REGISTRY)
         self.assertFalse(result.complete)
-        self.assertEqual(len(result.sources), 13)
+        self.assertEqual(len(result.sources), 30)
         self.assertEqual(result.sources[0].state, "BLOCKED")
         with self.subTest("truncated registry"):
             result = ScaleUpAcquirer(context=RunContext.start(), http=FakeHttp()).acquire({"sources": REGISTRY["sources"][:-1]})

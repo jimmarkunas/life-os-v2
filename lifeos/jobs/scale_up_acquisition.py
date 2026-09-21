@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from html import unescape
+from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse
 
 from lifeos.core.http import HttpClient, RetryPolicy
 from lifeos.core.runtime import RunContext
 from lifeos.newsletter.models import SourceVacancyObservation
 
-KINDS = frozenset({"workable_public", "ashby", "workday_public", "greenhouse", "pinpoint_json", "lever_public"})
+KINDS = frozenset({"workable_public", "ashby", "workday_public", "greenhouse", "pinpoint_json", "lever_public", "teamtailor_html", "static_complete_html", "wttj_html", "rippling_html", "join_html", "stream_html", "popsa_html", "bluestonex_html"})
 
 @dataclass(frozen=True, slots=True)
 class ScaleUpSourceHealth:
@@ -26,7 +29,7 @@ class ScaleUpAcquisitionResult:
 
     @property
     def complete(self) -> bool:
-        return len(self.sources) == 13 and all(s.state == "COMPLETE" for s in self.sources)
+        return len(self.sources) == 30 and len({s.company for s in self.sources}) == 30 and all(s.state == "COMPLETE" for s in self.sources)
 
 def _text(value):
     return None if value is None else str(value)
@@ -41,6 +44,37 @@ def _obs(source, job_id, title, location, url, compensation=None, received_at=No
         provider_job_id=identity, source_received_at=received_at,
     )
 
+class _PageParser(HTMLParser):
+    def __init__(self):
+        super().__init__(); self.links=[]; self.scripts=[]; self._href=None; self._parts=[]; self._script=False; self._script_parts=[]
+    def handle_starttag(self, tag, attrs):
+        attrs=dict(attrs)
+        if tag == "a" and attrs.get("href"): self._href, self._parts = attrs["href"], []
+        if tag == "script": self._script, self._script_parts = True, []
+    def handle_data(self, data):
+        if self._href: self._parts.append(data)
+        if self._script: self._script_parts.append(data)
+    def handle_endtag(self, tag):
+        if tag == "a" and self._href: self.links.append((self._href, " ".join(" ".join(self._parts).split()))); self._href=None
+        if tag == "script" and self._script: self.scripts.append("".join(self._script_parts)); self._script=False
+
+def _html_jobs(text, source, now, pattern=r"/jobs/[^/]+", *, all_links=False):
+    parser=_PageParser(); parser.feed(text); rows=[]; seen=set()
+    for raw in parser.scripts:
+        try:
+            data=json.loads(raw); items=data if isinstance(data,list) else [data]
+            for item in items:
+                if isinstance(item,dict) and item.get("@type") == "JobPosting":
+                    url=item.get("url") or source["canonical_endpoint"]; rows.append(_obs(source,item.get("identifier"),item.get("title"),None,url,received_at=now)); seen.add(url)
+        except (TypeError, ValueError, json.JSONDecodeError): pass
+    base_path=urlparse(source["canonical_endpoint"]).path.rstrip("/")
+    for href,label in parser.links:
+        url=urljoin(source["canonical_endpoint"],href); path=urlparse(url).path.rstrip("/")
+        if (all_links and path.startswith(base_path + "/")) or (not all_links and re.fullmatch(pattern,path,re.I)):
+            if len(label) >= 3 and label.casefold() not in {"apply","apply now","careers","jobs"} and url not in seen:
+                rows.append(_obs(source,hashlib.sha1(url.encode()).hexdigest()[:12],label,None,url,received_at=now)); seen.add(url)
+    return rows
+
 class ScaleUpAcquirer:
     def __init__(self, *, context: RunContext, http: HttpClient, max_workers: int = 4):
         self.context, self.http = context, http
@@ -49,8 +83,22 @@ class ScaleUpAcquirer:
         self.context.require_time()
         return self.http.request_json(self.context, method, url, json_body=body, timeout_seconds=10, retry=RetryPolicy(max_attempts=2))
 
+    def _html(self, url):
+        self.context.require_time()
+        return self.http.request(self.context, "GET", url, timeout_seconds=10, retry=RetryPolicy(max_attempts=2)).body.decode("utf-8", "replace")
+
     def _jobs(self, source):
         kind, jobs = source["source_type"], None
+        if kind in {"teamtailor_html", "wttj_html", "rippling_html", "stream_html", "popsa_html", "bluestonex_html", "join_html", "static_complete_html"}:
+            text=self._html(source["canonical_endpoint"]); marker=source.get("zero_marker")
+            if marker:
+                if marker.casefold() in unescape(re.sub(r"<[^>]+>", " ", text)).casefold(): return []
+                raise ValueError("configured zero marker not present")
+            patterns={"teamtailor_html":r"/jobs/[^/]+","wttj_html":r"/jobs/[^/]+","rippling_html":r"/jobs/[^/]+","stream_html":r"/(?:[a-z]{2}(?:-[a-z]{2})?/)?careers/[^/]+","popsa_html":r"/careers/[^/]+"}
+            rows=_html_jobs(text,source,self.now,patterns.get(kind,r".*"),all_links=kind in {"join_html","static_complete_html","bluestonex_html"})
+            if kind == "bluestonex_html": rows=[r for r in rows if "full-time more information" in (r.source_subject or "").casefold()]
+            if not rows: raise ValueError("ambiguous empty first-party inventory")
+            return rows
         if kind == "workday_public":
             parsed = urlparse(source["canonical_endpoint"]); tenant, site = source["source_key"].split(":", 1)
             api = f"{parsed.scheme}://{parsed.netloc}/wday/cxs/{tenant}/{site}/jobs"; rows=[]; offset=0; total=None
@@ -100,8 +148,9 @@ class ScaleUpAcquirer:
         observations=[]; health=[]; self.now=now or datetime.now(timezone.utc)
         for source in registry.get("sources", []):
             try:
-                if source.get("source_type") not in KINDS: raise ValueError("unsupported source type")
+                if source.get("source_type") not in KINDS: raise TypeError("unsupported source type")
                 rows=self._jobs(source); observations.extend(rows); health.append(ScaleUpSourceHealth(source["company"],"COMPLETE",len(rows)))
             except Exception as exc:
-                health.append(ScaleUpSourceHealth(source.get("company",""),"BLOCKED",0,type(exc).__name__))
+                state="DEGRADED" if isinstance(exc, ValueError) else "BLOCKED"
+                health.append(ScaleUpSourceHealth(source.get("company",""),state,0,type(exc).__name__))
         return ScaleUpAcquisitionResult(tuple(observations),tuple(health))
