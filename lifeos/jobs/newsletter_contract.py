@@ -16,7 +16,7 @@ from lifeos.jobs.identity import IdentityCollision, derive_identity_evidence, re
 from lifeos.jobs.lifecycle import apply_observation, new_record
 from lifeos.jobs.models import AdmissionStatus, NormalizedCandidate
 from lifeos.newsletter.models import SourceVacancyObservation
-from lifeos.jobs.qualification import LaneConfig, qualify
+from lifeos.jobs.qualification import LaneConfig, QualificationResult, qualify
 from lifeos.jobs.repository import CareerRepository, ReadBackMismatch
 
 
@@ -79,6 +79,8 @@ def ingest(
     evidence_by_index = {}
     candidate_stable_keys: list[str] = []
     candidate_apply_urls: list[str] = []
+    qualification_by_index: dict[int, QualificationResult] = {}
+    qualification_errors: dict[int, str] = {}
 
     for i, candidate in enumerate(candidates):
         if candidate.unresolved_reason:
@@ -104,26 +106,6 @@ def ingest(
             tentative_key = stable_job_key(candidate.job)
         except ValueError as exc:
             results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, None, str(exc))
-            continue
-
-        try:
-            qualification = qualify(candidate, lane=lane, run_date=run_date)
-        except Exception as exc:
-            results[i] = IngestResult(
-                candidate.evidence_ref,
-                Disposition.REVIEW_DEGRADED,
-                tentative_key,
-                f"qualification error: {exc}",
-            )
-            continue
-
-        if qualification.admission_status == AdmissionStatus.EXCLUDED:
-            results[i] = IngestResult(
-                candidate.evidence_ref,
-                Disposition.EXCLUDED,
-                tentative_key,
-                qualification.review_reason,
-            )
             continue
 
         evidence_by_index[i] = evidence
@@ -183,7 +165,12 @@ def ingest(
             candidate = replace(candidate, job=job)
 
         key = stable_job_key(candidate.job)
-        qualification = qualify(candidate, lane=lane, run_date=run_date)
+        try:
+            qualification = qualify(candidate, lane=lane, run_date=run_date)
+        except Exception as exc:
+            qualification = QualificationResult(AdmissionStatus.PASSED_REVIEW, "Fit evaluation pending", candidate.freshness_status)
+            qualification_errors[i] = f"evaluation pending: qualification error: {exc}"
+        qualification_by_index[i] = qualification
 
         observations.append(
             LaneObservation(
@@ -194,7 +181,7 @@ def ingest(
                 fit_authority=candidate.fit_authority,
                 source_types=candidate.source_types,
                 eligible_lanes=(lane.name,)
-                if qualification.admission_status != AdmissionStatus.EXCLUDED
+                if qualification.admission_status is AdmissionStatus.ADMITTED and i not in qualification_errors
                 else (),
                 admission_status=qualification.admission_status,
             )
@@ -227,26 +214,6 @@ def ingest(
         existing = existing_records.get(key)
         try:
             if existing is None:
-                if reconciled_job.best_fit is None:
-                    for i in same_key_indices:
-                        candidate, _ = live_by_index[i]
-                        results[i] = IngestResult(
-                            candidate.evidence_ref,
-                            Disposition.REVIEW_DEGRADED,
-                            key,
-                            "new canonical Job requires a LIFE OS Fit score",
-                        )
-                    continue
-                if reconciled_job.best_fit < lane.fit_floor:
-                    for i in same_key_indices:
-                        candidate, _ = live_by_index[i]
-                        results[i] = IngestResult(
-                            candidate.evidence_ref,
-                            Disposition.EXCLUDED,
-                            key,
-                            f"Fit {reconciled_job.best_fit} is below configured {lane.fit_floor} floor",
-                        )
-                    continue
                 record = new_record(reconciled_job.job, run_date=run_date)
                 persisted = repository.upsert(record)
                 primary_disposition = Disposition.CREATED
@@ -268,11 +235,19 @@ def ingest(
 
         for i in same_key_indices:
             candidate, _ = live_by_index[i]
+            qualification = qualification_by_index[i]
+            evaluation_pending = qualification_errors.get(i) or (
+                f"evaluation pending: {qualification.review_reason}" if candidate.fit is None else None
+            )
+            if evaluation_pending:
+                results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, persisted.job.stable_job_key, evaluation_pending if isinstance(evaluation_pending, str) else "evaluation pending")
+                continue
             if i == primary_index:
                 results[i] = IngestResult(
                     candidate.evidence_ref,
-                    primary_disposition,
+                    Disposition.EXCLUDED if qualification.admission_status is AdmissionStatus.EXCLUDED else primary_disposition,
                     persisted.job.stable_job_key,
+                    qualification.review_reason if qualification.admission_status is AdmissionStatus.EXCLUDED else None,
                 )
             else:
                 results[i] = IngestResult(
