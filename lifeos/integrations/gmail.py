@@ -394,6 +394,26 @@ class GmailMailboxTransport(Generic[T]):
         fields = self._fetch_message_metadata_fields(message_id)
         return self._factory(provider=self.provider, **fields)
 
+    def fetch_message_metadata(self, message_id: str) -> T:
+        return self._fetch_message_metadata(message_id)
+
+    def fetch_message(self, message_id: str) -> T:
+        return self._fetch_message(message_id)
+
+    def apply_amazon(self, message_id: str) -> None:
+        label_id = self._resolve_label_id("Amazon")
+        path = f"{_GMAIL_API}/users/{quote(self._user_id, safe='')}/messages/{quote(message_id, safe='')}/modify"
+        self._http.request_json(self._context, "POST", path, headers=self._headers(), json_body={"addLabelIds": [label_id], "removeLabelIds": ["INBOX"]}, timeout_seconds=10.0, retry=_NO_RETRY)
+
+    def read_labels(self, message_id: str) -> frozenset[str]:
+        fields = self._fetch_message_metadata_fields(message_id, include_labels=True)
+        labels = set(fields.get("label_ids", ()))
+        amazon_id = self._resolve_label_id("Amazon")
+        if amazon_id in labels:
+            labels.remove(amazon_id)
+            labels.add("Amazon")
+        return frozenset(labels)
+
     def _fetch_message_metadata_fields(self, message_id: str, *, include_labels: bool = False) -> dict[str, Any]:
         params = [("format", "metadata")] + [("metadataHeaders", name) for name in INBOX_METADATA_HEADERS]
         url = (
