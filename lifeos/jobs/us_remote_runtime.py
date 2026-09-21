@@ -113,25 +113,47 @@ def _accepted_newsletter_message_ids(
     return accepted
 
 
-def _retain_processed_newsletters(gmail: GmailMailboxTransport, *, now: datetime) -> list[str]:
+@dataclass(frozen=True)
+class RetentionResult:
+    errors: tuple[str, ...] = ()
+    candidate_count: int = 0
+    automated_count: int = 0
+    trashed_count: int = 0
+    human_excluded_count: int = 0
+    unresolved_count: int = 0
+
+
+def _retain_processed_newsletters(gmail: GmailMailboxTransport, *, now: datetime) -> RetentionResult:
     failures: list[str] = []
+    candidate_count = automated = trashed = human = unresolved = 0
     try:
         candidates = gmail.newsletter_retention_candidates(NEWSLETTER_BOUNDARY)
     except Exception as exc:
-        return [f"enumeration:{type(exc).__name__}"]
+        return RetentionResult(errors=(f"enumeration:{type(exc).__name__}",))
     for fields in candidates:
         if now - fields["received_at"] < timedelta(days=60): continue
+        candidate_count += 1
         message = MailMessage(provider="gmail", body_text="", **{key: fields[key] for key in ("message_id", "received_at", "sender", "subject", "headers")})
-        if DeterministicMailClassifier().classify(message).mail_class.value != "automated_job_source": continue
+        classification = DeterministicMailClassifier().classify(message)
+        if classification.mail_class.value == "human_hiring":
+            human += 1; continue
+        headers = {str(key).casefold(): str(value).casefold() for key, value in message.headers.items()}
+        sender = message.sender.casefold()
+        linkedin_automation = "linkedin.com" in sender and any(token in sender for token in ("job", "alert", "noreply", "no-reply"))
+        has_automation = linkedin_automation and ("list-unsubscribe" in headers or "list-id" in headers or "auto-submitted" in headers or "precedence" in headers)
+        if classification.mail_class.value != "automated_job_source" and not has_automation:
+            unresolved += 1; failures.append("retention_unresolved"); continue
+        automated += 1
         for _attempt in range(2):
             try:
                 if gmail.trash_newsletter_message(message.message_id):
+                    trashed += 1
                     break
             except Exception:
                 pass
         else:
             failures.append("trash_or_readback")
-    return failures
+    return RetentionResult(tuple(failures), candidate_count, automated, trashed, human, unresolved)
 
 
 def _preexclude(
@@ -383,7 +405,7 @@ def execute_us_remote(
                 processed_errors.append(type(exc).__name__)
             else:
                 processed_count += 1
-        timings["newsletter_mark_processed"] = round(perf_counter() - stage_started, 3); retention_errors = _retain_processed_newsletters(gmail, now=end)
+        timings["newsletter_mark_processed"] = round(perf_counter() - stage_started, 3); retention = _retain_processed_newsletters(gmail, now=end); retention_errors = list(retention.errors)
 
         stage_started = perf_counter()
         backlog_errors: list[str] = []
@@ -422,6 +444,11 @@ def execute_us_remote(
                 "processed": processed_count,
                 "processed_errors": len(processed_errors),
                 "retention_error_count": len(retention_errors), "retention_error_codes": sorted(set(retention_errors)),
+                "retention_candidate_count": retention.candidate_count,
+                "retention_automated_count": retention.automated_count,
+                "retention_trashed_count": retention.trashed_count,
+                "retention_human_excluded_count": retention.human_excluded_count,
+                "retention_unresolved_count": retention.unresolved_count,
                 "pending_source_messages": pending_source_messages,
                 "oldest_pending_age_seconds": oldest_pending_age_seconds,
                 "processed_observations": attempted_newsletter_observations,

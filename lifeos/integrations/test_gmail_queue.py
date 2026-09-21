@@ -43,13 +43,17 @@ def test_staging_and_processed_state_are_distinct() -> None:
     assert modify_calls[-1][2]["json_body"] == {"addLabelIds": ["label-processed"], "removeLabelIds": ["UNREAD"]}
     now = datetime(2026, 9, 20, tzinfo=timezone.utc)
     class RetentionHttp:
-        def __init__(self): self.calls=[]; self.metadata_reads=[]; self.labels={"old":{"news","processed"},"recent":{"news","processed"},"missing":{"news"},"trash":{"news","processed","TRASH"},"human":{"news","processed"}}; self.dates={"old":now-timedelta(days=60),"recent":now-timedelta(days=59,seconds=1),"missing":now-timedelta(days=90),"trash":now-timedelta(days=90),"human":now-timedelta(days=90)}
+        def __init__(self): self.calls=[]; self.metadata_reads=[]; self.labels={"old":{"news","processed"},"recent":{"news","processed"},"missing":{"news"},"trash":{"news","processed","TRASH"},"human":{"news","processed"},"ambiguous":{"news","processed"}}; self.dates={"old":now-timedelta(days=60),"recent":now-timedelta(days=59,seconds=1),"missing":now-timedelta(days=90),"trash":now-timedelta(days=90),"human":now-timedelta(days=90),"ambiguous":now-timedelta(days=90)}
         def request_json(self, _context, method, url, **kwargs):
             self.calls.append((method,url,kwargs)); mid=url.split("/messages/",1)[1].split("?",1)[0] if "/messages/" in url else None
             if method == "GET" and url.endswith("/labels"): return {"labels":[{"id":"news","name":"J Newsletters"},{"id":"processed","name":"J Newsletters/Processed"}]}
             if method == "GET" and "/messages?" in url: return {"messages":[{"id":key} for key in self.labels]}
             if method == "GET" and "?format=metadata" in url:
-                response={"id":mid,"internalDate":str(int(self.dates[mid].timestamp()*1000)),"labelIds":list(self.labels[mid]),"payload":{"headers":[{"name":"From","value":"alerts@example.invalid"},{"name":"Subject","value":"Interview invitation" if mid == "human" else "Daily jobs"}]}}; self.metadata_reads.append((mid, response["labelIds"])); return response
+                sender = "LinkedIn Job Alerts <jobalerts-noreply@linkedin.com>" if mid == "old" else "alerts@example.invalid"
+                subject = '“project manager”: Planet Pharma - AI Project Manager and more' if mid == "old" else ("Interview invitation" if mid == "human" else "Unclear newsletter")
+                headers = [{"name":"From","value":sender},{"name":"Subject","value":subject}]
+                if mid == "old": headers += [{"name":"List-Unsubscribe","value":"<https://linkedin.com/unsubscribe>"}]
+                response={"id":mid,"internalDate":str(int(self.dates[mid].timestamp()*1000)),"labelIds":list(self.labels[mid]),"payload":{"headers":headers}}; self.metadata_reads.append((mid, response["labelIds"])); return response
             if method == "POST" and url.endswith(f"/messages/old/trash"): self.labels["old"].add("TRASH"); return {"id":"old"}
             assert "/delete" not in url and not url.endswith("/modify"), (method,url)
             raise AssertionError((method,url,kwargs))
@@ -57,8 +61,10 @@ def test_staging_and_processed_state_are_distinct() -> None:
     retention_candidates = retention_mailbox.newsletter_retention_candidates("J Newsletters")
     list_call = next(call for call in retention_http.calls if call[0] == "GET" and "/messages?" in call[1]); query = unquote(list_call[1]).replace("+", " ")
     for term in ('label:"J Newsletters"', 'label:"J Newsletters/Processed"', "older_than:60d", "-in:trash"): assert term in query
-    assert {item["message_id"] for item in retention_candidates} == {"old", "recent", "human"}
-    assert _retain_processed_newsletters(retention_mailbox, now=now) == []
+    assert {item["message_id"] for item in retention_candidates} == {"old", "recent", "human", "ambiguous"}
+    retention = _retain_processed_newsletters(retention_mailbox, now=now)
+    assert retention.errors == ("retention_unresolved",) and retention.candidate_count == 3
+    assert (retention.automated_count, retention.trashed_count, retention.human_excluded_count, retention.unresolved_count) == (1, 1, 1, 1)
     trash_calls = [call for call in retention_http.calls if call[0] == "POST"]
     assert len(trash_calls) == 1 and trash_calls[0][1].endswith("/messages/old/trash")
     trash_index = next(index for index, call in enumerate(retention_http.calls) if call[0] == "POST" and call[1].endswith("/messages/old/trash"))
