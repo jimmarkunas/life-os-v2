@@ -13,6 +13,7 @@ from lifeos.jobs.models import Company, FitAuthority, FitEvidenceKind, Freshness
 from lifeos.jobs.repository import InMemoryCareerRepository
 from lifeos.jobs.qualification import LaneConfig
 from lifeos.jobs.identity import IdentityCollision, derive_identity_evidence, resolve_existing_identity
+from lifeos.jobs.newsletter_adapter import NewsletterJobsAdapter, NewsletterAdapterConfig
 
 def msg(message_id, subject, body, *, sender="alerts@jobright.example.invalid", mailbox="gmail", minute=0, headers=None):
     return RoutedNewsletterMessage(mailbox,message_id,datetime(2026,1,15,12,minute,tzinfo=timezone.utc),sender,subject,body,headers or {})
@@ -216,6 +217,28 @@ Content-Type: text/html; charset=utf-8
         self.assertEqual(low[0].disposition, Disposition.EXCLUDED)
         self.assertIsNotNone(low_repo.get_many(["job:synthetic"])["job:synthetic"])
         self.assertEqual(low_repo.get_many(["job:synthetic"])["job:synthetic"].job.eligible_lanes, ())
+
+    def test_malformed_fit_evidence_is_not_a_source_fatality(self):
+        import lifeos.jobs.newsletter_adapter as adapter_module
+        profile = SimpleNamespace(title_patterns={}, direct_specialization_patterns={}, dimension_patterns={}, evidence_patterns={}, material_patterns=(), ignore_patterns=(), hard_family_patterns=())
+        observation = SimpleNamespace(
+            company="Safe Identity Co", role="Program Manager", location_text="Remote", compensation_text=None,
+            source_apply_url="https://jobs.example/safe", provider_job_id="safe-1", provider_score=None,
+            source_description_text="malformed evidence", source_provider="LinkedIn Jobs", source_mailbox="gmail",
+            evidence_ref="malformed-fit", issues=(),
+        )
+        original_compile, original_title, original_extract = adapter_module.compile_fit, adapter_module.classify_title, adapter_module.extract_requirements
+        adapter_module.classify_title = lambda *args, **kwargs: SimpleNamespace(evidence_class="DIRECT")
+        adapter_module.extract_requirements = lambda *args, **kwargs: SimpleNamespace(requirements=[])
+        adapter_module.compile_fit = lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("malformed"))
+        try:
+            candidate = NewsletterJobsAdapter(NewsletterAdapterConfig(fetcher=None, fit_profile=profile, market="US", source_lane="US Remote")).to_jobs_candidate(observation)
+        finally:
+            adapter_module.compile_fit, adapter_module.classify_title, adapter_module.extract_requirements = original_compile, original_title, original_extract
+        self.assertIsNone(candidate.unresolved_reason)
+        self.assertIsNone(candidate.fit)
+        self.assertEqual(candidate.fit_evidence_kind, FitEvidenceKind.SOURCE_DESCRIPTION)
+        self.assertEqual((candidate.job.company.name, candidate.job.role, candidate.job.location), ("Safe Identity Co", "Program Manager", "Remote"))
 
     def test_processor_fetch_failure_is_degraded_and_cleanup_never_parser_authorized(self):
         class FailingSource(FakeSource):
