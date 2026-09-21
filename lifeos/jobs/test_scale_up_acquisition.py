@@ -29,7 +29,13 @@ class FakeHttp:
         elif "stream.co" in url: body='<a href="/en/careers/role">Stream role</a>'
         elif "popsa.com" in url: body='<a href="/careers/role">Popsa role</a>'
         elif "zerogravity" in url or "welcometothejungle" in url: body='<a href="/jobs/role">WTTJ role</a>'
-        elif "teamtailor" in url or "rippling" in url or "careers.blis" in url or "communityfibre" in url or "sanogenetics" in url or "sharegain" in url: body='<a href="/jobs/role">HTML role</a>'
+        elif "careers.blis" in url:
+            body='''<script type="application/ld+json">{"@graph":[{"@type":["Thing","JobPosting"],"title":"Nested JSONLD role","url":"https://careers.blis.com/jobs/nested","identifier":{"value":"nested-1"}}]}</script><script>{"@type":"JobPosting","title":"Untyped script noise","url":"https://careers.blis.com/jobs/noise"}</script><a href="/jobs/product-manager">Product Manager role</a><a href="/jobs/benefits">Benefits</a><a href="/jobs/culture">Culture</a>'''
+        elif "citisense" in url:
+            body='<a href="/careers/product-manager-role">Product Manager role</a><a href="/careers/about">About Us</a><a href="/careers/benefits">Benefits</a><a href="https://jobs.lever.co/example/product-manager-role">External Product role</a><a href="https://example.invalid/jobs/product-manager-role">Untrusted Product role</a>'
+        elif "rippling" in url:
+            body='<a href="/eml-payments-ltd/jobs/product-manager-role">Rippling Product role</a>'
+        elif "teamtailor" in url or "communityfibre" in url or "sanogenetics" in url or "sharegain" in url: body='<a href="/jobs/role">HTML role</a>'
         else: body='<a href="/careers/role">Static role</a>'
         return HttpResponse(200, {}, body.encode())
 
@@ -60,6 +66,17 @@ class ScaleUpAcquisitionTests(unittest.TestCase):
         self.assertEqual(live_intrepid.role, "Live Intrepid role")
         self.assertEqual(live_intrepid.source_apply_url, "https://beintrepid.co.uk/open-positions/live")
         self.assertEqual(next(s for s in live.sources if s.company == "Intrepid Ltd").state, "COMPLETE")
+        with self.subTest("nested JSON-LD and Teamtailor filtering"):
+            blis = [o for o in result.observations if o.company == "Blis Global Ltd"]
+            self.assertTrue(any(o.role == "Nested JSONLD role" and o.source_apply_url == "https://careers.blis.com/jobs/nested" for o in blis))
+            self.assertFalse(any(o.role in {"Untyped script noise", "Benefits", "Culture"} for o in blis))
+        with self.subTest("generic filtering, vetted ATS, and Rippling path"):
+            citisense = [o for o in result.observations if o.company == "Citisense Ltd"]
+            self.assertTrue(any(o.source_apply_url == "https://jobs.lever.co/example/product-manager-role" for o in citisense))
+            self.assertFalse(any(o.source_apply_url == "https://example.invalid/jobs/product-manager-role" for o in citisense))
+            self.assertFalse(any(o.role in {"About Us", "Benefits"} for o in citisense))
+            rippling = [o for o in result.observations if o.company == "Prepaid Financial Services Limited"]
+            self.assertTrue(any("/eml-payments-ltd/jobs/product-manager-role" in (o.source_apply_url or "") for o in rippling))
 
     def test_shared_ats_api_failure_is_not_complete(self):
         broken = REGISTRY["sources"][0]["canonical_endpoint"]

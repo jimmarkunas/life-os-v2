@@ -14,6 +14,10 @@ from lifeos.core.runtime import RunContext
 from lifeos.newsletter.models import SourceVacancyObservation
 
 KINDS = frozenset({"workable_public", "ashby", "workday_public", "greenhouse", "pinpoint_json", "lever_public", "teamtailor_html", "static_complete_html", "wttj_html", "rippling_html", "join_html", "stream_html", "popsa_html", "bluestonex_html"})
+IGNORE = re.compile(r"(privacy|login|sign.?in|cookie|benefit|culture|people|about|contact|connect|alert|talent.?community)", re.I)
+NON_JOB = re.compile(r"^(careers?|jobs?( explore jobs)?|current openings?|open positions?|see open positions?|view open roles?|view career openings?|view job|apply|apply now|join us|opportunities|get in touch\.?)$", re.I)
+JOBISH = re.compile(r"(job|career|position|vacanc|opening|role|apply)", re.I)
+ATS_HOSTS = ("ashbyhq.com", "greenhouse.io", "lever.co", "workdayjobs.com", "teamtailor.com", "join.com", "workable.com", "pinpointhq.com", "rippling.com")
 
 @dataclass(frozen=True, slots=True)
 class ScaleUpSourceHealth:
@@ -46,33 +50,77 @@ def _obs(source, job_id, title, location, url, compensation=None, received_at=No
 
 class _PageParser(HTMLParser):
     def __init__(self):
-        super().__init__(); self.links=[]; self.scripts=[]; self._href=None; self._parts=[]; self._script=False; self._script_parts=[]
+        super().__init__(); self.links=[]; self.scripts=[]; self._href=None; self._parts=[]; self._script=False; self._script_type=""; self._script_parts=[]
     def handle_starttag(self, tag, attrs):
         attrs=dict(attrs)
         if tag == "a" and attrs.get("href"): self._href, self._parts = attrs["href"], []
-        if tag == "script": self._script, self._script_parts = True, []
+        if tag == "script": self._script, self._script_type, self._script_parts = True, attrs.get("type", ""), []
     def handle_data(self, data):
         if self._href: self._parts.append(data)
         if self._script: self._script_parts.append(data)
     def handle_endtag(self, tag):
         if tag == "a" and self._href: self.links.append((self._href, " ".join(" ".join(self._parts).split()))); self._href=None
-        if tag == "script" and self._script: self.scripts.append("".join(self._script_parts)); self._script=False
+        if tag == "script" and self._script:
+            if self._script_type.casefold() == "application/ld+json": self.scripts.append("".join(self._script_parts))
+            self._script=False; self._script_type=""; self._script_parts=[]
 
-def _html_jobs(text, source, now, pattern=r"/jobs/[^/]+", *, all_links=False):
-    parser=_PageParser(); parser.feed(text); rows=[]; seen=set()
+def _parse_page(text):
+    parser=_PageParser(); parser.feed(text); return parser
+
+def _jsonld_jobs(parser, source, now):
+    rows=[]; seen=set()
+    def walk(value):
+        if isinstance(value, dict):
+            kind=value.get("@type")
+            if kind == "JobPosting" or (isinstance(kind, list) and "JobPosting" in kind):
+                url=value.get("url") or source["canonical_endpoint"]
+                ident=value.get("identifier"); ident=ident.get("value") if isinstance(ident, dict) else ident
+                if url not in seen:
+                    rows.append(_obs(source,ident,value.get("title"),None,url,received_at=now)); seen.add(url)
+            for child in value.values(): walk(child)
+        elif isinstance(value, list):
+            for child in value: walk(child)
     for raw in parser.scripts:
-        try:
-            data=json.loads(raw); items=data if isinstance(data,list) else [data]
-            for item in items:
-                if isinstance(item,dict) and item.get("@type") == "JobPosting":
-                    url=item.get("url") or source["canonical_endpoint"]; rows.append(_obs(source,item.get("identifier"),item.get("title"),None,url,received_at=now)); seen.add(url)
+        try: walk(json.loads(raw))
         except (TypeError, ValueError, json.JSONDecodeError): pass
-    base_path=urlparse(source["canonical_endpoint"]).path.rstrip("/")
+    return rows
+
+def _path_jobs(text, source, now, pattern, *, reject=None):
+    parser=_parse_page(text); rows=_jsonld_jobs(parser,source,now); seen={r.source_apply_url for r in rows}; rx=re.compile(pattern,re.I)
     for href,label in parser.links:
-        url=urljoin(source["canonical_endpoint"],href); path=urlparse(url).path.rstrip("/")
-        if (all_links and path.startswith(base_path + "/")) or (not all_links and re.fullmatch(pattern,path,re.I)):
-            if len(label) >= 3 and label.casefold() not in {"apply","apply now","careers","jobs"} and url not in seen:
-                rows.append(_obs(source,hashlib.sha1(url.encode()).hexdigest()[:12],label,None,url,received_at=now)); seen.add(url)
+        url=urljoin(source["canonical_endpoint"],href); path=urlparse(url).path.rstrip("/"); title=" ".join(label.split())
+        if not rx.fullmatch(path) or len(title) < 3 or NON_JOB.fullmatch(title) or (reject and reject.search(title)) or url in seen: continue
+        rows.append(_obs(source,hashlib.sha1(url.encode()).hexdigest()[:12],title,None,url,received_at=now)); seen.add(url)
+    return rows
+
+def _generic_html(text, source, now):
+    parser=_parse_page(text); rows=_jsonld_jobs(parser,source,now); seen={r.source_apply_url for r in rows}
+    base_host=urlparse(source["canonical_endpoint"]).netloc.replace("www.","")
+    for href,label in parser.links:
+        title=" ".join(label.split())
+        if not JOBISH.search(f"{href} {title}") or IGNORE.search(title) or NON_JOB.fullmatch(title): continue
+        url=urljoin(source["canonical_endpoint"],href); host=urlparse(url).netloc.replace("www.","")
+        if host and base_host and host != base_host and not any(x in host for x in ATS_HOSTS): continue
+        if len(title) >= 3 and url not in seen:
+            rows.append(_obs(source,hashlib.sha1(url.encode()).hexdigest()[:12],title,None,url,received_at=now)); seen.add(url)
+    return rows
+
+def _join_jobs(text, source, now):
+    parser=_parse_page(text); base_path=urlparse(source["canonical_endpoint"]).path.rstrip("/"); rows=_jsonld_jobs(parser,source,now); seen={r.source_apply_url for r in rows}
+    for href,label in parser.links:
+        url=urljoin(source["canonical_endpoint"],href); path=urlparse(url).path.rstrip("/"); title=" ".join(label.split())
+        if path.startswith(base_path + "/") and len(title) >= 3 and not NON_JOB.fullmatch(title) and url not in seen:
+            rows.append(_obs(source,hashlib.sha1(url.encode()).hexdigest()[:12],title,None,url,received_at=now)); seen.add(url)
+    return rows
+
+def _bluestonex(text, source, now):
+    parser=_parse_page(text); rows=[]; seen=set()
+    for href,label in parser.links:
+        title=" ".join(label.split())
+        if "full-time more information" not in title.casefold(): continue
+        url=urljoin(source["canonical_endpoint"],href)
+        if url not in seen:
+            rows.append(_obs(source,hashlib.sha1(url.encode()).hexdigest()[:12],title,None,url,received_at=now)); seen.add(url)
     return rows
 
 class ScaleUpAcquirer:
@@ -91,9 +139,13 @@ class ScaleUpAcquirer:
         kind, jobs = source["source_type"], None
         if kind in {"teamtailor_html", "wttj_html", "rippling_html", "stream_html", "popsa_html", "bluestonex_html", "join_html", "static_complete_html"}:
             text=self._html(source["canonical_endpoint"]); marker=source.get("zero_marker")
-            patterns={"teamtailor_html":r"/jobs/[^/]+","wttj_html":r"/jobs/[^/]+","rippling_html":r"/jobs/[^/]+","stream_html":r"/(?:[a-z]{2}(?:-[a-z]{2})?/)?careers/[^/]+","popsa_html":r"/careers/[^/]+"}
-            rows=_html_jobs(text,source,self.now,patterns.get(kind,r".*"),all_links=kind in {"join_html","static_complete_html","bluestonex_html"})
-            if kind == "bluestonex_html": rows=[r for r in rows if "full-time more information" in (r.source_subject or "").casefold()]
+            if kind == "teamtailor_html": rows=_path_jobs(text,source,self.now,r"/jobs/[^/]+",reject=IGNORE)
+            elif kind == "wttj_html": rows=_path_jobs(text,source,self.now,r"/jobs/[^/]+")
+            elif kind == "stream_html": rows=_path_jobs(text,source,self.now,r"/(?:[a-z]{2}(?:-[a-z]{2})?/)?careers/[^/]+")
+            elif kind == "popsa_html": rows=_path_jobs(text,source,self.now,r"/careers/[^/]+")
+            elif kind == "join_html": rows=_join_jobs(text,source,self.now)
+            elif kind == "bluestonex_html": rows=_bluestonex(text,source,self.now)
+            else: rows=_generic_html(text,source,self.now)
             if rows: return rows
             if marker and marker.casefold() in unescape(re.sub(r"<[^>]+>", " ", text)).casefold(): return []
             raise ValueError("ambiguous empty first-party inventory")
