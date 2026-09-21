@@ -3,25 +3,12 @@ from __future__ import annotations
 import base64
 import threading
 import unittest
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Mapping
 from urllib.parse import parse_qs, unquote, urlparse
 
 from lifeos.core.runtime import RunContext
-from lifeos.integrations.gmail import GmailMailboxTransport
 from lifeos.integrations.outlook import OutlookMailboxTransport
-
-
-@dataclass(frozen=True)
-class SyntheticMessage:
-    provider: str
-    message_id: str
-    received_at: datetime
-    sender: str
-    subject: str
-    body_text: str = ""
-    headers: Mapping[str, str] = field(default_factory=dict)
+from tests.testkit.builders import gmail_mailbox, SyntheticMessage
 
 
 class FakeHttp:
@@ -110,13 +97,7 @@ class MailTransportTests(unittest.TestCase):
         self.end = datetime(2026, 1, 2, tzinfo=timezone.utc)
 
     def test_gmail_implements_agent2_port_shape(self) -> None:
-        mailbox = GmailMailboxTransport(
-            context=self.context,
-            http=self.http,
-            access_token="synthetic-token",
-            message_factory=SyntheticMessage,
-            max_workers=2,
-        )
+        mailbox = gmail_mailbox(self.http, context=self.context, max_workers=2)
         messages = mailbox.scan_window(self.start, self.end)
         self.assertEqual(mailbox.provider, "gmail")
         self.assertEqual([m.message_id for m in messages], ["msg-a", "msg-b"])
@@ -125,13 +106,7 @@ class MailTransportTests(unittest.TestCase):
         mailbox.route_to_newsletters("msg-a", "J Newsletters")
 
     def test_gmail_scan_inbox_window_uses_inbox_label_and_existing_hydration(self) -> None:
-        mailbox = GmailMailboxTransport(
-            context=self.context,
-            http=self.http,
-            access_token="synthetic-token",
-            message_factory=SyntheticMessage,
-            max_workers=2,
-        )
+        mailbox = gmail_mailbox(self.http, context=self.context, max_workers=2)
 
         messages = mailbox.scan_inbox_window(self.start, self.end)
 

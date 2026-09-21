@@ -15,6 +15,8 @@ from lifeos.integrations.mailbox import MailboxTransportError
 from lifeos.mail.classifier import DeterministicMailClassifier
 from lifeos.mail.models import MailClass, MailMessage
 from lifeos.mail.router import MailExecutionState, MailRouter
+from tests.testkit.builders import gmail_mailbox, gmail_message as _message
+from tests.testkit.boundaries import Mailbox
 
 
 class FakeInboxHttp:
@@ -113,9 +115,7 @@ class MetadataTransportTests(unittest.TestCase):
         self.end = datetime(2026, 1, 2, tzinfo=timezone.utc)
 
     def _mailbox(self, http: FakeInboxHttp) -> GmailMailboxTransport:
-        return GmailMailboxTransport(
-            context=self.context, http=http, access_token="synthetic-token", message_factory=MailMessage,
-        )
+        return gmail_mailbox(http, context=self.context, message_factory=MailMessage)
 
     def test_metadata_scan_uses_format_metadata_never_full_and_returns_empty_bodies(self) -> None:
         http = FakeInboxHttp(_mixed_inbox())
@@ -155,34 +155,6 @@ class MetadataTransportTests(unittest.TestCase):
         self.assertTrue(hasattr(GmailMailboxTransport, "scan_inbox_metadata_window"))
 
 
-class _StagingMailbox:
-    """MailboxPort test double standing in for GmailInboxMetadataPort, so
-    router-parity proofs don't depend on live HTTP wiring."""
-
-    provider = "gmail"
-
-    def __init__(self, messages: tuple[MailMessage, ...]) -> None:
-        self._messages = messages
-        self.routed_ids: list[str] = []
-
-    def scan_window(self, start, end):
-        return self._messages
-
-    def route_to_newsletters(self, message_id: str, boundary_name: str) -> None:
-        self.routed_ids.append(message_id)
-
-
-def _message(message_id: str, *, sender: str, subject: str, headers: dict | None = None) -> MailMessage:
-    return MailMessage(
-        provider="gmail",
-        message_id=message_id,
-        received_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        sender=sender,
-        subject=subject,
-        headers=headers or {},
-    )
-
-
 class RouterParityTests(unittest.TestCase):
     def test_metadata_only_messages_route_exactly_the_confirmed_automated_sources(self) -> None:
         messages = (
@@ -212,14 +184,14 @@ class RouterParityTests(unittest.TestCase):
         for message in messages:
             self.assertEqual(message.body_text, "")
 
-        mailbox = _StagingMailbox(messages)
+        mailbox = Mailbox("gmail", messages)
         result = MailRouter().route_window(
             [mailbox], datetime(2026, 1, 1, tzinfo=timezone.utc), datetime(2026, 1, 2, tzinfo=timezone.utc)
         )
 
         self.assertEqual(result.state, MailExecutionState.PASS)
         self.assertEqual(result.scanned_count, 6)
-        self.assertEqual(sorted(mailbox.routed_ids), ["automated-1", "automated-2"])
+        self.assertEqual(sorted(message_id for message_id, _ in mailbox.routed), ["automated-1", "automated-2"])
         routed = {record.ref.message_id for record in result.records if record.routed}
         self.assertEqual(routed, {"automated-1", "automated-2"})
         for message_id in ("recruiter", "transactional", "unrelated-bulk", "unrelated-personal"):
@@ -268,17 +240,8 @@ class RouterParityTests(unittest.TestCase):
             self.assertIs(classifier.classify(message).mail_class, expected, message.message_id)
 
     def test_negative_control_failed_scan_is_degraded_not_falsely_complete(self) -> None:
-        class FailingMailbox:
-            provider = "gmail"
-
-            def scan_window(self, start, end):
-                raise MailboxTransportError("synthetic Inbox metadata acquisition failed")
-
-            def route_to_newsletters(self, message_id, boundary_name):
-                raise AssertionError("must not route when scan is incomplete")
-
         result = MailRouter().route_window(
-            [FailingMailbox()], datetime(2026, 1, 1, tzinfo=timezone.utc), datetime(2026, 1, 2, tzinfo=timezone.utc)
+            [Mailbox("gmail", (), scan_error=MailboxTransportError("synthetic Inbox metadata acquisition failed"))], datetime(2026, 1, 1, tzinfo=timezone.utc), datetime(2026, 1, 2, tzinfo=timezone.utc)
         )
 
         self.assertEqual(result.state, MailExecutionState.DEGRADED)
@@ -303,9 +266,7 @@ class FiftyMessageLoadShapedTests(unittest.TestCase):
             }
         http = FakeInboxHttp(messages)
         context = RunContext.start(timeout_seconds=45)
-        mailbox = GmailMailboxTransport(
-            context=context, http=http, access_token="synthetic-token", message_factory=MailMessage,
-        )
+        mailbox = gmail_mailbox(http, context=context, message_factory=MailMessage)
 
         scanned = mailbox.scan_inbox_metadata_window(
             datetime(2026, 1, 1, tzinfo=timezone.utc), datetime(2026, 1, 2, tzinfo=timezone.utc)

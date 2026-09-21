@@ -120,11 +120,7 @@ class WholeMailboxRoutingTests(unittest.TestCase):
         self.assertTrue(result.records[0].routed)
 
     def test_scan_failure_is_degraded_and_checkpoint_cannot_advance(self) -> None:
-        class FailingScanMailbox(Mailbox):
-            def scan_window(self, start: datetime, end: datetime):
-                raise TimeoutError("synthetic timeout")
-
-        gmail = FailingScanMailbox("gmail", [])
+        gmail = Mailbox("gmail", [], scan_error=TimeoutError("synthetic timeout"))
         outlook = Mailbox(
             "outlook",
             [
@@ -155,11 +151,7 @@ class WholeMailboxRoutingTests(unittest.TestCase):
         self.assertEqual(result.errors[0].detail, "no-mailbox-providers")
 
     def test_route_failure_is_degraded_and_never_marks_message_routed(self) -> None:
-        class FailingMailbox(Mailbox):
-            def route_to_newsletters(self, message_id: str, boundary_name: str) -> None:
-                raise TimeoutError("synthetic timeout")
-
-        mailbox = FailingMailbox(
+        mailbox = Mailbox(
             "gmail",
             [
                 mail_message(
@@ -170,6 +162,7 @@ class WholeMailboxRoutingTests(unittest.TestCase):
                     headers={"List-Unsubscribe": "<https://example.invalid/unsub>"},
                 )
             ],
+            route_error=TimeoutError("synthetic timeout"),
         )
 
         result = MailRouter().route_window([mailbox], self.start, self.end)
