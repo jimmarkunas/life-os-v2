@@ -91,14 +91,12 @@ class ScaleUpAcquirer:
         kind, jobs = source["source_type"], None
         if kind in {"teamtailor_html", "wttj_html", "rippling_html", "stream_html", "popsa_html", "bluestonex_html", "join_html", "static_complete_html"}:
             text=self._html(source["canonical_endpoint"]); marker=source.get("zero_marker")
-            if marker:
-                if marker.casefold() in unescape(re.sub(r"<[^>]+>", " ", text)).casefold(): return []
-                raise ValueError("configured zero marker not present")
             patterns={"teamtailor_html":r"/jobs/[^/]+","wttj_html":r"/jobs/[^/]+","rippling_html":r"/jobs/[^/]+","stream_html":r"/(?:[a-z]{2}(?:-[a-z]{2})?/)?careers/[^/]+","popsa_html":r"/careers/[^/]+"}
             rows=_html_jobs(text,source,self.now,patterns.get(kind,r".*"),all_links=kind in {"join_html","static_complete_html","bluestonex_html"})
             if kind == "bluestonex_html": rows=[r for r in rows if "full-time more information" in (r.source_subject or "").casefold()]
-            if not rows: raise ValueError("ambiguous empty first-party inventory")
-            return rows
+            if rows: return rows
+            if marker and marker.casefold() in unescape(re.sub(r"<[^>]+>", " ", text)).casefold(): return []
+            raise ValueError("ambiguous empty first-party inventory")
         if kind == "workday_public":
             parsed = urlparse(source["canonical_endpoint"]); tenant, site = source["source_key"].split(":", 1)
             api = f"{parsed.scheme}://{parsed.netloc}/wday/cxs/{tenant}/{site}/jobs"; rows=[]; offset=0; total=None

@@ -12,7 +12,7 @@ ROOT = Path(__file__).parents[2]
 REGISTRY = json.loads((ROOT / "contracts/scale_up_sources.json").read_text())
 
 class FakeHttp:
-    def __init__(self, broken=None): self.broken = broken
+    def __init__(self, broken=None, intrepid_live=False): self.broken = broken; self.intrepid_live = intrepid_live
     def request_json(self, context, method, url, **kwargs):
         if self.broken and self.broken in url: raise TimeoutError("synthetic source failure")
         if method == "POST":
@@ -23,7 +23,7 @@ class FakeHttp:
         if "postings.json" in url: return {"data": [{"id": "pp-1", "title": "Pinpoint role", "location": {"name": "London"}, "path": "/pp-1"}]}
         return [{"id": "lv-1", "text": "Lever role", "categories": {"location": "London"}, "hostedUrl": "https://jobs.invalid/lv-1", "applyUrl": "https://jobs.invalid/lv-1/apply"}]
     def request(self, context, method, url, **kwargs):
-        if "beintrepid" in url: body="There are no open positions at Intrepid at the moment"
+        if "beintrepid" in url: body='<a href="/open-positions/live">Live Intrepid role</a>' if self.intrepid_live else "There are no open positions at Intrepid at the moment"
         elif "bluestonex" in url: body='<a href="/careers/role">Role Full-Time More Information</a>'
         elif "join.com" in url: body='<a href="/companies/transreport/job/role">Transreport role</a>'
         elif "stream.co" in url: body='<a href="/en/careers/role">Stream role</a>'
@@ -53,6 +53,13 @@ class ScaleUpAcquisitionTests(unittest.TestCase):
         self.assertEqual(ashby.source_apply_url, "https://jobs.invalid/ash-1/apply")
         workable = next(o for o in result.observations if o.company == "A Y & J Solicitors")
         self.assertEqual(workable.source_apply_url, "https://jobs.invalid/wk-1/apply")
+        self.assertEqual(next(s for s in result.sources if s.company == "Intrepid Ltd").state, "COMPLETE")
+        self.assertFalse(any(o.company == "Intrepid Ltd" for o in result.observations))
+        live = ScaleUpAcquirer(context=RunContext.start(now=acquired_at), http=FakeHttp(intrepid_live=True)).acquire(REGISTRY, now=acquired_at)
+        live_intrepid = next(o for o in live.observations if o.company == "Intrepid Ltd")
+        self.assertEqual(live_intrepid.role, "Live Intrepid role")
+        self.assertEqual(live_intrepid.source_apply_url, "https://beintrepid.co.uk/open-positions/live")
+        self.assertEqual(next(s for s in live.sources if s.company == "Intrepid Ltd").state, "COMPLETE")
 
     def test_shared_ats_api_failure_is_not_complete(self):
         broken = REGISTRY["sources"][0]["canonical_endpoint"]
@@ -67,5 +74,12 @@ class ScaleUpAcquisitionTests(unittest.TestCase):
         result = ScaleUpAcquirer(context=RunContext.start(), http=FakeHttp()).acquire(unknown)
         self.assertFalse(result.complete)
         self.assertEqual(result.sources[0].state, "BLOCKED")
+        with self.subTest("ambiguous empty HTML"):
+            class EmptyHtml(FakeHttp):
+                def request(self, context, method, url, **kwargs):
+                    return HttpResponse(200, {}, b"") if "citisense" in url else super().request(context, method, url, **kwargs)
+            result = ScaleUpAcquirer(context=RunContext.start(), http=EmptyHtml()).acquire(REGISTRY)
+            self.assertEqual(next(s for s in result.sources if s.company == "Citisense Ltd").state, "DEGRADED")
+            self.assertFalse(result.complete)
 
 if __name__ == "__main__": unittest.main()
