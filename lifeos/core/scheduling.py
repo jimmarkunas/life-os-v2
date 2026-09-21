@@ -20,12 +20,14 @@ def resolve_slot(execution_at: datetime) -> SlotContract:
         raise ValueError("execution timestamp must be offset-aware")
     local = execution_at.astimezone(CT).replace(minute=0, second=0, microsecond=0)
     hour = local.hour
-    if hour in (0, 6, 9, 12, 18):
+    if hour in (6, 9, 12, 18):
         lanes = FULL if hour != 18 else FULL + ("scheduled_boundaries", "accountability")
-        branch = "midnight" if hour == 0 else "full_source"
+        branch = "full_source"
         if hour == 18: branch = "evening_boundary"
     else:
         lanes, branch = MAIL, "ordinary_hourly"
+    if hour == 0:
+        branch = "midnight"
     if hour == 6 and local.weekday() == 0:
         lanes, branch = FULL + ("scheduled_boundaries",), "monday_boundary"
     if hour == 18 and local.weekday() == 6:
