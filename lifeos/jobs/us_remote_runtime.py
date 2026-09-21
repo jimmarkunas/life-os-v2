@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from datetime import datetime, timedelta
 from time import perf_counter
 from typing import Any
 
@@ -21,6 +22,7 @@ from lifeos.jobs.qualification import LaneConfig
 from lifeos.jobs.terminal_evidence import browser_evidence, fallback_fetcher
 from lifeos.jobs.us_remote_acquisition import USRemoteAcquirer
 from lifeos.mail.router import MailRouter
+from lifeos.mail import DeterministicMailClassifier, MailMessage
 from lifeos.newsletter.models import ParseState, SourceVacancyObservation
 from lifeos.newsletter.processor import NewsletterExecutionState, NewsletterProcessor
 
@@ -109,6 +111,27 @@ def _accepted_newsletter_message_ids(
         if mailbox == "gmail" and message_id:
             accepted.append(message_id)
     return accepted
+
+
+def _retain_processed_newsletters(gmail: GmailMailboxTransport, *, now: datetime) -> list[str]:
+    failures: list[str] = []
+    try:
+        candidates = gmail.newsletter_retention_candidates(NEWSLETTER_BOUNDARY)
+    except Exception as exc:
+        return [f"enumeration:{type(exc).__name__}"]
+    for fields in candidates:
+        if now - fields["received_at"] < timedelta(days=60): continue
+        message = MailMessage(provider="gmail", body_text="", **{key: fields[key] for key in ("message_id", "received_at", "sender", "subject", "headers")})
+        if DeterministicMailClassifier().classify(message).mail_class.value != "automated_job_source": continue
+        for _attempt in range(2):
+            try:
+                if gmail.trash_newsletter_message(message.message_id):
+                    break
+            except Exception:
+                pass
+        else:
+            failures.append("trash_or_readback")
+    return failures
 
 
 def _preexclude(
@@ -360,7 +383,7 @@ def execute_us_remote(
                 processed_errors.append(type(exc).__name__)
             else:
                 processed_count += 1
-        timings["newsletter_mark_processed"] = round(perf_counter() - stage_started, 3)
+        timings["newsletter_mark_processed"] = round(perf_counter() - stage_started, 3); retention_errors = _retain_processed_newsletters(gmail, now=end)
 
         stage_started = perf_counter()
         backlog_errors: list[str] = []
@@ -379,7 +402,7 @@ def execute_us_remote(
             and newsletter_ok
             and newsletter_fully_accounted
             and not newsletter_unresolved
-            and not processed_errors
+            and not processed_errors and not retention_errors
             and not backlog_errors
             and (pending_source_messages == 0 or processed_count > 0)
         )
@@ -398,6 +421,7 @@ def execute_us_remote(
                 "staging_safe": staging_ok,
                 "processed": processed_count,
                 "processed_errors": len(processed_errors),
+                "retention_error_count": len(retention_errors), "retention_error_codes": sorted(set(retention_errors)),
                 "pending_source_messages": pending_source_messages,
                 "oldest_pending_age_seconds": oldest_pending_age_seconds,
                 "processed_observations": attempted_newsletter_observations,
