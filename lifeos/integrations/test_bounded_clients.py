@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import unittest
-from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from lifeos.core.config import ConfigField, RuntimeConfig
@@ -17,15 +16,7 @@ from lifeos.integrations.notion import (
 )
 
 
-@dataclass(frozen=True)
-class SyntheticMessage:
-    provider: str
-    message_id: str
-    received_at: datetime
-    sender: str
-    subject: str
-    body_text: str = ""
-    headers: dict[str, str] | None = None
+from tests.testkit.builders import SyntheticMessage, gmail_mailbox
 
 
 START = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -66,13 +57,7 @@ class IntegrationBoundTests(unittest.TestCase):
             return {"messages": [], "nextPageToken": f"synthetic-cursor-{call_number}"}
 
         http = RecordingJsonHttp(responder)
-        mailbox = GmailMailboxTransport(
-            context=RunContext.start(timeout_seconds=45),
-            http=http,
-            access_token="synthetic-token",
-            message_factory=SyntheticMessage,
-            max_list_pages=2,
-        )
+        mailbox = gmail_mailbox(http, max_list_pages=2)
 
         with self.assertRaisesRegex(MailboxTransportError, "pagination limit"):
             mailbox.scan_window(START, END)
@@ -135,12 +120,7 @@ class IntegrationBoundTests(unittest.TestCase):
         context = RunContext.start(timeout_seconds=1, monotonic_clock=clock)
         clock.value = 1.0
         backend = Backend()
-        mailbox = GmailMailboxTransport(
-            context=context,
-            http=HttpClient(backend),
-            access_token="synthetic-token",
-            message_factory=SyntheticMessage,
-        )
+        mailbox = gmail_mailbox(HttpClient(backend), context=context)
 
         with self.assertRaises(HttpError) as caught:
             mailbox.scan_window(START, END)
@@ -159,12 +139,7 @@ class IntegrationBoundTests(unittest.TestCase):
                 return HttpResponse(200, {}, b'{"messages":[]}')
 
         backend = Backend()
-        mailbox = GmailMailboxTransport(
-            context=RunContext.start(timeout_seconds=45),
-            http=HttpClient(backend),
-            access_token="synthetic-token",
-            message_factory=SyntheticMessage,
-        )
+        mailbox = gmail_mailbox(HttpClient(backend))
 
         self.assertEqual(mailbox.scan_window(START, END), ())
         self.assertEqual(backend.calls, 2)

@@ -7,9 +7,14 @@ from lifeos.core.http import HttpResponse
 from datetime import datetime
 
 class Mailbox:
-    def __init__(self, provider, messages): self.provider=provider; self.messages=messages; self.routed=[]
-    def scan_window(self, start: datetime, end: datetime): return [m for m in self.messages if start <= m.received_at < end]
-    def route_to_newsletters(self, message_id, boundary_name): self.routed.append((message_id, boundary_name))
+    def __init__(self, provider, messages, *, scan_error=None, route_error=None):
+        self.provider=provider; self.messages=messages; self.routed=[]; self.scan_error=scan_error; self.route_error=route_error
+    def scan_window(self, start: datetime, end: datetime):
+        if self.scan_error is not None: raise self.scan_error
+        return [m for m in self.messages if start <= m.received_at < end]
+    def route_to_newsletters(self, message_id, boundary_name):
+        if self.route_error is not None: raise self.route_error
+        self.routed.append((message_id, boundary_name))
 
 class FakeHttp:
     def __init__(self): self.calls=[]; self.created_processed=False
