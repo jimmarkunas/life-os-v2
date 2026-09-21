@@ -9,7 +9,7 @@ from tests.testkit.boundaries import (
     SerialDetailFakeHttp,
 )
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import unquote
 
 from lifeos.integrations.mailbox import MailboxTransportError
@@ -18,6 +18,7 @@ from lifeos.core.http import HttpClient
 import lifeos.integrations.gmail as gmail_module
 from lifeos.core.runtime import RunContext
 from lifeos.integrations.gmail import BACKLOG_MESSAGE_RUNTIME_RESERVE_SECONDS, BACKLOG_PER_MESSAGE_ADMISSION_SECONDS
+from lifeos.jobs.us_remote_runtime import _retain_processed_newsletters
 from lifeos.newsletter.processor import NewsletterExecutionState, NewsletterProcessor
 from tests.testkit.builders import gmail_mailbox
 
@@ -40,6 +41,15 @@ def test_staging_and_processed_state_are_distinct() -> None:
     mailbox.mark_newsletter_processed("msg-1", "J Newsletters")
     modify_calls = [call for call in http.calls if call[0] == "POST" and call[1].endswith("/messages/msg-1/modify")]
     assert modify_calls[-1][2]["json_body"] == {"addLabelIds": ["label-processed"], "removeLabelIds": ["UNREAD"]}
+    now = datetime(2026, 9, 20, tzinfo=timezone.utc)
+    candidates = tuple({"message_id": message_id, "received_at": received, "sender": sender, "subject": subject, "headers": headers, "label_ids": ("news", "processed")} for message_id, received, sender, subject, headers in (("old", now - timedelta(days=60), "alerts@example.invalid", "Daily jobs", {"List-Unsubscribe": "x"}), ("recent", now - timedelta(days=59, seconds=1), "alerts@example.invalid", "Daily jobs", {"List-Unsubscribe": "x"}), ("human", now - timedelta(days=90), "alerts@example.invalid", "Interview invitation", {"List-Unsubscribe": "x"})))
+    class RetentionFake:
+        def newsletter_retention_candidates(self, _boundary): return candidates
+        def trash_newsletter_message(self, message_id): self.trashed.append(message_id); return message_id == "old"
+        trashed = []
+    fake = RetentionFake()
+    assert _retain_processed_newsletters(fake, now=now) == []
+    assert fake.trashed == ["old"]
 
 
 def test_newsletter_processor_consumes_age_independent_unprocessed_gmail_backlog() -> None:

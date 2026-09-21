@@ -317,6 +317,23 @@ class GmailMailboxTransport(Generic[T]):
             retry=_NO_RETRY,
         )
 
+    def newsletter_retention_candidates(self, boundary_name: str) -> tuple[dict[str, Any], ...]:
+        label_id = self._resolve_label_id(boundary_name)
+        labels_needed = {label_id, self._resolve_label_id(_processed_label_name(boundary_name))}
+        ids = self._list_message_ids(None, None, query_terms=(f'label:"{boundary_name}"', f'label:"{_processed_label_name(boundary_name)}"', "older_than:60d", "-in:trash"))
+        candidates = []
+        for message_id in ids:
+            fields = self._fetch_message_metadata_fields(message_id, include_labels=True)
+            if labels_needed.issubset(set(fields.get("label_ids", ()))) and "TRASH" not in set(fields.get("label_ids", ())):
+                candidates.append(fields)
+        return tuple(candidates)
+
+    def trash_newsletter_message(self, message_id: str) -> bool:
+        path = f"{_GMAIL_API}/users/{quote(self._user_id, safe='')}/messages/{quote(message_id, safe='')}/trash"
+        self._http.request_json(self._context, "POST", path, headers=self._headers(), timeout_seconds=10.0, retry=_NO_RETRY)
+        fields = self._fetch_message_metadata_fields(message_id, include_labels=True)
+        return fields.get("message_id") == message_id and "TRASH" in set(fields.get("label_ids", ()))
+
     def _list_message_ids(
         self,
         start: datetime | None,
@@ -324,6 +341,7 @@ class GmailMailboxTransport(Generic[T]):
         *,
         label_id: str | None = None,
         exclude_label_name: str | None = None,
+        query_terms: tuple[str, ...] = (),
     ) -> tuple[str, ...]:
         query_parts: list[str] = []
         if start is not None:
@@ -333,7 +351,7 @@ class GmailMailboxTransport(Generic[T]):
         if exclude_label_name:
             safe_label = exclude_label_name.replace('"', "")
             query_parts.append(f'-label:"{safe_label}"')
-        query = " ".join(query_parts)
+        query = " ".join((*query_terms, *query_parts)).strip()
         page_token: str | None = None
         seen_page_tokens: set[str] = set()
         ids: list[str] = []
@@ -376,7 +394,7 @@ class GmailMailboxTransport(Generic[T]):
         fields = self._fetch_message_metadata_fields(message_id)
         return self._factory(provider=self.provider, **fields)
 
-    def _fetch_message_metadata_fields(self, message_id: str) -> dict[str, Any]:
+    def _fetch_message_metadata_fields(self, message_id: str, *, include_labels: bool = False) -> dict[str, Any]:
         params = [("format", "metadata")] + [("metadataHeaders", name) for name in INBOX_METADATA_HEADERS]
         url = (
             f"{_GMAIL_API}/users/{quote(self._user_id, safe='')}/messages/"
@@ -398,13 +416,16 @@ class GmailMailboxTransport(Generic[T]):
             received_at = datetime.fromtimestamp(int(str(internal_date)) / 1000.0, tz=timezone.utc)
         except (TypeError, ValueError, OSError) as exc:
             raise MailboxTransportError("Gmail message timestamp invalid") from exc
-        return {
+        fields = {
             "message_id": str(payload.get("id") or message_id),
             "received_at": received_at,
             "sender": headers.get("From", ""),
             "subject": headers.get("Subject", ""),
             "headers": headers,
         }
+        if include_labels:
+            fields["label_ids"] = tuple(str(label) for label in (payload.get("labelIds") or []))
+        return fields
 
     def _fetch_routed_message(self, message_id: str) -> RoutedNewsletterMessage:
         fields = self._fetch_message_fields(message_id)
