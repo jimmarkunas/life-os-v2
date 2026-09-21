@@ -54,7 +54,7 @@ def test_staging_and_processed_state_are_distinct() -> None:
             raise AssertionError((method,url,kwargs))
     retention_http = RetentionHttp(); retention_mailbox = GmailMailboxTransport(context=RunContext.start(timeout_seconds=45), http=retention_http, access_token="synthetic-token", message_factory=lambda **kwargs: kwargs)
     retention_candidates = retention_mailbox.newsletter_retention_candidates("J Newsletters")
-    list_call = next(call for call in retention_http.calls if call[0] == "GET" and "/messages?" in call[1]); query = unquote(list_call[1])
+    list_call = next(call for call in retention_http.calls if call[0] == "GET" and "/messages?" in call[1]); query = unquote(list_call[1]).replace("+", " ")
     for term in ('label:"J Newsletters"', 'label:"J Newsletters/Processed"', "older_than:60d", "-in:trash"): assert term in query
     assert {item["message_id"] for item in retention_candidates} == {"old", "recent", "human"}
     assert _retain_processed_newsletters(retention_mailbox, now=now) == []
