@@ -15,6 +15,7 @@ from lifeos.jobs.dedupe import LaneObservation, reconcile
 from lifeos.jobs.identity import IdentityCollision, derive_identity_evidence, resolve_existing_identity, stable_job_key
 from lifeos.jobs.lifecycle import apply_observation, new_record
 from lifeos.jobs.models import AdmissionStatus, NormalizedCandidate
+from lifeos.newsletter.models import SourceVacancyObservation
 from lifeos.jobs.qualification import LaneConfig, qualify
 from lifeos.jobs.repository import CareerRepository, ReadBackMismatch
 
@@ -33,6 +34,21 @@ class IngestResult:
     disposition: Disposition
     stable_job_key: str | None
     detail: str | None = None
+
+
+def derive_review_these_jobs(observations: list[SourceVacancyObservation], candidates: list[NormalizedCandidate], results: list[IngestResult]) -> list[dict[str, object]]:
+    candidates_by_ref = {item.evidence_ref: item for item in candidates}
+    results_by_ref = {item.evidence_ref: item for item in results}
+    rows: dict[tuple[str, str, str], dict[str, object]] = {}
+    for observation in observations:
+        result = results_by_ref.get(observation.evidence_ref)
+        if result is None or result.disposition is not Disposition.REVIEW_DEGRADED:
+            continue
+        candidate = candidates_by_ref.get(observation.evidence_ref)
+        evidence = candidate.fit_evidence_kind.value if candidate and candidate.fit_evidence_kind.value != "none" else None
+        key = (observation.source_provider, observation.provider_job_id or observation.source_apply_url or observation.evidence_ref, observation.role or "")
+        rows[key] = {"Role": observation.role, "Company": observation.company, "Source": observation.source_provider, "Apply URL": (candidate.job.apply_url if candidate else None) or observation.source_apply_url, "Review Reason": result.detail, "Evidence Available": [item for item in ("source_description" if observation.source_description_text else None, evidence) if item], "Evidence Missing": ["employer_ats_jd"] if evidence != "employer_ats_jd" else [], "First Surfaced": observation.source_received_at.isoformat() if observation.source_received_at else None, "Retry Status": "retryable"}
+    return list(rows.values())
 
 
 def ingest(

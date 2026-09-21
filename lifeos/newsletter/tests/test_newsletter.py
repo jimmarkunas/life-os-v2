@@ -3,6 +3,8 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from lifeos.newsletter import NewsletterExecutionState, NewsletterProcessor, ParseState, RoutedNewsletterMessage, parse_message
 from lifeos.newsletter.processor import _parse_message_or_known_empty
+from lifeos.jobs.newsletter_contract import Disposition, IngestResult, derive_review_these_jobs
+from types import SimpleNamespace
 from lifeos.jobs.fit_scoring import FitProfile
 from lifeos.jobs.fit_title_semantics import classify_title
 from lifeos.jobs.fit_requirement_extraction import extract_requirements
@@ -159,6 +161,12 @@ Content-Type: text/html; charset=utf-8
     def test_no_newsletter_source_ports_is_degraded(self):
         result=NewsletterProcessor().process_window([],self.start,self.end)
         self.assertEqual(result.state,NewsletterExecutionState.DEGRADED); self.assertFalse(result.cleanup_safe)
+        surfaced = datetime(2026, 1, 10, 12, tzinfo=timezone.utc)
+        observations = [SimpleNamespace(evidence_ref="a", source_provider="LinkedIn Jobs", provider_job_id="4468005853", source_apply_url="https://jobs.invalid/a", source_description_text=None, source_received_at=surfaced, role="Technical Program Manager", company="Synthetic Co"), SimpleNamespace(evidence_ref="b", source_provider="LinkedIn Jobs", provider_job_id="4468005853", source_apply_url="https://jobs.invalid/a", source_description_text=None, source_received_at=surfaced, role="Technical Program Manager", company="Synthetic Co")]
+        candidates = [SimpleNamespace(evidence_ref=ref, fit_evidence_kind=SimpleNamespace(value="none"), job=SimpleNamespace(apply_url=None)) for ref in ("a", "b")]
+        review = derive_review_these_jobs(observations, candidates, [IngestResult(ref, Disposition.REVIEW_DEGRADED, None, "missing trustworthy JD") for ref in ("a", "b")])
+        self.assertEqual(len(review), 1); self.assertEqual(review[0]["First Surfaced"], surfaced.isoformat()); self.assertIsNone(review[0].get("Fit")); self.assertEqual(review[0]["Retry Status"], "retryable")
+        self.assertEqual(derive_review_these_jobs(observations[:1], candidates[:1], [IngestResult("a", Disposition.CREATED, "job-1")]), [])
         profile = FitProfile("synthetic", {"DIRECT": ("program", "product"), "ADJACENT": ("architect",), "METHOD_EQUIVALENT": ("method",), "UNSUPPORTED": ("software engineer",)}, ("automation",), {k: ("program" if k == "functional" else "software" if k == "technical_platform" else k,) for k in ("role_seniority", "functional", "technical_platform", "delivery_complexity", "competitive_advantage")}, {"DIRECT": ("must",), "ADJACENT": ("adjacent",), "METHOD_EQUIVALENT": ("method",), "UNSUPPORTED": ("unsupported",)}, ("must", "experience"), (), (r"hands-on software development",))
         direct = classify_title("Technical Program Manager", profile.title_patterns, profile.direct_specialization_patterns)
         reqs = extract_requirements("Must lead program delivery and collaborate with cloud engineers", profile.dimension_patterns, profile.evidence_patterns, profile.material_patterns, profile.ignore_patterns, profile.hard_family_patterns).requirements

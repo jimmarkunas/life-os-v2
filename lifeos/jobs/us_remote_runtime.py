@@ -14,7 +14,7 @@ from lifeos.integrations.gmail import GmailInboxMetadataPort, GmailMailboxTransp
 from lifeos.integrations.notion import NotionTransport
 from lifeos.jobs.fit_scoring import FitProfile
 from lifeos.jobs.newsletter_adapter import HttpClientFetcher, NewsletterAdapterConfig, NewsletterJobsAdapter
-from lifeos.jobs.newsletter_contract import Disposition, IngestResult, ingest
+from lifeos.jobs.newsletter_contract import Disposition, IngestResult, derive_review_these_jobs, ingest
 from lifeos.jobs.newsletter_adapter import _adapt_all
 from lifeos.jobs.notion_repository import NotionCareerRepository, NotionCareerRepositoryConfig
 from lifeos.jobs.qualification import LaneConfig
@@ -387,6 +387,7 @@ def execute_us_remote(
         pass_run = mail_lane_pass and web_lane_pass
         body = {
             "status": "PASS" if pass_run else "DEGRADED",
+            "review_these_jobs": derive_review_these_jobs(list(newsletter_result.observations) + list(web_result.observations), newsletter_candidates + web_candidates, newsletter_results + web_results),
             "elapsed_seconds": round(context.elapsed_seconds(), 3),
             "mail": {
                 "status": "PASS" if mail_lane_pass else "DEGRADED",
