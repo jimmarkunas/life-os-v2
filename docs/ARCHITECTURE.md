@@ -65,9 +65,10 @@ One feature execution:
 4. Fetch only new/unprocessed routed newsletters.
 5. Parse vacancy observations.
 6. Resolve terminal employer/ATS evidence with bounded parallel I/O.
-7. Normalize, dedupe, score, and qualify through the shared Jobs Engine.
-8. Idempotently upsert the canonical private Job Ledger.
-9. Mark/checkpoint source mail only after persistence succeeds.
+7. Normalize, dedupe, and resolve safe canonical Job identity through the shared Jobs Engine.
+8. Idempotently upsert/reconcile the canonical private Job Ledger and verify authoritative read-back.
+9. Evaluate Fit, evidence authority, lane eligibility, freshness, compensation, work-mode/visa, and other qualification state against the persisted canonical Job. Evaluation controls presentation/actionability, not canonical existence.
+10. Mark/checkpoint source mail only after every legitimate vacancy is durably persisted/reconciled with authoritative read-back or reaches a true terminal source/identity disposition. Fit/scoring failure, low Fit, or missing JD must not strand otherwise durably ingested source mail.
 
 There is no separate census artifact, handoff manifest, trigger publication, second ingestion job, global ledger repair pass, or per-lane Continuity job.
 
