@@ -26,6 +26,8 @@ on:
         description: Unique run nonce
         required: true
         type: string
+  issue_comment:
+    types: [edited]
 
 permissions:
   contents: read
@@ -37,12 +39,16 @@ concurrency:
 jobs:
   execute:
     name: Execute bounded LIFE OS runtime
-    if: github.ref == 'refs/heads/main'
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.number == 12 &&
+       github.event.comment.id == 5756076786)
     runs-on: ubuntu-latest
     timeout-minutes: 7
     env:
       PYTHONDONTWRITEBYTECODE: "1"
-      PYTHONUNBUFFERED: "1"
+      PYTHONUNBUFFERED: 1
       GMAIL_OAUTH_CLIENT_ID: ${{ secrets.GMAIL_OAUTH_CLIENT_ID }}
       GMAIL_OAUTH_CLIENT_SECRET: ${{ secrets.GMAIL_OAUTH_CLIENT_SECRET }}
       GMAIL_OAUTH_REFRESH_TOKEN: ${{ secrets.GMAIL_OAUTH_REFRESH_TOKEN }}
@@ -65,18 +71,30 @@ jobs:
         id: trigger
         shell: bash
         env:
-          SLOT: ${{ inputs.slot }}
-          MODULE: ${{ inputs.module }}
-          WINDOW_HOURS: ${{ inputs.window_hours }}
-          HISTORICAL_INBOX_RECOVERY_HOURS: ${{ inputs.historical_inbox_recovery_hours }}
-          NONCE: ${{ inputs.nonce }}
+          DISPATCH_SLOT: ${{ inputs.slot }}
+          DISPATCH_MODULE: ${{ inputs.module }}
+          DISPATCH_WINDOW_HOURS: ${{ inputs.window_hours }}
+          DISPATCH_HISTORICAL_INBOX_RECOVERY_HOURS: ${{ inputs.historical_inbox_recovery_hours }}
+          DISPATCH_NONCE: ${{ inputs.nonce }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
         run: |
           set -euo pipefail
-          slot="$SLOT"
-          module="$MODULE"
-          window_hours="$WINDOW_HOURS"
-          historical_inbox_recovery_hours="$HISTORICAL_INBOX_RECOVERY_HOURS"
-          nonce="$NONCE"
+
+          if [ "$GITHUB_EVENT_NAME" = "issue_comment" ]; then
+            first_line="$(printf '%s\n' "$COMMENT_BODY" | sed -n '1p')"
+            test "$first_line" = "LIFE_OS_RUNTIME_TRIGGER v1"
+            slot="$(printf '%s\n' "$COMMENT_BODY" | sed -n 's/^slot=//p' | head -n1)"
+            module="$(printf '%s\n' "$COMMENT_BODY" | sed -n 's/^module=//p' | head -n1)"
+            window_hours="$(printf '%s\n' "$COMMENT_BODY" | sed -n 's/^window_hours=//p' | head -n1)"
+            historical_inbox_recovery_hours=""
+            nonce="$(printf '%s\n' "$COMMENT_BODY" | sed -n 's/^nonce=//p' | head -n1)"
+          else
+            slot="$DISPATCH_SLOT"
+            module="$DISPATCH_MODULE"
+            window_hours="$DISPATCH_WINDOW_HOURS"
+            historical_inbox_recovery_hours="$DISPATCH_HISTORICAL_INBOX_RECOVERY_HOURS"
+            nonce="$DISPATCH_NONCE"
+          fi
 
           test -n "$slot"
           test -n "$nonce"
