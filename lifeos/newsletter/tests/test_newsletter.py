@@ -3,13 +3,15 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from lifeos.newsletter import NewsletterExecutionState, NewsletterProcessor, ParseState, RoutedNewsletterMessage, parse_message
 from lifeos.newsletter.processor import _parse_message_or_known_empty
-from lifeos.jobs.newsletter_contract import Disposition, IngestResult, derive_review_these_jobs
+from lifeos.jobs.newsletter_contract import Disposition, IngestResult, derive_review_these_jobs, ingest
 from types import SimpleNamespace
 from lifeos.jobs.fit_scoring import FitProfile
 from lifeos.jobs.fit_title_semantics import classify_title
 from lifeos.jobs.fit_requirement_extraction import extract_requirements
 from lifeos.jobs.fit_scoreability import compile_fit
-from lifeos.jobs.models import FitEvidenceKind
+from lifeos.jobs.models import Company, FitAuthority, FitEvidenceKind, FreshnessStatus, JobObservation, NormalizedCandidate, WorkMode
+from lifeos.jobs.repository import InMemoryCareerRepository
+from lifeos.jobs.qualification import LaneConfig
 from lifeos.jobs.identity import IdentityCollision, derive_identity_evidence, resolve_existing_identity
 
 def msg(message_id, subject, body, *, sender="alerts@jobright.example.invalid", mailbox="gmail", minute=0, headers=None):
@@ -184,6 +186,36 @@ Content-Type: text/html; charset=utf-8
         current = SimpleNamespace(job=SimpleNamespace(stable_job_key="sardine|technical program manager|united states"))
         with self.assertRaises(IdentityCollision):
             resolve_existing_identity(evidence, records_by_stable_key={"Sardine::4463920520": legacy, "sardine|technical program manager|united states": current}, records_by_apply_url={})
+
+    def test_jobs_persist_before_fit_evaluation_and_fail_closed(self):
+        import lifeos.jobs.newsletter_contract as contract
+        lane = LaneConfig("US Remote", "US", 72, None, "remote_only", None, False, None)
+        def candidate(ref, fit):
+            return NormalizedCandidate(
+                JobObservation(Company("Synthetic Co"), "Program Manager", "US", WorkMode.REMOTE, None, None, None, "https://jobs.example/synthetic", "US Remote", canonical_identity="job:synthetic"),
+                fit, "US", FreshnessStatus.FRESH, ref, fit_authority=FitAuthority.AUTHORITATIVE if fit is not None else FitAuthority.NON_AUTHORITATIVE,
+            )
+        repo = InMemoryCareerRepository()
+        original = contract.qualify
+        contract.qualify = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("fit engine unavailable"))
+        try:
+            broken = ingest([candidate("broken", None)], lane=lane, lane_priority={"US Remote": 0}, repository=repo, run_date=self.start.date())
+        finally:
+            contract.qualify = original
+        self.assertEqual(broken[0].disposition, Disposition.REVIEW_DEGRADED)
+        self.assertEqual(broken[0].detail, "evaluation pending: qualification error: fit engine unavailable")
+        self.assertEqual(len(repo.get_many(["job:synthetic"])), 1)
+        self.assertEqual(repo.get_many(["job:synthetic"])["job:synthetic"].job.fit, None)
+
+        working = ingest([candidate("working", 80)], lane=lane, lane_priority={"US Remote": 0}, repository=repo, run_date=self.start.date())
+        self.assertEqual(working[0].stable_job_key, "job:synthetic")
+        self.assertEqual(repo.get_many(["job:synthetic"])["job:synthetic"].job.fit, 80)
+
+        low_repo = InMemoryCareerRepository()
+        low = ingest([candidate("low", 40)], lane=lane, lane_priority={"US Remote": 0}, repository=low_repo, run_date=self.start.date())
+        self.assertEqual(low[0].disposition, Disposition.EXCLUDED)
+        self.assertIsNotNone(low_repo.get_many(["job:synthetic"])["job:synthetic"])
+        self.assertEqual(low_repo.get_many(["job:synthetic"])["job:synthetic"].job.eligible_lanes, ())
 
     def test_processor_fetch_failure_is_degraded_and_cleanup_never_parser_authorized(self):
         class FailingSource(FakeSource):
