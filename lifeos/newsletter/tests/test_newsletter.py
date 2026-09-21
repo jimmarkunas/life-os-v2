@@ -3,6 +3,11 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from lifeos.newsletter import NewsletterExecutionState, NewsletterProcessor, ParseState, RoutedNewsletterMessage, parse_message
 from lifeos.newsletter.processor import _parse_message_or_known_empty
+from lifeos.jobs.fit_scoring import FitProfile
+from lifeos.jobs.fit_title_semantics import classify_title
+from lifeos.jobs.fit_requirement_extraction import extract_requirements
+from lifeos.jobs.fit_scoreability import compile_fit
+from lifeos.jobs.models import FitEvidenceKind
 
 def msg(message_id, subject, body, *, sender="alerts@jobright.example.invalid", mailbox="gmail", minute=0, headers=None):
     return RoutedNewsletterMessage(mailbox,message_id,datetime(2026,1,15,12,minute,tzinfo=timezone.utc),sender,subject,body,headers or {})
@@ -154,6 +159,15 @@ Content-Type: text/html; charset=utf-8
     def test_no_newsletter_source_ports_is_degraded(self):
         result=NewsletterProcessor().process_window([],self.start,self.end)
         self.assertEqual(result.state,NewsletterExecutionState.DEGRADED); self.assertFalse(result.cleanup_safe)
+        profile = FitProfile("synthetic", {"DIRECT": ("program", "product"), "ADJACENT": ("architect",), "METHOD_EQUIVALENT": ("method",), "UNSUPPORTED": ("software engineer",)}, ("automation",), {k: ("program" if k == "functional" else "software" if k == "technical_platform" else k,) for k in ("role_seniority", "functional", "technical_platform", "delivery_complexity", "competitive_advantage")}, {"DIRECT": ("must",), "ADJACENT": ("adjacent",), "METHOD_EQUIVALENT": ("method",), "UNSUPPORTED": ("unsupported",)}, ("must", "experience"), (), (r"hands-on software development",))
+        direct = classify_title("Technical Program Manager", profile.title_patterns, profile.direct_specialization_patterns)
+        reqs = extract_requirements("Must lead program delivery and collaborate with cloud engineers", profile.dimension_patterns, profile.evidence_patterns, profile.material_patterns, profile.ignore_patterns, profile.hard_family_patterns).requirements
+        self.assertEqual(compile_fit(title="Technical Program Manager", title_semantics=direct, requirements=list(reqs), evidence_kind=FitEvidenceKind.EMPLOYER_ATS_JD).authority.value, "authoritative")
+        self.assertEqual(compile_fit(title="Technical Program Manager", title_semantics=direct, requirements=list(reqs), evidence_kind=FitEvidenceKind.SOURCE_DESCRIPTION).authority.value, "non_authoritative")
+        self.assertIsNone(compile_fit(title="Technical Program Manager", title_semantics=direct, requirements=[], evidence_kind=FitEvidenceKind.NONE).fit_result)
+        hard = classify_title("Software Engineer", profile.title_patterns, profile.direct_specialization_patterns)
+        hard_reqs = extract_requirements("Must perform hands-on software development and software engineering", profile.dimension_patterns, profile.evidence_patterns, profile.material_patterns, profile.ignore_patterns, profile.hard_family_patterns).requirements
+        self.assertEqual(compile_fit(title="Software Engineer", title_semantics=hard, requirements=list(hard_reqs), evidence_kind=FitEvidenceKind.EMPLOYER_ATS_JD, hard_family_mismatch=True).fit_result.final_score, 40)
 
     def test_processor_fetch_failure_is_degraded_and_cleanup_never_parser_authorized(self):
         class FailingSource(FakeSource):

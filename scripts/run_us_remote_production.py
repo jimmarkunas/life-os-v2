@@ -20,7 +20,7 @@ from lifeos.core.http import HttpClient, HttpError, RetryPolicy
 from lifeos.core.runtime import DeadlineExceeded, RunContext
 from lifeos.integrations.gmail import GmailMailboxTransport
 from lifeos.integrations.notion import NotionIdentityQuery, NotionTransport, NotionTransportError
-from lifeos.jobs.fit_scoring import FitProfile, PenaltyRule, RoleFamily, ScopeCategory
+from lifeos.jobs.fit_scoring import FitProfile
 from lifeos.jobs.newsletter_runtime import execute_newsletter
 from lifeos.jobs.qualification import LaneConfig, UNIVERSAL_FIT_FLOOR
 from lifeos.jobs.us_remote_acquisition import USRemoteAcquirer
@@ -69,8 +69,11 @@ def _parse_private_policy(raw: dict) -> tuple[LaneConfig, dict[str, int], FitPro
         lane_raw = raw["lane"]
         lane = LaneConfig(name=lane_raw["name"], market=lane_raw["market"], fit_floor=UNIVERSAL_FIT_FLOOR, target_review_floor=None, work_mode_policy=lane_raw["work_mode_policy"], compensation_floor=lane_raw.get("compensation_floor"), freshness_gate=lane_raw["freshness_gate"], freshness_max_days=lane_raw.get("freshness_max_days"), is_target_bucket=lane_raw.get("is_target_bucket", False))
         lane_priority = {str(k): int(v) for k, v in raw["lane_priority"].items()}
-        fit_raw = raw["fit_profile"]
-        fit_profile = FitProfile(model_version=fit_raw["model_version"], role_families=tuple(RoleFamily(patterns=tuple(rf["patterns"]), base_score=rf["base_score"], label=rf["label"]) for rf in fit_raw.get("role_families", [])), default_role_base=fit_raw["default_role_base"], default_role_label=fit_raw["default_role_label"], scope_categories=tuple(ScopeCategory(name=sc["name"], term_groups=tuple((tuple(group[0]), group[1], group[2]) for group in sc["term_groups"]), cap=sc["cap"]) for sc in fit_raw.get("scope_categories", [])), penalties=tuple(PenaltyRule(terms=tuple(p["terms"]), penalty=p["penalty"], reason=p["reason"], min_hits=p.get("min_hits", 1)) for p in fit_raw.get("penalties", [])))
+        v3 = raw["fit_profile_v3"]
+        required = ("DIRECT", "ADJACENT", "METHOD_EQUIVALENT", "UNSUPPORTED")
+        dimensions = ("role_seniority", "functional", "technical_platform", "delivery_complexity", "competitive_advantage")
+        if set(v3["title_patterns"]) != set(required) or set(v3["evidence_patterns"]) != set(required) or set(v3["dimension_patterns"]) != set(dimensions): raise ValueError("invalid V3 pattern classes")
+        fit_profile = FitProfile(str(v3["model_version"]), {k: tuple(v3["title_patterns"][k]) for k in required}, tuple(v3["direct_specialization_patterns"]), {k: tuple(v3["dimension_patterns"][k]) for k in dimensions}, {k: tuple(v3["evidence_patterns"][k]) for k in required}, tuple(v3["material_patterns"]), tuple(v3.get("ignore_patterns", ())), tuple(v3["hard_family_patterns"]))
         return lane, lane_priority, fit_profile, str(raw["market"]), str(raw["source_lane"])
     except (KeyError, TypeError, ValueError) as exc:
         raise ConfigurationError(f"private policy is invalid: {type(exc).__name__}") from exc

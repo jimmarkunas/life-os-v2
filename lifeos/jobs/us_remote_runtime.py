@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
@@ -112,21 +111,6 @@ def _accepted_newsletter_message_ids(
     return accepted
 
 
-def _role_base(role: str, profile: FitProfile) -> int:
-    padded = f" {role.casefold()} "
-    for family in profile.role_families:
-        if any(re.search(pattern, padded, re.I) for pattern in family.patterns):
-            return family.base_score
-    return profile.default_role_base
-
-
-def _fit_ceiling(observation: SourceVacancyObservation, profile: FitProfile) -> int | None:
-    role = (observation.role or "").strip()
-    if not role:
-        return None
-    return min(100, _role_base(role, profile) + sum(category.cap for category in profile.scope_categories))
-
-
 def _preexclude(
     observation: SourceVacancyObservation,
     *,
@@ -150,19 +134,6 @@ def _preexclude(
             "source location explicitly conflicts with remote-only lane",
         )
 
-    ceiling = _fit_ceiling(observation, fit_profile)
-    review_floor = (
-        lane.target_review_floor
-        if lane.is_target_bucket and lane.target_review_floor is not None
-        else lane.fit_floor
-    )
-    if ceiling is not None and ceiling < review_floor:
-        return IngestResult(
-            observation.evidence_ref,
-            Disposition.EXCLUDED,
-            None,
-            f"maximum possible fit {ceiling} is below configured review floor {review_floor}",
-        )
     return None
 
 
