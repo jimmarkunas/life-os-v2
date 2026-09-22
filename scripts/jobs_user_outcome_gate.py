@@ -96,6 +96,15 @@ def main() -> int:
     assert high.job.fit is not None and high.job.fit >= UNIVERSAL_FIT_FLOOR
     assert low.job.fit is None or low.job.fit < UNIVERSAL_FIT_FLOOR
     assert any(row.job.admission_status is AdmissionStatus.EXCLUDED for row in rows) or low.job.eligible_lanes == ()
+    saved_processed = processed
+    clean_message = SimpleNamespace(message_ref="gmail:gate", state=ParseState.PASS, observations=(observations[0],))
+    processed = SimpleNamespace(state=ParseState.PASS, messages=(clean_message,), observations=(observations[0],), errors=())
+    clean_gmail = _Gmail(SimpleNamespace(message_id="gate", received_at=NOW, sender="alerts@jobright.invalid", subject="Jobs", headers={}, body_text=""))
+    # A fully resolved source is finalized only after all its Jobs complete.
+    with patch("lifeos.jobs.newsletter_runtime.MailRouter.route_window"), patch("lifeos.jobs.newsletter_runtime.NewsletterProcessor.process_messages", return_value=processed), patch("lifeos.jobs.newsletter_runtime.NotionCareerRepository", return_value=repo), patch("lifeos.jobs.newsletter_adapter.acquire_terminal_vacancy_evidence", side_effect=resolve):
+        clean_result = execute_newsletter(context=RunContext.start(timeout_seconds=30), http=None, notion=None, gmail=clean_gmail, browser_evidence=None, lane=lane, lane_priority={"US Remote": 0}, fit_profile=_profile(), market="US", newsletter_source_lane="US Remote", notion_job_ledger_data_source_id="gate", inbox_start=NOW, inbox_mode="normal", start=NOW, end=NOW + timedelta(hours=1), dry_run=False)
+    processed = saved_processed
+    assert clean_gmail.marked == ["gate"], ("fully resolved Newsletter was not safely finalized", clean_result.body)
     print("JOBS_USER_OUTCOME_GATE: PASS")
     print(f"observations={len(observations)} canonical_jobs={len(rows)} resolver_calls={len(resolver_calls)} dispositions={dispositions}")
     return 0
