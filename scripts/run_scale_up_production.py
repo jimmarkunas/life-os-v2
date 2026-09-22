@@ -24,7 +24,7 @@ def _failure_summary(acquired, results):
         "complete": acquired.complete and not degraded,
         "non_complete_sources": [
             {"company": source.company, "state": source.state,
-             "candidate_count": source.candidate_count, "detail": source.detail}
+             "candidate_count": source.candidate_count, "detail": source.detail, "diagnostic": getattr(source, "diagnostic", None)}
             for source in acquired.sources if source.state != "COMPLETE"
         ],
         "ingest_results": len(results),
@@ -33,6 +33,9 @@ def _failure_summary(acquired, results):
             {"reason": reason, "count": count}
             for reason, count in sorted(reasons.items())
         ],
+        "identity_failures": [result.diagnostic for result in degraded if getattr(result, "diagnostic", None) and "missing" in result.diagnostic],
+        "fit_unresolved": [result.diagnostic for result in degraded if getattr(result, "diagnostic", None) and "fit_evidence" in result.diagnostic],
+        "readback_mismatches": [result.diagnostic for result in degraded if getattr(result, "diagnostic", None) and "mismatches" in result.diagnostic],
     }
 
 def _file_url(page, name):

@@ -114,14 +114,12 @@ class NotionTransport:
                     raise NotionTransportError("Notion pagination cursor repeated")
                 seen_cursors.add(cursor)
                 body["start_cursor"] = cursor
-            payload = self._http.request_json(
-                self._context,
+            payload = self._request_json("query_data_source", _READ_RETRY,
                 "POST",
                 url,
                 headers=self._headers(),
                 json_body=body,
                 timeout_seconds=10.0,
-                retry=_READ_RETRY,
             )
             if not isinstance(payload, dict):
                 raise NotionTransportError("Notion query response was not an object")
@@ -139,43 +137,47 @@ class NotionTransport:
     def create_page(self, data_source_id: str, properties: Mapping[str, Any]) -> dict[str, Any]:
         if not data_source_id:
             raise ValueError("data_source_id is required")
-        payload = self._http.request_json(
-            self._context,
+        payload = self._request_json("create_page", _NO_RETRY,
             "POST",
             f"{_NOTION_API}/pages",
             headers=self._headers(),
             json_body={"parent": {"type": "data_source_id", "data_source_id": data_source_id}, "properties": dict(properties)},
             timeout_seconds=10.0,
-            retry=_NO_RETRY,
         )
         return _require_object(payload, "Notion create response")
 
     def update_page(self, page_id: str, properties: Mapping[str, Any]) -> dict[str, Any]:
         if not page_id:
             raise ValueError("page_id is required")
-        payload = self._http.request_json(
-            self._context,
+        payload = self._request_json("update_page", _NO_RETRY,
             "PATCH",
             f"{_NOTION_API}/pages/{quote(page_id, safe='')}",
             headers=self._headers(),
             json_body={"properties": dict(properties)},
             timeout_seconds=10.0,
-            retry=_NO_RETRY,
         )
         return _require_object(payload, "Notion update response")
 
     def get_page(self, page_id: str) -> dict[str, Any]:
         if not page_id:
             raise ValueError("page_id is required")
-        payload = self._http.request_json(
-            self._context,
+        payload = self._request_json("get_page", _READ_RETRY,
             "GET",
             f"{_NOTION_API}/pages/{quote(page_id, safe='')}",
             headers=self._headers(),
             timeout_seconds=10.0,
-            retry=_READ_RETRY,
         )
         return _require_object(payload, "Notion read-back response")
+
+    def _request_json(self, operation: str, retry: RetryPolicy, method: str, url: str, **kwargs: Any) -> Any:
+        try:
+            return self._http.request_json(self._context, method, url, retry=retry, **kwargs)
+        except Exception as exc:
+            if hasattr(exc, "kind"):
+                exc.operation = operation
+                exc.retry_limit = retry.max_attempts
+                exc.endpoint_family = "notion"
+            raise
 
     def _headers(self) -> dict[str, str]:
         return {

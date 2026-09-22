@@ -348,6 +348,9 @@ class NotionCareerRepository:
 
         read_back_page = self._transport.get_page(page_id)
         persisted = _page_to_record(read_back_page)
-        if _canonical_view(persisted) != _canonical_view(record):
-            raise ReadBackMismatch(f"read-back mismatch for {key}")
+        expected, actual = _canonical_view(record), _canonical_view(persisted)
+        if actual != expected:
+            fields = ("stable_job_key", "company", "role", "location", "work_mode", "compensation", "apply_url", "posting_date", "fit", "fit_authority", "source_providers", "source_types", "eligible_lanes", "primary_lane", "provider_score", "admission_status", "first_surfaced", "last_seen")
+            mismatches = [{"field": field, "expected": repr(left)[:180], "actual": repr(right)[:180]} for field, left, right in zip(fields, expected, actual) if left != right]
+            raise ReadBackMismatch(f"read-back mismatch for {key}", mismatches=mismatches)
         return persisted

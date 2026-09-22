@@ -34,6 +34,7 @@ class IngestResult:
     disposition: Disposition
     stable_job_key: str | None
     detail: str | None = None
+    diagnostic: dict | None = None
 
 
 def derive_review_these_jobs(observations: list[SourceVacancyObservation], candidates: list[NormalizedCandidate], results: list[IngestResult]) -> list[dict[str, object]]:
@@ -105,7 +106,7 @@ def ingest(
         try:
             tentative_key = stable_job_key(candidate.job)
         except ValueError as exc:
-            results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, None, str(exc))
+            results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, None, str(exc), {"company": candidate.job.company.name, "role": candidate.job.role, "location": candidate.job.location, "source": candidate.job.source_provider, "provider_job_id": candidate.job.provider_job_id, "apply_url": candidate.job.apply_url, "missing": [name for name, value in (("company", candidate.job.company.name), ("role", candidate.job.role), ("location", candidate.job.location), ("apply_url", candidate.job.apply_url)) if not value]})
             continue
 
         evidence_by_index[i] = evidence
@@ -230,7 +231,7 @@ def ingest(
             label = "read-back mismatch" if isinstance(exc, ReadBackMismatch) else f"repository failure ({type(exc).__name__})"
             for i in same_key_indices:
                 candidate, _ = live_by_index[i]
-                results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, key, f"persistence {label}: {exc}")
+                results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, key, f"persistence {label}: {exc}", {"mismatches": getattr(exc, "mismatches", []), "error_type": type(exc).__name__, "operation": getattr(exc, "operation", None), "retry_limit": getattr(exc, "retry_limit", None), "attempts": getattr(exc, "attempts", None), "category": getattr(getattr(exc, "kind", None), "value", None), "retry_after_seconds": getattr(exc, "retry_after_seconds", None)})
             continue
 
         for i in same_key_indices:
@@ -240,7 +241,7 @@ def ingest(
                 f"evaluation pending: {qualification.review_reason}" if candidate.fit is None else None
             )
             if evaluation_pending:
-                results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, persisted.job.stable_job_key, evaluation_pending if isinstance(evaluation_pending, str) else "evaluation pending")
+                results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, persisted.job.stable_job_key, evaluation_pending if isinstance(evaluation_pending, str) else "evaluation pending", {"company": candidate.job.company.name, "role": candidate.job.role, "source": candidate.job.source_provider, "fit_evidence": candidate.fit_evidence_kind.value})
                 continue
             if i == primary_index:
                 results[i] = IngestResult(
