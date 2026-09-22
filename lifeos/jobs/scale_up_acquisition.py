@@ -115,6 +115,23 @@ def _generic_html(text, source, now):
             rows.append(_obs(source,hashlib.sha1(url.encode()).hexdigest()[:12],title,None,url,received_at=now)); seen.add(url)
     return rows
 
+def _workable_html(text, source, now):
+    """Parse only Workable's deterministic vacancy records, never arbitrary links."""
+    parser = _parse_page(text)
+    rows = _jsonld_jobs(parser, source, now)
+    seen = {r.source_apply_url for r in rows}
+    for href, label in parser.links:
+        url = urljoin(source["canonical_endpoint"], href)
+        path = urlparse(url).path.rstrip("/")
+        title = " ".join(label.split())
+        # Workable hosted vacancy URLs are /j/<shortcode>/<slug> (or the
+        # equivalent /jobs/<shortcode> form).  Other links are UI chrome.
+        if not re.fullmatch(r"/(?:j|jobs)/[^/]+(?:/[^/]+)?", path, re.I): continue
+        if len(title) < 3 or NON_JOB.fullmatch(title) or url in seen: continue
+        rows.append(_obs(source, hashlib.sha1(url.encode()).hexdigest()[:12], title, None, url, received_at=now))
+        seen.add(url)
+    return rows
+
 def _join_jobs(text, source, now):
     parser=_parse_page(text); base_path=urlparse(source["canonical_endpoint"]).path.rstrip("/"); rows=_jsonld_jobs(parser,source,now); seen={r.source_apply_url for r in rows}
     for href,label in parser.links:
@@ -197,7 +214,9 @@ def _revolut_slug(title):
     return re.sub(r"[^a-z0-9]+","-",str(title or "").casefold()).strip("-")
 
 def _revolut(text, source, now):
-    visible=re.search(r"We have\s+(\d+)\s+open positions",text,re.I)
+    visible=re.search(r"(?:we have|showing|currently have)\s+(\d+)\s+(?:open positions|open roles|positions)",_strip_html(text),re.I)
+    if not visible:
+        visible=re.search(r"(\d+)\s+(?:open positions|open roles|positions)\b",_strip_html(text),re.I)
     if not visible: raise ValueError("Revolut visible open-position count missing")
     script=re.search(r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>',text,re.I|re.S)
     if not script: raise ValueError("Revolut __NEXT_DATA__ missing")
@@ -326,6 +345,7 @@ class ScaleUpAcquirer:
             elif kind == "popsa_html": rows=_path_jobs(text,source,self.now,r"/careers/[^/]+")
             elif kind == "join_html": rows=_join_jobs(text,source,self.now)
             elif kind == "bluestonex_html": rows=_bluestonex(text,source,self.now)
+            elif kind == "workable_public": rows=_workable_html(text,source,self.now)
             else: rows=_generic_html(text,source,self.now)
             if rows: return rows
             if marker and marker.casefold() in unescape(re.sub(r"<[^>]+>", " ", text)).casefold(): return []

@@ -256,8 +256,9 @@ class NewsletterJobsAdapter:
                 fit_authority = compiled.authority
                 if fit is None and compiled.reason:
                     fit_reason = compiled.reason
-            except ValueError:
+            except ValueError as exc:
                 fit = None
+                unresolved_reason = str(exc)
         return NormalizedCandidate(
             job=job, fit=fit, market=cfg.market,
             freshness_status=FreshnessStatus.UNRESOLVED,
