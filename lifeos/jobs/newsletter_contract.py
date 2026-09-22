@@ -55,7 +55,10 @@ def derive_review_these_jobs(observations: list[SourceVacancyObservation], candi
         if surfaced is not None or key not in first_seen:
             first_seen[key] = surfaced
         available = (["job_title"] if observation.role else []) + (["source_description"] if observation.source_description_text else []) + ([evidence] if evidence else [])
-        rows[key] = {"Role": observation.role, "Company": observation.company, "Source": observation.source_provider, "Apply URL": (candidate.job.apply_url if candidate else None) or observation.source_apply_url, "Review Reason": result.detail, "Evidence Available": available, "Evidence Missing": ["employer_ats_jd"] if evidence != "employer_ats_jd" else [], "First Surfaced": surfaced.isoformat() if surfaced else None, "Retry Status": "retryable"}
+        missing = ["employer_ats_jd"] if evidence != "employer_ats_jd" else []
+        if candidate and getattr(candidate, "fit", None) is None and getattr(candidate, "fit_reason", None) == "missing_scoreable_jd_requirements":
+            missing.append("scoreable_jd_requirements")
+        rows[key] = {"Role": observation.role, "Company": observation.company, "Source": observation.source_provider, "Apply URL": (candidate.job.apply_url if candidate else None) or observation.source_apply_url, "Review Reason": result.detail, "Evidence Available": available, "Evidence Missing": missing, "First Surfaced": surfaced.isoformat() if surfaced else None, "Retry Status": "retryable"}
     return [rows[key] for key in sorted(rows)]
 
 

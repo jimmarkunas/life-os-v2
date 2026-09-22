@@ -20,7 +20,7 @@ def compile_fit(*, title: str, title_semantics: TitleSemantics,
     authorities = {FitEvidenceKind.EMPLOYER_ATS_JD: FitAuthority.AUTHORITATIVE,
                    FitEvidenceKind.SOURCE_DESCRIPTION: FitAuthority.NON_AUTHORITATIVE}
     if evidence_kind not in authorities: return ScoreabilityResult(None, None, "missing_fit_evidence")
-    if not requirements: return ScoreabilityResult(None, None, "missing_requirements")
+    if not requirements: return ScoreabilityResult(None, None, "missing_scoreable_jd_requirements")
     result = score(requirements, title_evidence=title_semantics.evidence_class,
                    hard_family_mismatch=hard_family_mismatch,
                    direct_title_specialization=title_semantics.direct_specialization)

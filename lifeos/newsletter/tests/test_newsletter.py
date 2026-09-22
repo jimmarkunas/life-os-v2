@@ -266,6 +266,15 @@ Content-Type: text/html; charset=utf-8
         self.assertIsNotNone(low_repo.get_many(["job:synthetic"])["job:synthetic"])
         self.assertEqual(low_repo.get_many(["job:synthetic"])["job:synthetic"].job.eligible_lanes, ())
 
+    def test_employer_jd_without_scoreable_requirements_reports_exact_missing_state(self):
+        # Production-Critical-Test: prevents employer-JD evidence from being shown as complete when scoreability is missing.
+        observation = SimpleNamespace(evidence_ref="missing-scoreable", source_provider="LinkedIn Jobs", provider_job_id="p-1", source_apply_url="https://jobs.example/p-1", source_description_text=None, source_received_at=self.start, role="Program Manager", company="Synthetic Co")
+        candidate = SimpleNamespace(evidence_ref="missing-scoreable", fit_evidence_kind=SimpleNamespace(value="employer_ats_jd"), fit=None, fit_reason="missing_scoreable_jd_requirements", job=SimpleNamespace(apply_url="https://jobs.example/p-1"))
+        result = IngestResult("missing-scoreable", Disposition.REVIEW_DEGRADED, "job-1", "evaluation pending: missing_scoreable_jd_requirements")
+        review = derive_review_these_jobs([observation], [candidate], [result])
+        self.assertEqual(review[0]["Evidence Missing"], ["scoreable_jd_requirements"])
+        self.assertEqual(review[0]["Review Reason"], "evaluation pending: missing_scoreable_jd_requirements")
+
     def test_malformed_fit_evidence_is_not_a_source_fatality(self):
         import lifeos.jobs.newsletter_adapter as adapter_module
         profile = SimpleNamespace(title_patterns={}, direct_specialization_patterns={}, dimension_patterns={}, evidence_patterns={}, material_patterns=(), ignore_patterns=(), hard_family_patterns=())
