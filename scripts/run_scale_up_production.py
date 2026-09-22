@@ -32,7 +32,11 @@ def _load_inputs(context,http,notion,token,slot,nonce):
     _,_,profile,_,_= _parse_private_policy(policy)
     required={"google_web","linkedin_jobs"}; handoffs=evidence.get("handoffs",[]) if isinstance(evidence,dict) else []
     if evidence.get("scheduled_slot")!=slot or evidence.get("trigger_nonce")!=nonce or len(handoffs)!=12: raise ValueError("recovery evidence correlation or handoff count invalid")
-    if any(set(x.get("channels",[]))!=required or not x.get("searched_at") for x in handoffs): raise ValueError("recovery evidence channel/timestamp coverage incomplete")
+    now=datetime.now(timezone.utc)
+    for item in handoffs:
+        if set(item.get("channels",[]))!=required or not item.get("searched_at"): raise ValueError("recovery evidence channel/timestamp coverage incomplete")
+        observed=datetime.fromisoformat(str(item["searched_at"]).replace("Z","+00:00"))
+        if (now-observed).total_seconds() < 0 or (now-observed).total_seconds() > 86400: raise ValueError("recovery evidence is stale")
     return profile,{x["company"]:{"channels":x["channels"],"state":x.get("state","INCOMPLETE"),"candidates":x.get("candidates",[])} for x in handoffs}
 def main() -> int:
     parser=argparse.ArgumentParser(); parser.add_argument("--timeout-seconds",type=float,default=300); parser.add_argument("--recovery-evidence-json", default=os.environ.get("SCALE_UP_RECOVERY_EVIDENCE_JSON")); args=parser.parse_args()
