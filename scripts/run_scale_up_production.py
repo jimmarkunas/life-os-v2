@@ -12,6 +12,7 @@ from lifeos.jobs.qualification import LaneConfig, UNIVERSAL_FIT_FLOOR
 from lifeos.jobs.scale_up_runtime import execute_scale_up
 from lifeos.jobs.newsletter_contract import Disposition
 from scripts.run_us_remote_production import _parse_private_policy
+from lifeos.jobs.scale_up_acquisition import KINDS
 
 def _file_url(page, name):
     files=((page.get("properties") or {}).get(name) or {}).get("files") or []
@@ -29,23 +30,26 @@ def _load_inputs(context,http,notion,token,slot,nonce):
     row=rows[0]
     policy=json.loads(http.request(context,"GET",_file_url(row,"Private Policy File"),timeout_seconds=10).body)
     evidence=json.loads(http.request(context,"GET",_file_url(row,"Current Recovery Evidence"),timeout_seconds=10).body)
-    _,_,profile,_,_= _parse_private_policy(policy)
+    lane,priority,profile,market,source_lane = _parse_private_policy(policy)
+    if (lane.name != "Scale-Up" or lane.market != "UK" or lane.fit_floor != UNIVERSAL_FIT_FLOOR or lane.compensation_floor is not None or lane.freshness_gate or market != "UK" or source_lane != "Scale-Up" or "Scale-Up" not in priority): raise ValueError("private Scale-up policy is incompatible")
+    if not any(profile.title_patterns.values()) or not any(profile.evidence_patterns.values()) or not profile.direct_specialization_patterns: raise ValueError("private Fit policy is functionally empty")
     required={"google_web","linkedin_jobs"}; handoffs=evidence.get("handoffs",[]) if isinstance(evidence,dict) else []
-    if evidence.get("scheduled_slot")!=slot or evidence.get("trigger_nonce")!=nonce or len(handoffs)!=12: raise ValueError("recovery evidence correlation or handoff count invalid")
+    expected={x["company"] for x in json.loads((__import__("pathlib").Path(__file__).resolve().parents[1]/"contracts/scale_up_sources.json").read_text())["sources"] if x["source_type"] in {"provider_html","generic_html"}}
+    companies=[x.get("company") for x in handoffs]
+    if evidence.get("scheduled_slot")!=slot or evidence.get("trigger_nonce")!=nonce or len(handoffs)!=12 or set(companies)!=expected or len(set(companies))!=12: raise ValueError("recovery evidence correlation or company universe invalid")
     now=datetime.now(timezone.utc)
     for item in handoffs:
         if set(item.get("channels",[]))!=required or not item.get("searched_at"): raise ValueError("recovery evidence channel/timestamp coverage incomplete")
         observed=datetime.fromisoformat(str(item["searched_at"]).replace("Z","+00:00"))
         if (now-observed).total_seconds() < 0 or (now-observed).total_seconds() > 86400: raise ValueError("recovery evidence is stale")
-    return profile,{x["company"]:{"channels":x["channels"],"state":x.get("state","INCOMPLETE"),"candidates":x.get("candidates",[])} for x in handoffs}
+    return lane,priority,profile,market,source_lane,{x["company"]:{"channels":x["channels"],"state":x.get("state","INCOMPLETE"),"candidates":x.get("candidates",[])} for x in handoffs}
 def main() -> int:
-    parser=argparse.ArgumentParser(); parser.add_argument("--timeout-seconds",type=float,default=300); parser.add_argument("--recovery-evidence-json", default=os.environ.get("SCALE_UP_RECOVERY_EVIDENCE_JSON")); args=parser.parse_args()
+    parser=argparse.ArgumentParser(); parser.add_argument("--timeout-seconds",type=float,default=300); args=parser.parse_args()
     config=RuntimeConfig.load(tuple(ConfigField(n) for n in ("NOTION_API_TOKEN", "NOTION_JOB_LEDGER_DATA_SOURCE_ID")))
     context=RunContext.start(now=datetime.now(timezone.utc), timeout_seconds=args.timeout_seconds); http=HttpClient()
     notion=NotionTransport(context=context,http=http,access_token=config.require("NOTION_API_TOKEN"))
-    lane=LaneConfig("Scale-Up","UK",UNIVERSAL_FIT_FLOOR,None,"any",None,False,None,True)
-    profile,evidence=_load_inputs(context,http,notion,config.require("NOTION_API_TOKEN"),os.environ.get("SCHEDULED_SLOT",""),os.environ.get("TRIGGER_NONCE",""))
-    acquired, results=execute_scale_up(context=context,http=http,notion=notion,data_source_id=config.require("NOTION_JOB_LEDGER_DATA_SOURCE_ID"),lane=lane,lane_priority={"Scale-Up":0},fit_profile=profile,market="UK",source_lane="Scale-Up",recovery_evidence=evidence)
+    lane,priority,profile,market,source_lane,evidence=_load_inputs(context,http,notion,config.require("NOTION_API_TOKEN"),os.environ.get("SCHEDULED_SLOT",""),os.environ.get("TRIGGER_NONCE",""))
+    acquired, results=execute_scale_up(context=context,http=http,notion=notion,data_source_id=config.require("NOTION_JOB_LEDGER_DATA_SOURCE_ID"),lane=lane,lane_priority=priority,fit_profile=profile,market=market,source_lane=source_lane,recovery_evidence=evidence)
     degraded = sum(result.disposition is Disposition.REVIEW_DEGRADED for result in results)
     complete = acquired.complete and degraded == 0
     print(json.dumps({"sources":len(acquired.sources),"observations":len(acquired.observations),"complete":complete,"ingest_results":len(results),"degraded_ingest":degraded}))
