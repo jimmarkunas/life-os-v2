@@ -235,9 +235,9 @@ Content-Type: text/html; charset=utf-8
             candidate = NewsletterJobsAdapter(NewsletterAdapterConfig(fetcher=None, fit_profile=profile, market="US", source_lane="US Remote")).to_jobs_candidate(observation)
         finally:
             adapter_module.compile_fit, adapter_module.classify_title, adapter_module.extract_requirements = original_compile, original_title, original_extract
-        self.assertEqual(candidate.unresolved_reason, "malformed")
+        self.assertEqual(candidate.unresolved_reason, "mandatory enrichment unresolved: actionable Apply URL and employer/ATS JD required")
         self.assertIsNone(candidate.fit)
-        self.assertEqual(candidate.fit_evidence_kind, FitEvidenceKind.SOURCE_DESCRIPTION)
+        self.assertEqual(candidate.fit_evidence_kind, FitEvidenceKind.NONE)
         self.assertEqual((candidate.job.company.name, candidate.job.role, candidate.job.location), ("Safe Identity Co", "Program Manager", "Remote"))
 
     def test_processor_fetch_failure_is_degraded_and_cleanup_never_parser_authorized(self):
