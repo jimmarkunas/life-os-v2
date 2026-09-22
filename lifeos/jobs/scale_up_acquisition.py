@@ -10,6 +10,7 @@ from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse
 
 from lifeos.core.http import HttpClient, RetryPolicy
+from lifeos.core.http import HttpError
 from lifeos.core.runtime import RunContext
 from lifeos.newsletter.models import SourceVacancyObservation
 
@@ -25,6 +26,7 @@ class ScaleUpSourceHealth:
     state: str
     candidate_count: int
     detail: str | None = None
+    diagnostic: dict | None = None
 
 @dataclass(frozen=True, slots=True)
 class ScaleUpAcquisitionResult:
@@ -360,5 +362,11 @@ class ScaleUpAcquirer:
                 rows=self._jobs(source); observations.extend(rows); health.append(ScaleUpSourceHealth(source["company"],"COMPLETE",len(rows)))
             except Exception as exc:
                 state="DEGRADED" if isinstance(exc, ValueError) else "BLOCKED"
-                health.append(ScaleUpSourceHealth(source.get("company",""),state,0,type(exc).__name__))
+                detail = str(exc)[:240]
+                diagnostic = {"error_type": type(exc).__name__, "adapter": source.get("source_type"), "endpoint_host": urlparse(source.get("canonical_endpoint", "")).netloc}
+                if isinstance(exc, HttpError):
+                    diagnostic.update({"status": exc.status_code, "category": exc.kind.value, "attempts": exc.attempts})
+                else:
+                    diagnostic["parser_reason"] = detail
+                health.append(ScaleUpSourceHealth(source.get("company",""),state,0,detail,diagnostic))
         return ScaleUpAcquisitionResult(tuple(observations),tuple(health))

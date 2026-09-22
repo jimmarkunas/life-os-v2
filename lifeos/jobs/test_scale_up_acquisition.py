@@ -152,7 +152,7 @@ class ScaleUpAcquisitionTests(unittest.TestCase):
             [SimpleNamespace(disposition=production.Disposition.REVIEW_DEGRADED, detail="fit unresolved"),
              SimpleNamespace(disposition=production.Disposition.REVIEW_DEGRADED, detail="fit unresolved")],
         )
-        self.assertEqual(diagnostic["non_complete_sources"], [{"company":"Broken Co", "state":"DEGRADED", "candidate_count":0, "detail":"synthetic"}])
+        self.assertEqual(diagnostic["non_complete_sources"], [{"company":"Broken Co", "state":"DEGRADED", "candidate_count":0, "detail":"synthetic", "diagnostic":None}])
         self.assertEqual(diagnostic["degraded_ingest_reasons"], [{"reason":"fit unresolved", "count":2}])
         self.assertEqual(sum(item["count"] for item in diagnostic["degraded_ingest_reasons"]), diagnostic["degraded_ingest"])
         self.assertNotIn("private", json.dumps(diagnostic).lower())

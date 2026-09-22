@@ -25,6 +25,9 @@ from lifeos.jobs.lifecycle import JobLedgerRecord
 class ReadBackMismatch(RuntimeError):
     """Raised when a write's authoritative read-back does not match the
     intended result. A write is not successful until this check passes."""
+    def __init__(self, message: str, *, mismatches: list[dict] | None = None):
+        super().__init__(message)
+        self.mismatches = mismatches or []
 
 
 class CareerRepository(Protocol):
