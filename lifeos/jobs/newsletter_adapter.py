@@ -179,7 +179,29 @@ class NewsletterJobsAdapter:
         self._terminal_evidence_cache: dict[str, TerminalVacancyEvidence | None] = {}
         self._terminal_evidence_lock = Lock()
 
+    def to_identity_candidate(self, observation: SourceVacancyObservation) -> NormalizedCandidate:
+        cfg = self._config
+        company = (observation.company or "").strip()
+        role = (observation.role or "").strip()
+        fatal_issues = fatal_issue_codes(observation.issues)
+        job = JobObservation(
+            company=Company(name=company), role=role, location=observation.location_text,
+            work_mode=_infer_work_mode(observation.location_text), compensation_text=observation.compensation_text,
+            compensation_minimum=_parse_compensation_minimum(observation.compensation_text), posting_date=None,
+            apply_url=None, source_lane=cfg.source_lane, provider_job_id=observation.provider_job_id,
+            source_provider=observation.source_provider,
+        )
+        return NormalizedCandidate(
+            job=job, fit=None, market=cfg.market, freshness_status=FreshnessStatus.UNRESOLVED,
+            evidence_ref=observation.evidence_ref,
+            unresolved_reason=(f"source observation has unresolved issues: {', '.join(fatal_issues)}" if fatal_issues else None),
+            source_types=_newsletter_source_types(provider=observation.source_provider, mailbox=observation.source_mailbox),
+        )
+
     def to_jobs_candidate(self, observation: SourceVacancyObservation) -> NormalizedCandidate:
+        identity_candidate = self.to_identity_candidate(observation)
+        if identity_candidate.unresolved_reason:
+            return identity_candidate
         cfg = self._config
         company = (observation.company or "").strip()
         role = (observation.role or "").strip()

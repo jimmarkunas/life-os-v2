@@ -35,6 +35,7 @@ class IngestResult:
     stable_job_key: str | None
     detail: str | None = None
     diagnostic: dict | None = None
+    persistence_verified: bool = False
 
 
 def derive_review_these_jobs(observations: list[SourceVacancyObservation], candidates: list[NormalizedCandidate], results: list[IngestResult]) -> list[dict[str, object]]:
@@ -244,7 +245,7 @@ def ingest(
                 f"evaluation pending: {candidate.fit_reason or qualification.review_reason}" if candidate.fit is None else None
             )
             if evaluation_pending:
-                results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, persisted.job.stable_job_key, evaluation_pending if isinstance(evaluation_pending, str) else "evaluation pending", {"company": candidate.job.company.name, "role": candidate.job.role, "source": candidate.job.source_provider, "fit_evidence": candidate.fit_evidence_kind.value})
+                results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, persisted.job.stable_job_key, evaluation_pending if isinstance(evaluation_pending, str) else "evaluation pending", {"company": candidate.job.company.name, "role": candidate.job.role, "source": candidate.job.source_provider, "fit_evidence": candidate.fit_evidence_kind.value}, True)
                 continue
             if i == primary_index:
                 results[i] = IngestResult(
@@ -252,6 +253,8 @@ def ingest(
                     Disposition.EXCLUDED if qualification.admission_status is AdmissionStatus.EXCLUDED else primary_disposition,
                     persisted.job.stable_job_key,
                     qualification.review_reason if qualification.admission_status is AdmissionStatus.EXCLUDED else None,
+                    None,
+                    True,
                 )
             else:
                 results[i] = IngestResult(
@@ -259,6 +262,8 @@ def ingest(
                     Disposition.DUPLICATE,
                     persisted.job.stable_job_key,
                     f"duplicate of evidence {primary_candidate.evidence_ref}; provenance merged into the canonical reconciliation",
+                    None,
+                    True,
                 )
 
     assert all(result is not None for result in results), "every input candidate must receive exactly one result"

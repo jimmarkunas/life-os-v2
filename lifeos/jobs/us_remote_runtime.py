@@ -278,22 +278,58 @@ def execute_us_remote(
             )
         )
 
+        initial_candidates = [
+            newsletter_adapter.to_identity_candidate(observation)
+            for observation in newsletter_to_resolve
+        ] + [
+            web_adapter.to_identity_candidate(observation)
+            for observation in web_to_resolve
+        ]
+        stage_started = perf_counter()
+        initial_ingest_results = ingest(
+            initial_candidates,
+            lane=lane,
+            lane_priority=lane_priority,
+            repository=repository,
+            run_date=end.date(),
+            context=context,
+        )
+        initial_by_ref = {
+            candidate.evidence_ref: result
+            for candidate, result in zip(initial_candidates, initial_ingest_results)
+        }
+        persistence_verified = {
+            observation.evidence_ref
+            for observation in newsletter_to_resolve + web_to_resolve
+            if initial_by_ref.get(observation.evidence_ref)
+            and initial_by_ref[observation.evidence_ref].persistence_verified
+        }
+        newsletter_enrichment_observations = tuple(
+            observation for observation in newsletter_to_resolve
+            if observation.evidence_ref in persistence_verified
+        )
+        web_enrichment_observations = tuple(
+            observation for observation in web_to_resolve
+            if observation.evidence_ref in persistence_verified
+        )
+        timings["initial_persist"] = round(perf_counter() - stage_started, 3)
+
         stage_started = perf_counter()
         newsletter_candidates = _adapt_all(
-            tuple(newsletter_to_resolve),
+            newsletter_enrichment_observations,
             adapter=newsletter_adapter,
             context=context,
             max_workers=8,
         )
         web_candidates = _adapt_all(
-            tuple(web_to_resolve),
+            web_enrichment_observations,
             adapter=web_adapter,
             context=context,
             max_workers=8,
         )
         timings["terminal_resolution"] = round(perf_counter() - stage_started, 3)
         stage_started = perf_counter()
-        ingest_results = ingest(
+        enrichment_ingest_results = ingest(
             newsletter_candidates + web_candidates,
             lane=lane,
             lane_priority=lane_priority,
@@ -303,9 +339,11 @@ def execute_us_remote(
         )
         timings["reconcile_persist"] = round(perf_counter() - stage_started, 3)
 
-        newsletter_ingest_count = len(newsletter_candidates)
-        newsletter_results = list(newsletter_preexcluded) + ingest_results[:newsletter_ingest_count]
-        web_results = list(web_preexcluded) + ingest_results[newsletter_ingest_count:]
+        final_by_ref = dict(initial_by_ref)
+        final_by_ref.update({candidate.evidence_ref: result for candidate, result in zip(newsletter_candidates + web_candidates, enrichment_ingest_results)})
+        newsletter_ingest_count = len(newsletter_to_resolve)
+        newsletter_results = list(newsletter_preexcluded) + [final_by_ref[item.evidence_ref] for item in newsletter_to_resolve]
+        web_results = list(web_preexcluded) + [final_by_ref[item.evidence_ref] for item in web_to_resolve]
         results = newsletter_results + web_results
 
         newsletter_fully_accounted = len(newsletter_results) == attempted_newsletter_observations
