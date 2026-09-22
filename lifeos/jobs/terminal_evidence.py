@@ -539,10 +539,16 @@ def acquire_terminal_vacancy_evidence(
     if fallback_fetcher is not None:
         evidence = _acquire_once(source_url, fallback_fetcher)
         if evidence is not None: return evidence
-        searched = _same_vacancy_search(source_url, company=company, role=role, provider_job_id=provider_job_id, fetcher=fallback_fetcher)
-        if searched.final_url and searched.verified_body:
-            body = searched.verified_body
-            description = _extract_terminal_description(body)
-            if description:
-                return TerminalVacancyEvidence(searched.final_url, description, _extract_posting_date_raw(body) or "", "same_vacancy_search", searched.chain)
+        # Direct employer/ATS URLs have already identified the vacancy. A
+        # search fan-out after their bounded browser attempt adds up to six
+        # more browser/network operations without improving identity. Keep
+        # the search recovery for intermediary URLs, where discovery is the
+        # unresolved part of terminal resolution.
+        if is_provider_intermediary_source(source_url):
+            searched = _same_vacancy_search(source_url, company=company, role=role, provider_job_id=provider_job_id, fetcher=fallback_fetcher)
+            if searched.final_url and searched.verified_body:
+                body = searched.verified_body
+                description = _extract_terminal_description(body)
+                if description:
+                    return TerminalVacancyEvidence(searched.final_url, description, _extract_posting_date_raw(body) or "", "same_vacancy_search", searched.chain)
     return None
