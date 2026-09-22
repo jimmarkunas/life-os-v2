@@ -61,6 +61,7 @@ class FakeHttp:
 
 class ScaleUpAcquisitionTests(unittest.TestCase):
     def test_recovery_complete_zero_is_coverage_not_vacancy_zero(self):
+        # Production-Critical-Test: prevents empty complete recovery from being falsely degraded or treated as vacancy zero.
         source = {"company": "Synthetic Recovery Co", "source_type": "provider_html"}
         complete = {"channels": ["google_web", "linkedin_jobs"], "state": "COMPLETE", "candidates": []}
         self.assertEqual(_recovery({**source, "recovery_evidence": complete}, datetime(2026, 1, 1, tzinfo=timezone.utc)), [])
