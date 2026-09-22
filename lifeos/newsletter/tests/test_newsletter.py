@@ -5,6 +5,7 @@ from lifeos.newsletter import NewsletterExecutionState, NewsletterProcessor, Par
 from lifeos.newsletter.processor import _parse_message_or_known_empty
 from lifeos.jobs.newsletter_contract import Disposition, IngestResult, derive_review_these_jobs, ingest
 from types import SimpleNamespace
+from unittest.mock import patch
 from lifeos.jobs.fit_scoring import FitProfile
 from lifeos.jobs.fit_title_semantics import classify_title
 from lifeos.jobs.fit_requirement_extraction import extract_requirements
@@ -26,6 +27,23 @@ class FakeSource:
 
 class NewsletterTests(unittest.TestCase):
     def setUp(self): self.start=datetime(2026,1,15,12,0,tzinfo=timezone.utc); self.end=self.start+timedelta(hours=1)
+    def test_adapter_passes_identity_to_terminal_evidence_search(self):
+        # Production-Critical-Test: preserves same-vacancy search identity through the adapter boundary.
+        from lifeos.jobs.terminal_evidence import TerminalVacancyEvidence
+        observation = SimpleNamespace(
+            company="Synthetic Co", role="Program Manager", location_text="Remote", compensation_text=None,
+            source_apply_url="https://jobright.ai/jobs/info/synthetic-1", provider_job_id="provider-1",
+            provider_score=None, source_description_text=None, source_provider="Jobright", source_mailbox="gmail",
+            evidence_ref="adapter-terminal-path", issues=(), source_received_at=self.start,
+        )
+        evidence = TerminalVacancyEvidence("https://jobs.example/synthetic-1", "A meaningful job description.", "", "vacancy_page", (observation.source_apply_url,))
+        profile = SimpleNamespace(title_patterns={}, direct_specialization_patterns={}, dimension_patterns={}, evidence_patterns={}, material_patterns=(), ignore_patterns=(), hard_family_patterns=())
+        with patch("lifeos.jobs.newsletter_adapter.acquire_terminal_vacancy_evidence", return_value=evidence) as acquire:
+            candidate = NewsletterJobsAdapter(NewsletterAdapterConfig(fetcher=None, fit_profile=profile, market="US", source_lane="US Remote")).to_jobs_candidate(observation)
+        self.assertEqual(candidate.job.apply_url, "https://jobs.example/synthetic-1")
+        self.assertEqual(acquire.call_args.kwargs["company"], "Synthetic Co")
+        self.assertEqual(acquire.call_args.kwargs["role"], "Program Manager")
+        self.assertEqual(acquire.call_args.kwargs["provider_job_id"], "provider-1")
     def test_jobright_parses_every_candidate_and_preserves_unresolved_card(self):
         body = """[Synthetic Labs\n92%\nSenior Program Manager\nRemote\n$120K-$150K/yr](https://jobright.ai/jobs/info/synthetic-1)\n[Malformed card](https://jobright.ai/jobs/info/synthetic-2)\n[Unsubscribe](https://jobright.ai/unsubscribe)"""
         result = parse_message(msg("synthetic-news-1","Jobright daily jobs",body))

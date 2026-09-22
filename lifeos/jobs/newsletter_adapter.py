@@ -209,7 +209,12 @@ class NewsletterJobsAdapter:
         unresolved_reason = None
 
         if observation.source_apply_url:
-            evidence = self._terminal_evidence_for(observation.source_apply_url)
+            evidence = self._terminal_evidence_for(
+                observation.source_apply_url,
+                company=observation.company,
+                role=observation.role,
+                provider_job_id=observation.provider_job_id,
+            )
             if evidence is not None and evidence.canonical_url and (evidence.description_text or evidence.provider_source_description):
                 apply_url = evidence.canonical_url
                 description_text = evidence.description_text or evidence.provider_source_description
@@ -262,7 +267,14 @@ class NewsletterJobsAdapter:
             source_types=source_types,
         )
 
-    def _terminal_evidence_for(self, source_apply_url: str) -> TerminalVacancyEvidence | None:
+    def _terminal_evidence_for(
+        self,
+        source_apply_url: str,
+        *,
+        company: str | None,
+        role: str | None,
+        provider_job_id: str | None,
+    ) -> TerminalVacancyEvidence | None:
         # Protect only cache access. Holding this lock across network/browser
         # resolution serialized every distinct job URL and defeated _adapt_all's
         # worker pool under large Newsletter batches.
@@ -275,9 +287,9 @@ class NewsletterJobsAdapter:
                 source_apply_url,
                 fetcher=self._config.fetcher,
                 fallback_fetcher=self._config.fallback_fetcher,
-                company=observation.company,
-                role=observation.role,
-                provider_job_id=observation.provider_job_id,
+                company=company,
+                role=role,
+                provider_job_id=provider_job_id,
             )
         except Exception:
             evidence = None
