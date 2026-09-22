@@ -1,7 +1,7 @@
 from __future__ import annotations
 import unittest
 from datetime import datetime, timedelta, timezone
-from lifeos.newsletter import NewsletterExecutionState, NewsletterProcessor, ParseState, RoutedNewsletterMessage, parse_message
+from lifeos.newsletter import NewsletterExecutionState, NewsletterProcessor, ParseState, RoutedNewsletterMessage, SourceVacancyObservation, parse_message
 from lifeos.newsletter.processor import _parse_message_or_known_empty
 from lifeos.jobs.newsletter_contract import Disposition, IngestResult, derive_review_these_jobs, ingest
 from types import SimpleNamespace
@@ -271,6 +271,63 @@ Content-Type: text/html; charset=utf-8
         self.assertEqual(low[0].disposition, Disposition.EXCLUDED)
         self.assertIsNotNone(low_repo.get_many(["job:synthetic"])["job:synthetic"])
         self.assertEqual(low_repo.get_many(["job:synthetic"])["job:synthetic"].job.eligible_lanes, ())
+
+    def test_production_shaped_persist_then_enrich_and_fail_closed(self):
+        # Production-Critical-Test: prevents terminal enrichment from running before canonical read-back.
+        from lifeos.jobs.terminal_evidence import TerminalVacancyEvidence
+        from lifeos.jobs.us_remote_runtime import _accepted_newsletter_message_ids
+        observation = SourceVacancyObservation(
+            evidence_ref="persist-first", source_provider="Jobright", source_mailbox="gmail",
+            source_message_id="msg-1", source_subject="Jobs", company="Synthetic Co",
+            role="Program Manager", location_text="Remote", compensation_text=None,
+            source_apply_url="https://jobright.ai/jobs/synthetic", provider_job_id="job-1",
+            source_received_at=self.start,
+        )
+        profile = _canonical_test_fit_profile()
+        adapter = NewsletterJobsAdapter(NewsletterAdapterConfig(fetcher=None, fit_profile=profile, market="US", source_lane="US Remote"))
+        repo = InMemoryCareerRepository()
+        lane = LaneConfig("US Remote", "US", 72, None, "remote_only", None, False, None)
+        initial = adapter.to_identity_candidate(observation)
+        with patch("lifeos.jobs.newsletter_adapter.acquire_terminal_vacancy_evidence", return_value=None) as resolver:
+            first = ingest([initial], lane=lane, lane_priority={"US Remote": 0}, repository=repo, run_date=self.start.date())
+            resolver.assert_not_called()
+        self.assertTrue(first[0].persistence_verified)
+        key = first[0].stable_job_key
+        self.assertEqual(len(repo.get_many([key])), 1)
+
+        evidence = TerminalVacancyEvidence(
+            canonical_url="https://boards.greenhouse.io/synthetic/jobs/1",
+            description_text="Required: lead program delivery and cloud strategy.",
+            posting_date_raw="", evidence_source="vacancy_page", resolution_chain=(observation.source_apply_url,),
+        )
+        with patch("lifeos.jobs.newsletter_adapter.acquire_terminal_vacancy_evidence", return_value=evidence) as resolver:
+            enriched = adapter.to_jobs_candidate(observation)
+            resolver.assert_called_once()
+        second = ingest([enriched], lane=lane, lane_priority={"US Remote": 0}, repository=repo, run_date=self.start.date())
+        self.assertTrue(second[0].persistence_verified)
+        self.assertEqual(second[0].stable_job_key, key)
+        self.assertEqual(len(repo.get_many([key])), 1)
+
+        failed_repo = InMemoryCareerRepository()
+        failed_adapter = NewsletterJobsAdapter(NewsletterAdapterConfig(fetcher=None, fit_profile=profile, market="US", source_lane="US Remote"))
+        with patch("lifeos.jobs.newsletter_adapter.acquire_terminal_vacancy_evidence", return_value=None) as resolver:
+            persisted = ingest([initial], lane=lane, lane_priority={"US Remote": 0}, repository=failed_repo, run_date=self.start.date())
+            self.assertTrue(persisted[0].persistence_verified)
+            unresolved = failed_adapter.to_jobs_candidate(observation)
+            resolver.assert_called_once()
+        final = ingest([unresolved], lane=lane, lane_priority={"US Remote": 0}, repository=failed_repo, run_date=self.start.date())
+        self.assertEqual(final[0].disposition, Disposition.REVIEW_DEGRADED)
+        self.assertEqual(len(failed_repo.get_many([persisted[0].stable_job_key])), 1)
+        message = SimpleNamespace(message_ref="gmail:msg-1", state=ParseState.PASS, observations=(observation,))
+        self.assertEqual(_accepted_newsletter_message_ids(SimpleNamespace(messages=(message,)), final), [])
+
+        class BrokenRepository(InMemoryCareerRepository):
+            def get_many(self, stable_job_keys):
+                raise RuntimeError("read-back unavailable")
+        with patch("lifeos.jobs.newsletter_adapter.acquire_terminal_vacancy_evidence") as resolver:
+            failed = ingest([initial], lane=lane, lane_priority={"US Remote": 0}, repository=BrokenRepository(), run_date=self.start.date())
+            resolver.assert_not_called()
+        self.assertFalse(failed[0].persistence_verified)
 
     def test_employer_jd_without_scoreable_requirements_reports_exact_missing_state(self):
         # Production-Critical-Test: prevents employer-JD evidence from being shown as complete when scoreability is missing.
