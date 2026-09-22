@@ -286,6 +286,25 @@ Content-Type: text/html; charset=utf-8
         self.assertIsNotNone(candidate.fit)
         self.assertNotEqual(candidate.fit_reason, "missing_scoreable_jd_requirements")
 
+    def test_realistic_employer_jd_samples_all_extract_requirements(self):
+        # Production-Critical-Test: covers representative production-shaped JD markup across failing employers.
+        from lifeos.jobs.terminal_evidence import MappingFetcher, acquire_terminal_vacancy_evidence
+        samples = {
+            "Databricks": "&lt;h2&gt;Responsibilities&lt;/h2&gt;&lt;ul&gt;&lt;li&gt;Lead program delivery.&lt;/li&gt;&lt;/ul&gt;&lt;h2&gt;Qualifications&lt;/h2&gt;&lt;ul&gt;&lt;li&gt;Required: 8 years experience in program management and cloud platforms.&lt;/li&gt;&lt;/ul&gt;",
+            # Derived from the employer/ATS Datadog Technical Program Manager II page:
+            # https://careers.datadoghq.com/detail/8144018/
+            "Datadog": "<h2>About the Role</h2><p>Technical Program Management operates at the intersection of engineering depth and organizational reach by driving high priority, cross-functional programs.</p><h2>What we are looking for</h2>&lt;ul&gt;&lt;li&gt;Required: 3+ years of technical program management at a high-growth technology company.&lt;/li&gt;&lt;li&gt;Engineering credibility with observability, infrastructure, data platforms, or AI/ML systems.&lt;/li&gt;&lt;/ul&gt;",
+            "Figma": "<p>Responsibilities</p><ul><li>Drive product program delivery.</li><li>Partner with cloud teams.</li></ul><p>Required qualifications: experience leading complex programs.</p>",
+            "ServiceNow": "<h3>About the role</h3><p>Lead program management and delivery strategy.</p><h3>Required</h3><p>Minimum 6 years experience with cloud platforms.</p>",
+            "Twilio": "<div>Responsibilities</div><div>Own delivery and technical program strategy.</div><div>Must have experience with cloud platforms.</div>",
+        }
+        profile = FitProfile("synthetic", {"DIRECT": ("program", "product"), "ADJACENT": ("architect",), "METHOD_EQUIVALENT": ("method",), "UNSUPPORTED": ("software engineer",)}, (), {"role_seniority": ("years? experience",), "functional": ("program",), "technical_platform": ("cloud",), "delivery_complexity": ("delivery",), "competitive_advantage": ("strategy",)}, {"DIRECT": ("must", "required"), "ADJACENT": (), "METHOD_EQUIVALENT": (), "UNSUPPORTED": ()}, ("must", "required", "experience"), (), ())
+        for company, html in samples.items():
+            with self.subTest(company=company):
+                evidence = acquire_terminal_vacancy_evidence("https://jobs.example/" + company.casefold(), fetcher=MappingFetcher({"pages": [{"url": "https://jobs.example/" + company.casefold(), "final_url": "https://jobs.example/" + company.casefold(), "html": html}]}))
+                self.assertIsNotNone(evidence)
+                self.assertTrue(extract_requirements(evidence.description_text, profile.dimension_patterns, profile.evidence_patterns, profile.material_patterns).requirements)
+
     def test_malformed_fit_evidence_is_not_a_source_fatality(self):
         import lifeos.jobs.newsletter_adapter as adapter_module
         profile = SimpleNamespace(title_patterns={}, direct_specialization_patterns={}, dimension_patterns={}, evidence_patterns={}, material_patterns=(), ignore_patterns=(), hard_family_patterns=())
