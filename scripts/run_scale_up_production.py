@@ -2,6 +2,7 @@
 """Operator entry point for one bounded Scale-Up runtime."""
 from __future__ import annotations
 import argparse, json, os
+from collections import Counter
 from datetime import datetime, timezone
 from lifeos.core.config import ConfigField, RuntimeConfig
 from lifeos.core.http import HttpClient
@@ -13,6 +14,26 @@ from lifeos.jobs.scale_up_runtime import execute_scale_up
 from lifeos.jobs.newsletter_contract import Disposition
 from scripts.run_us_remote_production import _parse_private_policy
 from lifeos.jobs.scale_up_acquisition import KINDS
+
+def _failure_summary(acquired, results):
+    degraded = [result for result in results if result.disposition is Disposition.REVIEW_DEGRADED]
+    reasons = Counter(result.detail or result.disposition.value for result in degraded)
+    return {
+        "sources": len(acquired.sources),
+        "observations": len(acquired.observations),
+        "complete": acquired.complete and not degraded,
+        "non_complete_sources": [
+            {"company": source.company, "state": source.state,
+             "candidate_count": source.candidate_count, "detail": source.detail}
+            for source in acquired.sources if source.state != "COMPLETE"
+        ],
+        "ingest_results": len(results),
+        "degraded_ingest": len(degraded),
+        "degraded_ingest_reasons": [
+            {"reason": reason, "count": count}
+            for reason, count in sorted(reasons.items())
+        ],
+    }
 
 def _file_url(page, name):
     files=((page.get("properties") or {}).get(name) or {}).get("files") or []
@@ -52,8 +73,10 @@ def main() -> int:
     notion=NotionTransport(context=context,http=http,access_token=config.require("NOTION_API_TOKEN"))
     lane,priority,profile,market,source_lane,evidence=_load_inputs(context,http,notion,config.require("NOTION_API_TOKEN"),os.environ.get("SCHEDULED_SLOT",""),os.environ.get("TRIGGER_NONCE",""))
     acquired, results=execute_scale_up(context=context,http=http,notion=notion,data_source_id=config.require("NOTION_JOB_LEDGER_DATA_SOURCE_ID"),lane=lane,lane_priority=priority,fit_profile=profile,market=market,source_lane=source_lane,recovery_evidence=evidence)
-    degraded = sum(result.disposition is Disposition.REVIEW_DEGRADED for result in results)
-    complete = acquired.complete and degraded == 0
-    print(json.dumps({"sources":len(acquired.sources),"observations":len(acquired.observations),"complete":complete,"ingest_results":len(results),"degraded_ingest":degraded}))
-    return 0 if complete else 1
+    summary = _failure_summary(acquired, results)
+    if not summary["complete"]:
+        print(json.dumps(summary, separators=(",", ":")))
+    else:
+        print(json.dumps({key: summary[key] for key in ("sources", "observations", "complete", "ingest_results", "degraded_ingest")}))
+    return 0 if summary["complete"] else 1
 if __name__ == "__main__": raise SystemExit(main())
