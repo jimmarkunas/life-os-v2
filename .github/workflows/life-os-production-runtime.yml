@@ -193,6 +193,9 @@ jobs:
 
       - name: Execute Scale-Up runtime
         if: steps.trigger.outputs.module == 'scale-up'
+        env:
+          SCHEDULED_SLOT: ${{ steps.trigger.outputs.slot }}
+          TRIGGER_NONCE: ${{ steps.trigger.outputs.nonce }}
         run: |
           set -euo pipefail
           PYTHONPATH="$GITHUB_WORKSPACE" python3.12 scripts/run_scale_up_production.py --timeout-seconds 300
