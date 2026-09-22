@@ -305,6 +305,14 @@ Content-Type: text/html; charset=utf-8
                 self.assertIsNotNone(evidence)
                 self.assertTrue(extract_requirements(evidence.description_text, profile.dimension_patterns, profile.evidence_patterns, profile.material_patterns).requirements)
 
+    def test_databricks_live_page_meta_does_not_mask_job_description(self):
+        # Production-Critical-Test: prevents the live Databricks vacancy meta description from masking its JD body.
+        from lifeos.jobs.terminal_evidence import _extract_terminal_description
+        raw = "<meta name=\"description\" content=\"Sr. Field Technical Program Manager, FDE, United States. Join us! Together we can use data to solve the challenges of tomorrow.\"><main><h1>Sr. Field Technical Program Manager, FDE</h1><h2>The Impact You Will Have</h2><ul><li>Be responsible for successful delivery of complex customer engagements.</li><li>Guide technical teams through architectural decisions and mitigate technical risks.</li></ul><h2>What We Look For</h2><ul><li>Experience managing large, complex engagements.</li><li>Experience with BI, data management, and big data technologies is preferred.</li></ul></main>"
+        description = _extract_terminal_description(raw)
+        self.assertIn("successful delivery of complex customer engagements", description)
+        self.assertNotEqual(description, "Sr. Field Technical Program Manager, FDE, United States. Join us! Together we can use data to solve the challenges of tomorrow.")
+
     def test_malformed_fit_evidence_is_not_a_source_fatality(self):
         import lifeos.jobs.newsletter_adapter as adapter_module
         profile = SimpleNamespace(title_patterns={}, direct_specialization_patterns={}, dimension_patterns={}, evidence_patterns={}, material_patterns=(), ignore_patterns=(), hard_family_patterns=())

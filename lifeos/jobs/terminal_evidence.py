@@ -365,13 +365,12 @@ def _extract_terminal_description(html_text: str) -> str | None:
         raw = str(posting.get("description") or "").strip()
         if raw:
             return _html_to_text(raw)
-    match = _META_DESCRIPTION.search(html_text)
-    if match:
-        text = _html_to_text(match.group(1))
-        if text:
-            return text
     text = _html_to_text(html_text)
-    return text if len(text) >= 20 else None
+    match = _META_DESCRIPTION.search(html_text)
+    meta = _html_to_text(match.group(1)) if match else ""
+    if len(text) >= max(200, len(meta) * 2):
+        return text
+    return meta or (text if len(text) >= 20 else None)
 
 
 def _extract_posting_date_raw(html_text: str) -> str | None:
