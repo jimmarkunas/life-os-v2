@@ -14,6 +14,7 @@ on:
         options:
           - us-remote
           - us-remote-recovery
+          - scale-up
       window_hours:
         description: Optional source window override
         required: false
@@ -110,6 +111,11 @@ jobs:
               web_lookback_hours="24"
               full_web_sweep="true"
               ;;
+            scale-up)
+              default_window="24"
+              web_lookback_hours="24"
+              full_web_sweep="false"
+              ;;
             *) echo "Unsupported module" >&2; exit 2 ;;
           esac
           if [ -z "$window_hours" ]; then window_hours="$default_window"; fi
@@ -155,6 +161,7 @@ jobs:
           command -v chromium-browser >/dev/null
 
       - name: Execute US Remote runtime
+        if: steps.trigger.outputs.module != 'scale-up'
         env:
           SCHEDULED_SLOT: ${{ steps.trigger.outputs.slot }}
           TRIGGER_NONCE: ${{ steps.trigger.outputs.nonce }}
@@ -182,3 +189,9 @@ jobs:
           if [ "$elapsed" -gt 45 ]; then
             echo "::warning::Runtime exceeded 45-second benchmark: ${elapsed}s"
           fi
+
+      - name: Execute Scale-Up runtime
+        if: steps.trigger.outputs.module == 'scale-up'
+        run: |
+          set -euo pipefail
+          PYTHONPATH="$GITHUB_WORKSPACE" python3.12 scripts/run_scale_up_production.py --timeout-seconds 300
