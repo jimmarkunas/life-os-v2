@@ -32,7 +32,7 @@ def _profile() -> FitProfile:
         "competitive_advantage": ("strategy", "automation", "AI"),
     }
     classes = {"DIRECT": ("required", "must", "experience"), "ADJACENT": ("preferred",), "METHOD_EQUIVALENT": ("plus",), "UNSUPPORTED": ("software engineer",)}
-    return FitProfile("JOBS_USER_OUTCOME_GATE", {"DIRECT": ("program", "project"), "ADJACENT": ("architect",), "METHOD_EQUIVALENT": ("delivery",), "UNSUPPORTED": ("software engineer",)}, ("automation", "AI"), dimensions, classes, ("required", "must", "experience", "lead", "manage"), (), ("hands-on coding",))
+    return FitProfile("JOBS_USER_OUTCOME_GATE", {"DIRECT": ("program", "project"), "ADJACENT": ("architect",), "METHOD_EQUIVALENT": ("delivery",), "UNSUPPORTED": ("software engineer",)}, ("automation", "AI"), dimensions, classes, ("required", "must", "experience", "lead", "manage", "preferred", "plus"), (), ("hands-on coding",))
 
 
 class _Gmail:
@@ -55,7 +55,7 @@ class _Gmail:
 
 def main() -> int:
     jobright = parse_message(_message("jobright", "alerts@jobright.invalid", "Jobright daily jobs", "[Synthetic Labs\n92%\nSenior Program Manager\nRemote\n$120K-$150K/yr](https://jobright.ai/jobs/info/synthetic-high)"))
-    lensa = parse_message(_message("lensa", "alerts@lensa.example.invalid", "Lensa job alert", "[Synthetic Works Senior Project Manager Remote $110K-$130K](https://jobs.lensa.com/synthetic-low)"))
+    lensa = parse_message(_message("lensa", "alerts@lensa.example.invalid", "Lensa job alert", "[Synthetic Works Software Engineer Remote $110K-$130K](https://jobs.lensa.com/synthetic-low)"))
     linkedin = parse_message(_message("linkedin", "jobs@linkedin.example.invalid", "LinkedIn jobs for you", "[Senior Product Manager\nSynthetic Systems · Remote](https://www.linkedin.com/jobs/view/123456789/)"))
     junk = parse_message(_message("junk", "alerts@jobright.invalid", "Jobright daily jobs", "[Malformed card](https://jobright.ai/jobs/info/junk)"))
     observations = list(jobright.observations + lensa.observations + linkedin.observations + junk.observations)
@@ -67,15 +67,25 @@ def main() -> int:
     unresolved_url = observations[2].source_apply_url
     evidence = {
         high_url: TerminalVacancyEvidence("https://boards.greenhouse.io/synthetic/jobs/high", "Required: lead program delivery and cloud strategy. Must manage complex cross-functional programs with 8 years experience.", "", "vacancy_page", (high_url,)),
-        low_url: TerminalVacancyEvidence("https://boards.greenhouse.io/synthetic/jobs/low", "A role with no applicable requirements.", "", "vacancy_page", (low_url,)),
+        low_url: TerminalVacancyEvidence("https://boards.greenhouse.io/synthetic/jobs/low", "Plus: complex projects.", "", "vacancy_page", (low_url,)),
         unresolved_url: None,
     }
     repo = InMemoryCareerRepository()
     gmail = _Gmail(SimpleNamespace(message_id="gate", received_at=NOW, sender="alerts@jobright.invalid", subject="Jobs", headers={}, body_text=""))
     lane = LaneConfig("US Remote", "US", UNIVERSAL_FIT_FLOOR, None, "remote_only", None, False, None)
     resolver_calls: list[str] = []
+    events: list[tuple[str, str]] = []
+    original_upsert = repo.upsert
+
+    def tracked_upsert(record):
+        persisted = original_upsert(record)
+        events.append(("read_back", record.job.stable_job_key))
+        return persisted
+
+    repo.upsert = tracked_upsert
 
     def resolve(url, **_kwargs):
+        events.append(("terminal", url))
         resolver_calls.append(url)
         return evidence.get(url)
 
@@ -90,12 +100,20 @@ def main() -> int:
     assert dispositions.get("review_degraded", 0) >= 1, "unresolved terminal evidence was not degraded"
     assert not gmail.marked, "degraded Newsletter was finalized"
     assert high_url in resolver_calls and low_url in resolver_calls and unresolved_url in resolver_calls
+    first_terminal = next(index for index, event in enumerate(events) if event[0] == "terminal")
+    assert any(event[0] == "read_back" for event in events[:first_terminal]), "terminal resolution preceded authoritative persistence/read-back"
     assert any(row.job.job.description_text for row in rows), "trustworthy terminal JD did not persist"
     high = next(row for row in rows if row.job.job.apply_url == "https://boards.greenhouse.io/synthetic/jobs/high")
     low = next(row for row in rows if row.job.job.apply_url == "https://boards.greenhouse.io/synthetic/jobs/low")
     assert high.job.fit is not None and high.job.fit >= UNIVERSAL_FIT_FLOOR
-    assert low.job.fit is None or low.job.fit < UNIVERSAL_FIT_FLOOR
-    assert any(row.job.admission_status is AdmissionStatus.EXCLUDED for row in rows) or low.job.eligible_lanes == ()
+    assert high.job.admission_status is AdmissionStatus.ADMITTED and "US Remote" in high.job.eligible_lanes
+    assert low.job.fit is not None and low.job.fit < UNIVERSAL_FIT_FLOOR
+    assert low.job.admission_status is not AdmissionStatus.ADMITTED and low.job.eligible_lanes == ()
+    unresolved = next(row for row in rows if row.job.job.company.name == "Synthetic Systems")
+    assert unresolved.job.fit is None and unresolved.job.admission_status is not AdmissionStatus.ADMITTED
+    assert unresolved.job.eligible_lanes == ()
+    assert len([row for row in rows if row.job.job.company.name == "Synthetic Labs"]) == 1, "duplicate created a second canonical row"
+    assert all("junk" not in (row.job.job.apply_url or "") for row in rows), "junk created a canonical row"
     saved_processed = processed
     clean_message = SimpleNamespace(message_ref="gmail:gate", state=ParseState.PASS, observations=(observations[0],))
     processed = SimpleNamespace(state=ParseState.PASS, messages=(clean_message,), observations=(observations[0],), errors=())
