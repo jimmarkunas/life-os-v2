@@ -335,7 +335,15 @@ class NotionCareerRepository:
         existing_page_id = self._page_ids.get(key)
 
         if existing_page_id:
-            written = self._transport.update_page(existing_page_id, properties)
+            try:
+                written = self._transport.update_page(existing_page_id, properties)
+            except TimeoutError:
+                # Bounded ambiguous-write reconciliation: confirm the exact
+                # target, then perform one idempotent retry only if needed.
+                observed = _page_to_record(self._transport.get_page(existing_page_id))
+                if _canonical_view(observed) == _canonical_view(record):
+                    return observed
+                written = self._transport.update_page(existing_page_id, properties)
             page_id = str(written.get("id") or existing_page_id)
         else:
             written = self._transport.create_page(self._config.data_source_id, properties)
