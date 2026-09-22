@@ -12,7 +12,7 @@ ROOT = Path(__file__).parents[2]
 REGISTRY = json.loads((ROOT / "contracts/scale_up_sources.json").read_text())
 
 class FakeHttp:
-    def __init__(self, broken=None, intrepid_live=False): self.broken = broken; self.intrepid_live = intrepid_live
+    def __init__(self, broken=None, intrepid_live=False, revolut_mismatch=False): self.broken = broken; self.intrepid_live = intrepid_live; self.revolut_mismatch = revolut_mismatch
     def request_json(self, context, method, url, **kwargs):
         if self.broken and self.broken in url: raise TimeoutError("synthetic source failure")
         if method == "POST":
@@ -35,19 +35,37 @@ class FakeHttp:
             body='<a href="/careers/product-manager-role">Product Manager role</a><a href="/careers/about">About Us</a><a href="/careers/benefits">Benefits</a><a href="https://jobs.lever.co/example/product-manager-role">External Product role</a><a href="https://example.invalid/jobs/product-manager-role">Untrusted Product role</a>'
         elif "rippling" in url:
             body='<a href="/eml-payments-ltd/jobs/product-manager-role">Rippling Product role</a>'
+        elif "sixandflow" in url:
+            body='<a href="/careers/product-manager">Six & Flow Product Manager</a>'
+        elif "futuristictechnologies" in url:
+            body='<div class="rjjobportal-careers-wrapper"><div class="rjjobportal-job-item"><span class="rjjobportal-job-title">1. Futuristic Product Manager</span><span class="rjjobportal-meta-label">Job Reference Number</span><span class="rjjobportal-meta-val">FT-1</span><span class="rjjobportal-meta-label">Location</span><span class="rjjobportal-meta-val">London</span><span class="rjjobportal-meta-label">Annual Salary</span><span class="rjjobportal-meta-val">£100k</span></div></div>'
+        elif "doubleword.ai/careers" in url:
+            body='<script src="/assets/index-test.js"></script>'
+        elif "doubleword.ai/assets/index-test.js" in url:
+            body='a=[{title:"Doubleword Product Manager",slug:"product-manager",department:"Product",type:"Full-time",seniority:"Senior",location:"London",compensation:"£100k",applyEmail:"jobs@example.com"}];a.map;Open Positions'
+        elif "revolut.com" in url:
+            visible=2 if self.revolut_mismatch else 1
+            payload={"props":{"pageProps":{"positions":[{"id":"rv-1","text":"Revolut Product Manager","locations":[{"name":"London","type":"Hybrid","country":"UK"}]}]}}}
+            body=f'We have {visible} open positions<script id="__NEXT_DATA__" type="application/json">{json.dumps(payload)}</script>'
+        elif "tg0.co.uk" in url:
+            body='<h2>JOIN US</h2><h3>LONDON HQ</h3><h3>TG0 Product Manager</h3><a href="/apply">Submit your application</a>'
+        elif "veramed.com/job-openings/?gh_jid=" in url:
+            body='<h1>Veramed Product Manager</h1><h2>Apply for this role</h2>'
+        elif "veramed.com/job-openings" in url:
+            body='<h2>Job Openings</h2><a href="/job-openings/?gh_jid=vr-1">View role</a>'
         elif "teamtailor" in url or "communityfibre" in url or "sanogenetics" in url or "sharegain" in url: body='<a href="/jobs/role">HTML role</a>'
         else: body='<a href="/careers/role">Static role</a>'
         return HttpResponse(200, {}, body.encode())
 
 class ScaleUpAcquisitionTests(unittest.TestCase):
     def test_shared_ats_api_contract_and_observations(self):
-        self.assertEqual(len(REGISTRY["sources"]), 30)
-        self.assertEqual(len({s["company"] for s in REGISTRY["sources"]}), 30)
-        self.assertEqual(len({s["source_type"] for s in REGISTRY["sources"]}), 14)
+        self.assertEqual(len(REGISTRY["sources"]), 36)
+        self.assertEqual(len({s["company"] for s in REGISTRY["sources"]}), 36)
+        self.assertEqual(len({s["source_type"] for s in REGISTRY["sources"]}), 20)
         acquired_at = datetime(2026,1,1,tzinfo=timezone.utc)
         result = ScaleUpAcquirer(context=RunContext.start(now=acquired_at), http=FakeHttp()).acquire(REGISTRY, now=acquired_at)
         self.assertTrue(result.complete)
-        self.assertEqual(len(result.sources), 30)
+        self.assertEqual(len(result.sources), 36)
         self.assertTrue(all(s.state == "COMPLETE" for s in result.sources))
         self.assertTrue(all(isinstance(o, SourceVacancyObservation) and o.source_mailbox == "public-web" for o in result.observations))
         self.assertTrue(all(o.company and o.role and o.source_apply_url for o in result.observations))
@@ -77,12 +95,25 @@ class ScaleUpAcquisitionTests(unittest.TestCase):
             self.assertFalse(any(o.role in {"About Us", "Benefits"} for o in citisense))
             rippling = [o for o in result.observations if o.company == "Prepaid Financial Services Limited"]
             self.assertTrue(any("/eml-payments-ltd/jobs/product-manager-role" in (o.source_apply_url or "") for o in rippling))
+        with self.subTest("B2 bespoke source families"):
+            expected={
+                "Six & Flow Ltd":"Six & Flow Product Manager",
+                "Futuristic Technologies Ltd":"Futuristic Product Manager",
+                "TYTN Ltd":"Doubleword Product Manager",
+                "Revolut Ltd":"Revolut Product Manager",
+                "Tangi0 Ltd.":"TG0 Product Manager",
+                "Veramed Limited":"Veramed Product Manager",
+            }
+            for company,title in expected.items():
+                observation=next(o for o in result.observations if o.company == company)
+                self.assertEqual(observation.role,title)
+                self.assertEqual(observation.source_received_at,acquired_at)
 
     def test_shared_ats_api_failure_is_not_complete(self):
         broken = REGISTRY["sources"][0]["canonical_endpoint"]
         result = ScaleUpAcquirer(context=RunContext.start(), http=FakeHttp(broken)).acquire(REGISTRY)
         self.assertFalse(result.complete)
-        self.assertEqual(len(result.sources), 30)
+        self.assertEqual(len(result.sources), 36)
         self.assertEqual(result.sources[0].state, "BLOCKED")
         with self.subTest("truncated registry"):
             result = ScaleUpAcquirer(context=RunContext.start(), http=FakeHttp()).acquire({"sources": REGISTRY["sources"][:-1]})
@@ -91,6 +122,10 @@ class ScaleUpAcquisitionTests(unittest.TestCase):
         result = ScaleUpAcquirer(context=RunContext.start(), http=FakeHttp()).acquire(unknown)
         self.assertFalse(result.complete)
         self.assertEqual(result.sources[0].state, "BLOCKED")
+        with self.subTest("Revolut exhaustive mismatch"):
+            result = ScaleUpAcquirer(context=RunContext.start(), http=FakeHttp(revolut_mismatch=True)).acquire(REGISTRY)
+            self.assertEqual(next(s for s in result.sources if s.company == "Revolut Ltd").state, "DEGRADED")
+            self.assertFalse(result.complete)
         with self.subTest("ambiguous empty HTML"):
             class EmptyHtml(FakeHttp):
                 def request(self, context, method, url, **kwargs):
