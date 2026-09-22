@@ -286,6 +286,23 @@ Content-Type: text/html; charset=utf-8
         self.assertIsNotNone(candidate.fit)
         self.assertNotEqual(candidate.fit_reason, "missing_scoreable_jd_requirements")
 
+    def test_realistic_employer_jd_samples_all_extract_requirements(self):
+        # Production-Critical-Test: covers representative production-shaped JD markup across failing employers.
+        from lifeos.jobs.terminal_evidence import MappingFetcher, acquire_terminal_vacancy_evidence
+        samples = {
+            "Databricks": "<h2>Responsibilities</h2><ul><li>Lead program delivery.</li></ul><h2>Qualifications</h2><ul><li>Required: 8 years experience in program management and cloud platforms.</li></ul>",
+            "Datadog": "<div>What you will do</div><div>Own strategy and delivery for platform programs.</div><div>Minimum 5 years experience required.</div>",
+            "Figma": "<p>Responsibilities</p><ul><li>Drive product program delivery.</li><li>Partner with cloud teams.</li></ul><p>Required qualifications: experience leading complex programs.</p>",
+            "ServiceNow": "<h3>About the role</h3><p>Lead program management and delivery strategy.</p><h3>Required</h3><p>Minimum 6 years experience with cloud platforms.</p>",
+            "Twilio": "<div>Responsibilities</div><div>Own delivery and technical program strategy.</div><div>Must have experience with cloud platforms.</div>",
+        }
+        profile = FitProfile("synthetic", {"DIRECT": ("program", "product"), "ADJACENT": ("architect",), "METHOD_EQUIVALENT": ("method",), "UNSUPPORTED": ("software engineer",)}, (), {"role_seniority": ("years? experience",), "functional": ("program",), "technical_platform": ("cloud",), "delivery_complexity": ("delivery",), "competitive_advantage": ("strategy",)}, {"DIRECT": ("must", "required"), "ADJACENT": (), "METHOD_EQUIVALENT": (), "UNSUPPORTED": ()}, ("must", "required", "experience"), (), ())
+        for company, html in samples.items():
+            with self.subTest(company=company):
+                evidence = acquire_terminal_vacancy_evidence("https://jobs.example/" + company.casefold(), fetcher=MappingFetcher({"pages": [{"url": "https://jobs.example/" + company.casefold(), "final_url": "https://jobs.example/" + company.casefold(), "html": html}]}))
+                self.assertIsNotNone(evidence)
+                self.assertTrue(extract_requirements(evidence.description_text, profile.dimension_patterns, profile.evidence_patterns, profile.material_patterns).requirements)
+
     def test_malformed_fit_evidence_is_not_a_source_fatality(self):
         import lifeos.jobs.newsletter_adapter as adapter_module
         profile = SimpleNamespace(title_patterns={}, direct_specialization_patterns={}, dimension_patterns={}, evidence_patterns={}, material_patterns=(), ignore_patterns=(), hard_family_patterns=())
