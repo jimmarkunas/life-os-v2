@@ -13,7 +13,7 @@ from lifeos.core.http import HttpClient, RetryPolicy
 from lifeos.core.runtime import RunContext
 from lifeos.newsletter.models import SourceVacancyObservation
 
-KINDS = frozenset({"workable_public", "ashby", "workday_public", "greenhouse", "pinpoint_json", "lever_public", "teamtailor_html", "static_complete_html", "wttj_html", "rippling_html", "join_html", "stream_html", "popsa_html", "bluestonex_html", "sixflow_html", "futuristic_html", "doubleword_bundle", "revolut_html", "tg0_html", "veramed_html"})
+KINDS = frozenset({"workable_public", "ashby", "workday_public", "greenhouse", "pinpoint_json", "lever_public", "teamtailor_html", "static_complete_html", "wttj_html", "rippling_html", "join_html", "stream_html", "popsa_html", "bluestonex_html", "sixflow_html", "futuristic_html", "doubleword_bundle", "revolut_html", "tg0_html", "veramed_html", "provider_html", "generic_html"})
 IGNORE = re.compile(r"(privacy|login|sign.?in|cookie|benefit|culture|people|about|contact|connect|alert|talent.?community)", re.I)
 NON_JOB = re.compile(r"^(careers?|jobs?( explore jobs)?|current openings?|open positions?|see open positions?|view open roles?|view career openings?|view job|apply|apply now|join us|opportunities|get in touch\.?)$", re.I)
 JOBISH = re.compile(r"(job|career|position|vacanc|opening|role|apply)", re.I)
@@ -33,7 +33,7 @@ class ScaleUpAcquisitionResult:
 
     @property
     def complete(self) -> bool:
-        return len(self.sources) == 36 and len({s.company for s in self.sources}) == 36 and all(s.state == "COMPLETE" for s in self.sources)
+        return len(self.sources) == 48 and len({s.company for s in self.sources}) == 48 and all(s.state == "COMPLETE" for s in self.sources)
 
 def _text(value):
     return None if value is None else str(value)
@@ -256,6 +256,21 @@ def _veramed(text, source, now, fetch_text):
     if not titles: raise ValueError("Veramed inventory ambiguous")
     return [_obs(source,hashlib.sha1(v.encode()).hexdigest()[:12],v,None,source["canonical_endpoint"],received_at=now) for v in titles]
 
+def _recovery(source, now):
+    evidence=source.get("recovery_evidence") or {}
+    if set(evidence.get("channels", [])) != {"google_web", "linkedin_jobs"}:
+        raise ValueError("recovery evidence is missing a required channel")
+    if evidence.get("state") != "COMPLETE":
+        raise ValueError("recovery evidence does not prove complete inventory")
+    rows=[]
+    for item in evidence.get("candidates", []):
+        if not item.get("title") or not item.get("url") or not item.get("employer_verified") or not item.get("vacancy_verified"):
+            raise ValueError("recovery candidate is incomplete")
+        rows.append(_obs(source,item.get("job_id"),item["title"],item.get("location"),item["url"],received_at=now))
+    if not rows and not evidence.get("authoritative_zero"):
+        raise ValueError("recovery evidence is ambiguous")
+    return rows
+
 class ScaleUpAcquirer:
     def __init__(self, *, context: RunContext, http: HttpClient, max_workers: int = 4):
         self.context, self.http = context, http
@@ -270,6 +285,10 @@ class ScaleUpAcquirer:
 
     def _jobs(self, source):
         kind, jobs = source["source_type"], None
+        if kind in {"provider_html", "generic_html"}:
+            if source.get("recovery_evidence"):
+                return _recovery(source,self.now)
+            raise ValueError("primary recovery source requires approved recovery evidence")
         if kind in {"teamtailor_html", "wttj_html", "rippling_html", "stream_html", "popsa_html", "bluestonex_html", "join_html", "static_complete_html"}:
             text=self._html(source["canonical_endpoint"]); marker=source.get("zero_marker")
             if kind == "teamtailor_html": rows=_path_jobs(text,source,self.now,r"/jobs/[^/]+",reject=IGNORE)
