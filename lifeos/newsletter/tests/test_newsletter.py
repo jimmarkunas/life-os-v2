@@ -18,6 +18,12 @@ from lifeos.jobs.newsletter_adapter import NewsletterJobsAdapter, NewsletterAdap
 from lifeos.jobs.newsletter_adapter import _adapt_all
 from lifeos.core.runtime import RunContext
 
+def _canonical_test_fit_profile() -> FitProfile:
+    """Deterministic test-only projection of the canonical Candidate Profile page."""
+    classes = {"DIRECT": ("required", "must", "proven", "experience"), "ADJACENT": ("preferred", "familiarity"), "METHOD_EQUIVALENT": ("plus", "bonus"), "UNSUPPORTED": ("hands-on coding", "software development")}
+    dimensions = {"role_seniority": ("years? experience", "senior", "lead", "executive"), "functional": ("program", "delivery", "risk", "stakeholder", "management"), "technical_platform": ("technical", "cloud", "data", "architecture", "platform"), "delivery_complexity": ("complex", "cross-functional", "engagement", "program"), "competitive_advantage": ("strategy", "automation", "AI")}
+    return FitProfile("V3-test-canonical-projection", {"DIRECT": ("program", "technical program", "product"), "ADJACENT": ("architecture",), "METHOD_EQUIVALENT": ("delivery",), "UNSUPPORTED": ("software engineer",)}, ("automation", "AI"), dimensions, classes, ("required", "must", "experience", "responsible", "manage", "lead"), (), ("hands-on coding", "software development"))
+
 def msg(message_id, subject, body, *, sender="alerts@jobright.example.invalid", mailbox="gmail", minute=0, headers=None):
     return RoutedNewsletterMessage(mailbox,message_id,datetime(2026,1,15,12,minute,tzinfo=timezone.utc),sender,subject,body,headers or {})
 
@@ -304,6 +310,19 @@ Content-Type: text/html; charset=utf-8
                 evidence = acquire_terminal_vacancy_evidence("https://jobs.example/" + company.casefold(), fetcher=MappingFetcher({"pages": [{"url": "https://jobs.example/" + company.casefold(), "final_url": "https://jobs.example/" + company.casefold(), "html": html}]}))
                 self.assertIsNotNone(evidence)
                 self.assertTrue(extract_requirements(evidence.description_text, profile.dimension_patterns, profile.evidence_patterns, profile.material_patterns).requirements)
+
+    def test_databricks_live_page_meta_does_not_mask_job_description(self):
+        # Production-Critical-Test: prevents the live Databricks vacancy meta description from masking its JD body.
+        from lifeos.jobs.terminal_evidence import MappingFetcher, _extract_terminal_description
+        raw = "<meta name=\"description\" content=\"Sr. Field Technical Program Manager, FDE, United States. Join us! Together we can use data to solve the challenges of tomorrow.\"><main><h1>Sr. Field Technical Program Manager, FDE</h1><h2>The Impact You Will Have</h2><ul><li>Be responsible for successful delivery of complex customer engagements.</li><li>Guide technical teams through architectural decisions and mitigate technical risks.</li></ul><h2>What We Look For</h2><ul><li>Experience managing large, complex engagements.</li><li>Experience with BI, data management, and big data technologies is preferred.</li></ul></main>"
+        description = _extract_terminal_description(raw)
+        self.assertIn("successful delivery of complex customer engagements", description)
+        self.assertNotEqual(description, "Sr. Field Technical Program Manager, FDE, United States. Join us! Together we can use data to solve the challenges of tomorrow.")
+        observation = SimpleNamespace(company="Databricks", role="Sr. Field Technical Program Manager, FDE", location_text="United States", compensation_text=None, source_apply_url="https://jobs.example/databricks", provider_job_id="8586857002", provider_score=None, source_description_text=None, source_provider="Databricks", source_mailbox="web", evidence_ref="databricks-live-shape", issues=(), source_received_at=self.start)
+        candidate = NewsletterJobsAdapter(NewsletterAdapterConfig(fetcher=MappingFetcher({"pages": [{"url": observation.source_apply_url, "final_url": observation.source_apply_url, "html": raw}]}), fit_profile=_canonical_test_fit_profile(), market="US", source_lane="US Remote")).to_jobs_candidate(observation)
+        self.assertTrue(candidate.fit_evidence_kind is FitEvidenceKind.EMPLOYER_ATS_JD)
+        self.assertIsNotNone(candidate.fit)
+        self.assertNotEqual(candidate.fit_reason, "missing_scoreable_jd_requirements")
 
     def test_malformed_fit_evidence_is_not_a_source_fatality(self):
         import lifeos.jobs.newsletter_adapter as adapter_module
