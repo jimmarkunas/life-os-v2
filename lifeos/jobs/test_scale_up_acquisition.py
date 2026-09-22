@@ -124,20 +124,36 @@ class ScaleUpAcquisitionTests(unittest.TestCase):
 
     def test_scale_up_production_main_composes_complete_runtime(self):
         import scripts.run_scale_up_production as production
-        from lifeos.jobs.fit_scoring import FitProfile
-        from lifeos.jobs.qualification import LaneConfig
-        dimensions={key:("synthetic",) for key in ("role_seniority","functional","technical_platform","delivery_complexity","competitive_advantage")}
-        classes={key:("synthetic",) for key in ("DIRECT","ADJACENT","METHOD_EQUIVALENT","UNSUPPORTED")}
-        profile=FitProfile("V3", {"DIRECT":("manager",)}, ("automation",), dimensions, classes, ("delivery",), hard_family_patterns=("engineering",))
-        lane=LaneConfig("Scale-Up","UK",72,None,"any",None,False,None,True)
-        recovery={f"employer-{n}": {"channels":["google_web","linkedin_jobs"],"state":"COMPLETE","candidates":[],"authoritative_zero":True} for n in range(12)}
-        acquired=SimpleNamespace(complete=True, sources=tuple(range(48)), observations=())
-        result=SimpleNamespace(disposition=production.Disposition.CREATED)
+        companies=[source["company"] for source in REGISTRY["sources"] if source["source_type"] in {"provider_html","generic_html"}]
+        now=datetime.now(timezone.utc).isoformat()
+        dimensions={key:["synthetic"] for key in ("role_seniority","functional","technical_platform","delivery_complexity","competitive_advantage")}
+        classes={key:["synthetic"] for key in ("DIRECT","ADJACENT","METHOD_EQUIVALENT","UNSUPPORTED")}
+        policy={"lane":{"name":"Scale-Up","market":"UK","fit_floor":72,"target_review_floor":None,"work_mode_policy":"any","compensation_floor":None,"freshness_gate":False,"freshness_max_days":None,"is_target_bucket":True},"lane_priority":{"Scale-Up":0},"fit_profile_v3":{"model_version":"V3","title_patterns":{"DIRECT":["manager"],"ADJACENT":["lead"],"METHOD_EQUIVALENT":["delivery"],"UNSUPPORTED":["engineer"]},"direct_specialization_patterns":["automation"],"dimension_patterns":dimensions,"evidence_patterns":classes,"material_patterns":["delivery"],"ignore_patterns":[],"hard_family_patterns":["engineering"]},"market":"UK","source_lane":"Scale-Up"}
+        evidence={"scheduled_slot":"slot","trigger_nonce":"nonce","handoffs":[{"company":company,"channels":["google_web","linkedin_jobs"],"searched_at":now,"state":"COMPLETE","candidates":[],"authoritative_zero":True} for company in companies]}
+        base_policy=json.loads(json.dumps(policy)); base_evidence=json.loads(json.dumps(evidence))
+        class RuntimeHttp:
+            def request_json(self,*args,**kwargs): return {"results":[{"id":"lane-config","title":[{"plain_text":"Job Lane Configuration"}]}]}
+            def request(self,context,method,url,**kwargs):
+                payload=policy if "policy" in url else evidence
+                return HttpResponse(200,{},json.dumps(payload).encode())
+        class Notion:
+            def query_data_source(self,*args,**kwargs): return [{"properties":{"Lane":{"title":[{"plain_text":"Scale-up"}]},"Private Policy File":{"files":[{"type":"external","external":{"url":"policy"}}]},"Current Recovery Evidence":{"files":[{"type":"external","external":{"url":"evidence"}}]}}}]
         config=SimpleNamespace(require=lambda name: "value")
-        with patch.object(production.RuntimeConfig,"load",return_value=config), patch.object(production.RunContext,"start",return_value=object()), patch.object(production,"NotionTransport"), patch.object(production,"_load_inputs",return_value=(lane,{"Scale-Up":0},profile,"UK","Scale-Up",recovery)), patch.object(production,"execute_scale_up",return_value=(acquired,[result])) as execute:
-            with patch.dict(production.os.environ,{"SCHEDULED_SLOT":"slot","TRIGGER_NONCE":"nonce"},clear=False), patch("sys.argv",["run_scale_up_production.py"]):
-                self.assertEqual(production.main(),0)
-        self.assertTrue(execute.call_args.kwargs["recovery_evidence"]["employer-0"]["authoritative_zero"])
+        acquired=SimpleNamespace(complete=True,sources=tuple(range(48)),observations=())
+        result=SimpleNamespace(disposition=production.Disposition.CREATED)
+        def run(policy_value=base_policy,evidence_value=base_evidence,complete=True,disposition=production.Disposition.CREATED):
+            policy_payload=json.loads(json.dumps(policy_value)); evidence_payload=json.loads(json.dumps(evidence_value)); policy.clear(); policy.update(policy_payload); evidence.clear(); evidence.update(evidence_payload)
+            with patch.object(production.RuntimeConfig,"load",return_value=config),patch.object(production.RunContext,"start",return_value=object()),patch.object(production,"HttpClient",RuntimeHttp),patch.object(production,"NotionTransport",return_value=Notion()),patch.object(production,"execute_scale_up",return_value=(SimpleNamespace(complete=complete,sources=tuple(range(48)),observations=()),[SimpleNamespace(disposition=disposition)])),patch.dict(production.os.environ,{"SCHEDULED_SLOT":"slot","TRIGGER_NONCE":"nonce"},clear=False),patch("sys.argv",["run_scale_up_production.py"]):
+                return production.main()
+        self.assertEqual(run(),0)
+        with self.subTest("loaded zero evidence reaches acquisition"):
+            self.assertTrue(all(item["authoritative_zero"] for item in evidence["handoffs"]))
+        for label,mutator in (("empty dimension",lambda p:p["fit_profile_v3"]["dimension_patterns"].update({"functional":[]})),("empty evidence",lambda p:p["fit_profile_v3"]["evidence_patterns"].update({"DIRECT":[]})),("missing employer",lambda p:p.__setitem__("handoffs",[]))):
+            with self.subTest(label):
+                changed=json.loads(json.dumps(base_policy if label.startswith("empty") else base_evidence)); mutator(changed)
+                with self.assertRaises(Exception): run(policy_value=changed if label.startswith("empty") else base_policy,evidence_value=changed if label=="missing employer" else base_evidence)
+        with self.subTest("incomplete acquisition"): self.assertEqual(run(complete=False),1)
+        with self.subTest("degraded ingest"): self.assertEqual(run(disposition=production.Disposition.REVIEW_DEGRADED),1)
         unknown = {"sources": [{**REGISTRY["sources"][0], "source_type": "unknown"}]}
         result = ScaleUpAcquirer(context=RunContext.start(), http=FakeHttp()).acquire(unknown)
         self.assertFalse(result.complete)
