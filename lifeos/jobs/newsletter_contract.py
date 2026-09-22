@@ -238,7 +238,7 @@ def ingest(
             candidate, _ = live_by_index[i]
             qualification = qualification_by_index[i]
             evaluation_pending = qualification_errors.get(i) or (
-                f"evaluation pending: {qualification.review_reason}" if candidate.fit is None else None
+                f"evaluation pending: {candidate.fit_reason or qualification.review_reason}" if candidate.fit is None else None
             )
             if evaluation_pending:
                 results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, persisted.job.stable_job_key, evaluation_pending if isinstance(evaluation_pending, str) else "evaluation pending", {"company": candidate.job.company.name, "role": candidate.job.role, "source": candidate.job.source_provider, "fit_evidence": candidate.fit_evidence_kind.value})

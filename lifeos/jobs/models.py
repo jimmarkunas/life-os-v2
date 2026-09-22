@@ -108,6 +108,7 @@ class NormalizedCandidate:
     never inspects this; it exists for traceability in the terminal
     disposition (see newsletter_contract.py)."""
     unresolved_reason: str | None = None
+    fit_reason: str | None = None
     """Set by a Jobs-owned adapter (e.g. newsletter_adapter.py) when
     required evidence -- most commonly final employer/ATS resolution --
     could not be established. When set, ingest() routes this candidate

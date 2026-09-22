@@ -288,13 +288,16 @@ class ScaleUpAcquirer:
     def _render(self, url):
         browser = next((shutil.which(name) for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser") if shutil.which(name)), None)
         if not browser: raise RuntimeError("headless browser unavailable")
-        completed = subprocess.run([browser, "--headless", "--disable-gpu", "--no-sandbox", "--dump-dom", url], capture_output=True, text=True, timeout=30, check=True)
+        completed = subprocess.run([browser, "--headless", "--disable-gpu", "--no-sandbox", "--virtual-time-budget=10000", "--run-all-compositor-stages-before-draw", "--dump-dom", url], capture_output=True, text=True, timeout=30, check=True)
         if len(completed.stdout.strip()) < 20: raise ValueError("rendered inventory is empty")
         return completed.stdout
 
     def _fallback_jobs(self, source):
         kind, text = source["source_type"], self._render(source.get("careers_url") or source["canonical_endpoint"])
-        if kind in {"workable_public", "ashby", "pinpoint_json", "static_complete_html"}: return _generic_html(text, source, self.now)
+        if kind == "workable_public": return _generic_html(text, source, self.now)
+        if kind == "ashby": return _path_jobs(text, source, self.now, r"/[^/]+/job/[^/]+")
+        if kind == "pinpoint_json": return _path_jobs(text, source, self.now, r"/jobs/[^/]+")
+        if kind == "static_complete_html": return _generic_html(text, source, self.now)
         if kind == "teamtailor_html": return _path_jobs(text, source, self.now, r"/jobs/[^/]+", reject=IGNORE)
         if kind == "wttj_html": return _path_jobs(text, source, self.now, r"/jobs/[^/]+")
         if kind == "stream_html": return _path_jobs(text, source, self.now, r"/(?:[a-z]{2}(?:-[a-z]{2})?/)?careers/[^/]+")
@@ -302,7 +305,9 @@ class ScaleUpAcquirer:
         if kind == "join_html": return _join_jobs(text, source, self.now)
         if kind == "bluestonex_html": return _bluestonex(text, source, self.now)
         if kind == "revolut_html": return _revolut(text, source, self.now)
-        if kind == "doubleword_bundle": return _doubleword(text, source, self.now, self._html)
+        if kind == "doubleword_bundle":
+            if "Open Positions" not in text: raise ValueError("Doubleword Open Positions inventory not rendered")
+            return _path_jobs(text, source, self.now, r"/careers/[^/]+")
         raise ValueError("no approved rendered fallback for source")
 
     def _jobs(self, source):
@@ -313,7 +318,9 @@ class ScaleUpAcquirer:
             raise ValueError("primary recovery source requires approved recovery evidence")
         if kind in {"teamtailor_html", "wttj_html", "rippling_html", "stream_html", "popsa_html", "bluestonex_html", "join_html", "static_complete_html"}:
             text=self._html(source["canonical_endpoint"]); marker=source.get("zero_marker")
-            if kind == "teamtailor_html": rows=_path_jobs(text,source,self.now,r"/jobs/[^/]+",reject=IGNORE)
+            if kind == "teamtailor_html":
+                rows=_path_jobs(text,source,self.now,r"/jobs/[^/]+",reject=IGNORE)
+                if not rows and source.get("company") == "Sano Genetics Limited" and re.search(r"no (?:open )?positions|no matching jobs|don't have any open", text, re.I): return []
             elif kind == "wttj_html": rows=_path_jobs(text,source,self.now,r"/jobs/[^/]+")
             elif kind == "stream_html": rows=_path_jobs(text,source,self.now,r"/(?:[a-z]{2}(?:-[a-z]{2})?/)?careers/[^/]+")
             elif kind == "popsa_html": rows=_path_jobs(text,source,self.now,r"/careers/[^/]+")
