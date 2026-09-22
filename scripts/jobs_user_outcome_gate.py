@@ -1,7 +1,6 @@
 """Deterministic JOBS_USER_OUTCOME_GATE for the Newsletter Jobs vertical slice."""
 from __future__ import annotations
 
-from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -39,6 +38,7 @@ class _Gmail:
     def __init__(self, message: SimpleNamespace):
         self.message = message
         self.marked: list[str] = []
+        self.labels = {"J Newsletters", "INBOX", "UNREAD"}
 
     def enumerate_unprocessed_ids(self, _boundary):
         return (self.message.message_id,)
@@ -48,6 +48,8 @@ class _Gmail:
 
     def mark_newsletter_processed(self, message_id, _boundary):
         self.marked.append(message_id)
+        self.labels.update({"J Newsletters/Processed", "J Newsletters"})
+        self.labels.difference_update({"INBOX", "UNREAD"})
 
     def newsletter_backlog_snapshot(self, _boundary, *, now):
         return SimpleNamespace()
@@ -57,16 +59,18 @@ def main() -> int:
     jobright = parse_message(_message("jobright", "alerts@jobright.invalid", "Jobright daily jobs", "[Synthetic Labs\n92%\nSenior Program Manager\nRemote\n$120K-$150K/yr](https://jobright.ai/jobs/info/synthetic-high)"))
     lensa = parse_message(_message("lensa", "alerts@lensa.example.invalid", "Lensa job alert", "[Synthetic Works Software Engineer Remote $110K-$130K](https://jobs.lensa.com/synthetic-low)"))
     linkedin = parse_message(_message("linkedin", "jobs@linkedin.example.invalid", "LinkedIn jobs for you", "[Senior Product Manager\nSynthetic Systems · Remote](https://www.linkedin.com/jobs/view/123456789/)"))
+    cross_source = parse_message(_message("cross-source", "alerts@linkedin.example.invalid", "LinkedIn jobs for you", "[Senior Program Manager\nSynthetic Labs · Remote](https://www.linkedin.com/jobs/view/987654321/)"))
     junk = parse_message(_message("junk", "alerts@jobright.invalid", "Jobright daily jobs", "[Malformed card](https://jobright.ai/jobs/info/junk)"))
-    observations = list(jobright.observations + lensa.observations + linkedin.observations + junk.observations)
-    observations.append(replace(observations[0], evidence_ref="duplicate-jobright"))
+    observations = list(jobright.observations + lensa.observations + linkedin.observations + cross_source.observations + junk.observations)
     message = SimpleNamespace(message_id="gate", message_ref="gmail:gate", state=ParseState.PASS, observations=tuple(observations))
     processed = SimpleNamespace(state=ParseState.PASS, messages=(message,), observations=tuple(observations), errors=())
     high_url = observations[0].source_apply_url
     low_url = observations[1].source_apply_url
     unresolved_url = observations[2].source_apply_url
+    cross_url = observations[3].source_apply_url
     evidence = {
         high_url: TerminalVacancyEvidence("https://boards.greenhouse.io/synthetic/jobs/high", "Required: lead program delivery and cloud strategy. Must manage complex cross-functional programs with 8 years experience.", "", "vacancy_page", (high_url,)),
+        cross_url: TerminalVacancyEvidence("https://boards.greenhouse.io/synthetic/jobs/high", "Required: lead program delivery and cloud strategy. Must manage complex cross-functional programs with 8 years experience.", "", "vacancy_page", (cross_url,)),
         low_url: TerminalVacancyEvidence("https://boards.greenhouse.io/synthetic/jobs/low", "Plus: complex projects.", "", "vacancy_page", (low_url,)),
         unresolved_url: None,
     }
@@ -99,9 +103,11 @@ def main() -> int:
     assert len(rows) >= 3, "legitimate vacancies did not persist before enrichment"
     assert dispositions.get("review_degraded", 0) >= 1, "unresolved terminal evidence was not degraded"
     assert not gmail.marked, "degraded Newsletter was finalized"
-    assert high_url in resolver_calls and low_url in resolver_calls and unresolved_url in resolver_calls
+    assert gmail.labels == {"J Newsletters", "INBOX", "UNREAD"}, "degraded Newsletter labels changed"
+    assert high_url in resolver_calls and cross_url in resolver_calls and low_url in resolver_calls and unresolved_url in resolver_calls
     first_terminal = next(index for index, event in enumerate(events) if event[0] == "terminal")
-    assert any(event[0] == "read_back" for event in events[:first_terminal]), "terminal resolution preceded authoritative persistence/read-back"
+    persisted_before_terminal = {event[1] for event in events[:first_terminal] if event[0] == "read_back"}
+    assert persisted_before_terminal == set(keys), "not every safely identifiable row had authoritative read-back before enrichment"
     assert any(row.job.job.description_text for row in rows), "trustworthy terminal JD did not persist"
     high = next(row for row in rows if row.job.job.apply_url == "https://boards.greenhouse.io/synthetic/jobs/high")
     low = next(row for row in rows if row.job.job.apply_url == "https://boards.greenhouse.io/synthetic/jobs/low")
@@ -113,6 +119,7 @@ def main() -> int:
     assert unresolved.job.fit is None and unresolved.job.admission_status is not AdmissionStatus.ADMITTED
     assert unresolved.job.eligible_lanes == ()
     assert len([row for row in rows if row.job.job.company.name == "Synthetic Labs"]) == 1, "duplicate created a second canonical row"
+    assert len({row.job.stable_job_key for row in rows if row.job.job.company.name == "Synthetic Labs"}) == 1
     assert all("junk" not in (row.job.job.apply_url or "") for row in rows), "junk created a canonical row"
     saved_processed = processed
     clean_message = SimpleNamespace(message_ref="gmail:gate", state=ParseState.PASS, observations=(observations[0],))
@@ -123,6 +130,7 @@ def main() -> int:
         clean_result = execute_newsletter(context=RunContext.start(timeout_seconds=30), http=None, notion=None, gmail=clean_gmail, browser_evidence=None, lane=lane, lane_priority={"US Remote": 0}, fit_profile=_profile(), market="US", newsletter_source_lane="US Remote", notion_job_ledger_data_source_id="gate", inbox_start=NOW, inbox_mode="normal", start=NOW, end=NOW + timedelta(hours=1), dry_run=False)
     processed = saved_processed
     assert clean_gmail.marked == ["gate"], ("fully resolved Newsletter was not safely finalized", clean_result.body)
+    assert clean_gmail.labels == {"J Newsletters", "J Newsletters/Processed"}, clean_gmail.labels
     print("JOBS_USER_OUTCOME_GATE: PASS")
     print(f"observations={len(observations)} canonical_jobs={len(rows)} resolver_calls={len(resolver_calls)} dispositions={dispositions}")
     return 0
