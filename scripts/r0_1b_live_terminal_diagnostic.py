@@ -36,7 +36,9 @@ def _safe_url(value: str | None) -> str | None:
     if not value:
         return None
     parts = urlsplit(value)
-    path = re.sub(r"\d{4,}", "<id>", parts.path)
+    path = re.sub(r"/(?:f/a|ls/click)/.*$", "/<tracking>", parts.path, flags=re.I)
+    path = re.sub(r"/jobs/info/[^/]+", "/jobs/info/<id>", path, flags=re.I)
+    path = re.sub(r"\d{4,}", "<id>", path)
     path = re.sub(r"/[A-Za-z0-9_-]{12,}(?=/|$)", "/<id>", path)
     return urlunsplit((parts.scheme.casefold(), parts.netloc.casefold(), path, "", ""))
 
