@@ -291,7 +291,9 @@ Content-Type: text/html; charset=utf-8
         from lifeos.jobs.terminal_evidence import MappingFetcher, acquire_terminal_vacancy_evidence
         samples = {
             "Databricks": "&lt;h2&gt;Responsibilities&lt;/h2&gt;&lt;ul&gt;&lt;li&gt;Lead program delivery.&lt;/li&gt;&lt;/ul&gt;&lt;h2&gt;Qualifications&lt;/h2&gt;&lt;ul&gt;&lt;li&gt;Required: 8 years experience in program management and cloud platforms.&lt;/li&gt;&lt;/ul&gt;",
-            "Datadog": "<div>What you will do</div><div>Own strategy and delivery for platform programs.</div><div>Minimum 5 years experience required.</div>",
+            # Derived from the employer/ATS Datadog Technical Program Manager II page:
+            # https://careers.datadoghq.com/detail/8144018/
+            "Datadog": "<h2>About the Role</h2><p>Technical Program Management operates at the intersection of engineering depth and organizational reach by driving high priority, cross-functional programs.</p><h2>What we are looking for</h2>&lt;ul&gt;&lt;li&gt;Required: 3+ years of technical program management at a high-growth technology company.&lt;/li&gt;&lt;li&gt;Engineering credibility with observability, infrastructure, data platforms, or AI/ML systems.&lt;/li&gt;&lt;/ul&gt;",
             "Figma": "<p>Responsibilities</p><ul><li>Drive product program delivery.</li><li>Partner with cloud teams.</li></ul><p>Required qualifications: experience leading complex programs.</p>",
             "ServiceNow": "<h3>About the role</h3><p>Lead program management and delivery strategy.</p><h3>Required</h3><p>Minimum 6 years experience with cloud platforms.</p>",
             "Twilio": "<div>Responsibilities</div><div>Own delivery and technical program strategy.</div><div>Must have experience with cloud platforms.</div>",
