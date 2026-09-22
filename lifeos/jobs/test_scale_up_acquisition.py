@@ -124,6 +124,21 @@ class ScaleUpAcquisitionTests(unittest.TestCase):
 
     def test_scale_up_production_main_composes_complete_runtime(self):
         import scripts.run_scale_up_production as production
+        from types import SimpleNamespace
+        diagnostic = production._failure_summary(
+            SimpleNamespace(
+                sources=(SimpleNamespace(company="Broken Co", state="DEGRADED", candidate_count=0, detail="synthetic"),
+                         SimpleNamespace(company="Good Co", state="COMPLETE", candidate_count=1, detail=None)),
+                observations=(),
+                complete=False,
+            ),
+            [SimpleNamespace(disposition=production.Disposition.REVIEW_DEGRADED, detail="fit unresolved"),
+             SimpleNamespace(disposition=production.Disposition.REVIEW_DEGRADED, detail="fit unresolved")],
+        )
+        self.assertEqual(diagnostic["non_complete_sources"], [{"company":"Broken Co", "state":"DEGRADED", "candidate_count":0, "detail":"synthetic"}])
+        self.assertEqual(diagnostic["degraded_ingest_reasons"], [{"reason":"fit unresolved", "count":2}])
+        self.assertEqual(sum(item["count"] for item in diagnostic["degraded_ingest_reasons"]), diagnostic["degraded_ingest"])
+        self.assertNotIn("private", json.dumps(diagnostic).lower())
         companies=[source["company"] for source in REGISTRY["sources"] if source["source_type"] in {"provider_html","generic_html"}]
         now=datetime.now(timezone.utc).isoformat()
         dimensions={key:["synthetic"] for key in ("role_seniority","functional","technical_platform","delivery_complexity","competitive_advantage")}
@@ -139,11 +154,11 @@ class ScaleUpAcquisitionTests(unittest.TestCase):
         class Notion:
             def query_data_source(self,*args,**kwargs): return [{"properties":{"Lane":{"title":[{"plain_text":"Scale-up"}]},"Private Policy File":{"files":[{"type":"external","external":{"url":"policy"}}]},"Current Recovery Evidence":{"files":[{"type":"external","external":{"url":"evidence"}}]}}}]
         config=SimpleNamespace(require=lambda name: "value")
-        acquired=SimpleNamespace(complete=True,sources=tuple(range(48)),observations=())
+        acquired=SimpleNamespace(complete=True,sources=tuple(SimpleNamespace(company=f"Company {i}",state="COMPLETE",candidate_count=0,detail=None) for i in range(48)),observations=())
         result=SimpleNamespace(disposition=production.Disposition.CREATED)
         def run(policy_value=base_policy,evidence_value=base_evidence,complete=True,disposition=production.Disposition.CREATED):
             policy_payload=json.loads(json.dumps(policy_value)); evidence_payload=json.loads(json.dumps(evidence_value)); policy.clear(); policy.update(policy_payload); evidence.clear(); evidence.update(evidence_payload)
-            with patch.object(production.RuntimeConfig,"load",return_value=config),patch.object(production.RunContext,"start",return_value=object()),patch.object(production,"HttpClient",RuntimeHttp),patch.object(production,"NotionTransport",return_value=Notion()),patch.object(production,"execute_scale_up",return_value=(SimpleNamespace(complete=complete,sources=tuple(range(48)),observations=()),[SimpleNamespace(disposition=disposition)])),patch.dict(production.os.environ,{"SCHEDULED_SLOT":"slot","TRIGGER_NONCE":"nonce"},clear=False),patch("sys.argv",["run_scale_up_production.py"]):
+            with patch.object(production.RuntimeConfig,"load",return_value=config),patch.object(production.RunContext,"start",return_value=object()),patch.object(production,"HttpClient",RuntimeHttp),patch.object(production,"NotionTransport",return_value=Notion()),patch.object(production,"execute_scale_up",return_value=(SimpleNamespace(complete=complete,sources=tuple(SimpleNamespace(company=f"Company {i}",state="COMPLETE",candidate_count=0,detail=None) for i in range(48)),observations=()),[SimpleNamespace(disposition=disposition,detail=None)])),patch.dict(production.os.environ,{"SCHEDULED_SLOT":"slot","TRIGGER_NONCE":"nonce"},clear=False),patch("sys.argv",["run_scale_up_production.py"]):
                 return production.main()
         self.assertEqual(run(),0)
         with self.subTest("loaded zero evidence reaches acquisition"):
