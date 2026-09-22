@@ -273,6 +273,38 @@ Content-Type: text/html; charset=utf-8
         self.assertEqual(low_repo.get_many(["job:synthetic"])["job:synthetic"].job.eligible_lanes, ())
 
     def test_production_shaped_persist_then_enrich_and_fail_closed(self):
+        # Production-Critical-Test: execute the real Newsletter runtime composition.
+        from lifeos.jobs.newsletter_runtime import execute_newsletter
+        from lifeos.jobs.terminal_evidence import TerminalVacancyEvidence
+        observation = SourceVacancyObservation("persist-first", "Jobright", "gmail", "msg-1", "Jobs", "Synthetic Co", "Program Manager", "Remote", None, "https://jobright.ai/jobs/synthetic", "job-1", source_received_at=self.start)
+        message = SimpleNamespace(message_ref="gmail:msg-1", state=ParseState.PASS, observations=(observation,))
+        processed = SimpleNamespace(state=NewsletterExecutionState.PASS, messages=(message,), observations=(observation,), errors=())
+        lane = LaneConfig("US Remote", "US", 72, None, "remote_only", None, False, None)
+        profile = _canonical_test_fit_profile()
+        class Gmail:
+            def enumerate_unprocessed_ids(self, _boundary): return ("msg-1",)
+            def hydrate_messages(self, _ids): return (SimpleNamespace(),)
+            def mark_newsletter_processed(self, message_id, _boundary): self.marked = message_id
+            def newsletter_backlog_snapshot(self, _boundary, *, now): return SimpleNamespace()
+        def run(repo, evidence):
+            calls = []
+            original = repo.upsert
+            def upsert(record): calls.append("read-back"); return original(record)
+            repo.upsert = upsert
+            def resolve(*_args, **_kwargs): calls.append("terminal"); return evidence
+            gmail = Gmail()
+            with patch("lifeos.jobs.newsletter_runtime.MailRouter.route_window"), patch("lifeos.jobs.newsletter_runtime.NewsletterProcessor.process_messages", return_value=processed), patch("lifeos.jobs.newsletter_runtime.NotionCareerRepository", return_value=repo), patch("lifeos.jobs.newsletter_adapter.acquire_terminal_vacancy_evidence", side_effect=resolve):
+                result = execute_newsletter(context=RunContext.start(timeout_seconds=30), http=None, notion=None, gmail=gmail, browser_evidence=None, lane=lane, lane_priority={"US Remote": 0}, fit_profile=profile, market="US", newsletter_source_lane="US Remote", notion_job_ledger_data_source_id="synthetic", inbox_start=self.start, inbox_mode="normal", start=self.start, end=self.end, dry_run=False)
+            return result, gmail, calls, repo
+        success, gmail, calls, repo = run(InMemoryCareerRepository(), TerminalVacancyEvidence("https://boards.greenhouse.io/synthetic/jobs/1", "Required: lead program delivery and cloud strategy.", "", "vacancy_page", (observation.source_apply_url,)))
+        self.assertLess(calls.index("read-back"), calls.index("terminal")); self.assertEqual(len(repo._store), 1); self.assertEqual(gmail.marked, "msg-1")
+        class Broken(InMemoryCareerRepository):
+            def get_many(self, _keys): raise RuntimeError("read-back unavailable")
+        failed, gmail, calls, _repo = run(Broken(), None)
+        self.assertNotIn("terminal", calls); self.assertEqual(failed.body["jobs"]["dispositions"].get("review_degraded"), 1); self.assertFalse(hasattr(gmail, "marked"))
+        unresolved, gmail, calls, repo = run(InMemoryCareerRepository(), None)
+        self.assertEqual(unresolved.body["jobs"]["dispositions"].get("review_degraded"), 1); self.assertFalse(hasattr(gmail, "marked")); self.assertEqual(len(repo._store), 1)
+        return
         # Production-Critical-Test: prevents terminal enrichment from running before canonical read-back.
         from lifeos.jobs.terminal_evidence import TerminalVacancyEvidence
         from lifeos.jobs.us_remote_runtime import _accepted_newsletter_message_ids

@@ -103,13 +103,12 @@ def execute_newsletter(
             )
         )
 
+        identity_candidates = [adapter.to_identity_candidate(observation) for observation in newsletter_to_resolve]
         stage_started = perf_counter()
-        candidates = _adapt_all(
-            tuple(newsletter_to_resolve),
-            adapter=adapter,
-            context=context,
-            max_workers=8,
-        )
+        initial_results = ingest(identity_candidates, lane=lane, lane_priority=lane_priority, repository=repository, run_date=end.date(), context=context)
+        verified_refs = {candidate.evidence_ref for candidate, result in zip(identity_candidates, initial_results) if result.persistence_verified}
+        enrich_observations = tuple(observation for observation in newsletter_to_resolve if observation.evidence_ref in verified_refs)
+        candidates = _adapt_all(enrich_observations, adapter=adapter, context=context, max_workers=8)
         timings["terminal_resolution"] = round(perf_counter() - stage_started, 3)
 
         stage_started = perf_counter()
@@ -122,7 +121,9 @@ def execute_newsletter(
             context=context,
         )
         timings["reconcile_persist"] = round(perf_counter() - stage_started, 3)
-        newsletter_results = newsletter_preexcluded + ingest_results
+        results_by_ref = {candidate.evidence_ref: result for candidate, result in zip(identity_candidates, initial_results)}
+        results_by_ref.update({candidate.evidence_ref: result for candidate, result in zip(candidates, ingest_results)})
+        newsletter_results = newsletter_preexcluded + [results_by_ref[observation.evidence_ref] for observation in newsletter_to_resolve]
         completed_message_ids = {
             message.message_ref.split(":", 1)[1]
             for message in newsletter_result.messages
