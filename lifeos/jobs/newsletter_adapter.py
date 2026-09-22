@@ -202,29 +202,27 @@ class NewsletterJobsAdapter:
                 source_types=source_types,
             )
 
-        # Enrichment failure is not identity failure: a missing source apply
-        # URL, an unresolved final employer/ATS destination, or a raised
-        # resolver exception all leave apply_url/description_text/
-        # posting_date unset below, but never set unresolved_reason. Whether
-        # this candidate can still be safely identified is decided later, by
-        # identity.stable_job_key()'s own company+role+location fallback --
-        # not here. unresolved_reason is reserved for observation.issues
-        # above, which signals a parser-level identity problem.
-        apply_url: str | None = observation.source_apply_url
+        apply_url: str | None = None
         description_text: str | None = None
         source_description_text: str | None = observation.source_description_text
         posting_date: date | None = None
+        unresolved_reason = None
 
         if observation.source_apply_url:
-            evidence = self._terminal_evidence_for(observation.source_apply_url)
-            if evidence is not None:
-                if evidence.evidence_source == "linkedin_source":
-                    source_description_text = evidence.provider_source_description or source_description_text
-                else:
-                    apply_url = evidence.canonical_url
-                    description_text = evidence.description_text
-                    posting_iso = parse_posting_date(evidence.posting_date_raw, reference_time=observation.source_received_at)
-                    posting_date = date.fromisoformat(posting_iso) if posting_iso else None
+            evidence = self._terminal_evidence_for(
+                observation.source_apply_url,
+                company=observation.company,
+                role=observation.role,
+                provider_job_id=observation.provider_job_id,
+            )
+            if evidence is not None and evidence.canonical_url and (evidence.description_text or evidence.provider_source_description):
+                apply_url = evidence.canonical_url
+                description_text = evidence.description_text or evidence.provider_source_description
+                posting_iso = parse_posting_date(evidence.posting_date_raw, reference_time=observation.source_received_at)
+                posting_date = date.fromisoformat(posting_iso) if posting_iso else None
+
+        if not apply_url or not description_text:
+            unresolved_reason = "mandatory enrichment unresolved: actionable Apply URL and employer/ATS JD required"
 
         job = JobObservation(
             company=Company(name=company), role=role, location=location,
@@ -239,10 +237,9 @@ class NewsletterJobsAdapter:
         fit: int | None = None
         fit_evidence_kind = FitEvidenceKind.NONE
         evidence_text = description_text if description_text and description_text.strip() else source_description_text
-        unresolved_reason = None
         fit_reason = None
         fit_authority = None
-        if evidence_text and evidence_text.strip():
+        if evidence_text and evidence_text.strip() and apply_url and description_text:
             fit_evidence_kind = (FitEvidenceKind.EMPLOYER_ATS_JD if description_text and description_text.strip() else FitEvidenceKind.SOURCE_DESCRIPTION)
             try:
                 title = classify_title(role, cfg.fit_profile.title_patterns, cfg.fit_profile.direct_specialization_patterns)
@@ -270,7 +267,14 @@ class NewsletterJobsAdapter:
             source_types=source_types,
         )
 
-    def _terminal_evidence_for(self, source_apply_url: str) -> TerminalVacancyEvidence | None:
+    def _terminal_evidence_for(
+        self,
+        source_apply_url: str,
+        *,
+        company: str | None,
+        role: str | None,
+        provider_job_id: str | None,
+    ) -> TerminalVacancyEvidence | None:
         # Protect only cache access. Holding this lock across network/browser
         # resolution serialized every distinct job URL and defeated _adapt_all's
         # worker pool under large Newsletter batches.
@@ -283,6 +287,9 @@ class NewsletterJobsAdapter:
                 source_apply_url,
                 fetcher=self._config.fetcher,
                 fallback_fetcher=self._config.fallback_fetcher,
+                company=company,
+                role=role,
+                provider_job_id=provider_job_id,
             )
         except Exception:
             evidence = None

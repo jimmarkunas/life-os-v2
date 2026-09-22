@@ -5,6 +5,7 @@ from pathlib import Path
 from datetime import date
 from lifeos.jobs.fit_scoring import FitProfile
 from lifeos.jobs.newsletter_adapter import HttpClientFetcher, NewsletterAdapterConfig, NewsletterJobsAdapter, _adapt_all
+from lifeos.jobs.terminal_evidence import browser_evidence, fallback_fetcher
 from lifeos.jobs.newsletter_contract import ingest
 from lifeos.jobs.notion_repository import NotionCareerRepository, NotionCareerRepositoryConfig
 from lifeos.jobs.qualification import LaneConfig
@@ -17,7 +18,8 @@ def execute_scale_up(*, context, http, notion, data_source_id: str, lane: LaneCo
             source["recovery_evidence"] = recovery_evidence[source["company"]]
     acquired = ScaleUpAcquirer(context=context, http=http).acquire(registry)
     repository = NotionCareerRepository(transport=notion, config=NotionCareerRepositoryConfig(data_source_id=data_source_id))
-    adapter = NewsletterJobsAdapter(NewsletterAdapterConfig(fetcher=HttpClientFetcher(http=http, context=context), fit_profile=fit_profile, market=market, source_lane=source_lane))
+    fallback = fallback_fetcher(context, recovery_evidence or browser_evidence())
+    adapter = NewsletterJobsAdapter(NewsletterAdapterConfig(fetcher=HttpClientFetcher(http=http, context=context), fallback_fetcher=fallback, fit_profile=fit_profile, market=market, source_lane=source_lane))
     candidates = _adapt_all(acquired.observations, adapter=adapter, context=context, max_workers=8)
     results = ingest(candidates, lane=lane, lane_priority=lane_priority, repository=repository, run_date=date.today(), context=context)
     return acquired, results

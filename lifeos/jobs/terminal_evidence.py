@@ -19,6 +19,7 @@ from html.parser import HTMLParser
 from threading import Semaphore
 from typing import Any, Protocol
 from urllib.parse import urljoin, urlsplit
+from urllib.parse import quote_plus
 
 from lifeos.core.runtime import DeadlineExceeded, RunContext
 from lifeos.jobs.identity import canonical_url
@@ -172,6 +173,38 @@ def _downstream_candidates(body: str, base_url: str) -> list[str]:
         seen.add(candidate); ranked.append((-score, order, candidate))
     ranked.sort()
     return [candidate for _, _, candidate in ranked]
+
+
+def _same_vacancy_search(source_url: str, *, company: str | None, role: str | None, provider_job_id: str | None, fetcher: Fetcher) -> ResolutionResult:
+    """One bounded public-web lookup for the same vacancy, never a crawler."""
+    terms = [item for item in (company, role, provider_job_id) if item]
+    if not terms: return ResolutionResult(None, (source_url,))
+    query = quote_plus(" ".join(terms))
+    try:
+        response = fetcher.get(f"https://www.google.com/search?q={query}")
+    except Exception:
+        return ResolutionResult(None, (source_url,))
+    source_host = _host(source_url)
+    candidates = []
+    for candidate in _collect_hrefs(response.body, response.final_url or "https://www.google.com/"):
+        if is_provider_intermediary_source(candidate) or _host(candidate) in {"google.com", "google.co.uk"}:
+            continue
+        score, trusted = _downstream_score(candidate)
+        if trusted and score >= 2 and trusted not in candidates:
+            candidates.append(trusted)
+    for candidate in candidates[:5]:
+        try:
+            page = fetcher.get(candidate)
+        except Exception:
+            continue
+        text = _html_to_text(page.body).casefold()
+        if company and company.casefold() not in text: continue
+        if role and not any(part.casefold() in text for part in role.split() if len(part) >= 4): continue
+        if provider_job_id and provider_job_id.casefold() not in text and provider_job_id.casefold() not in candidate.casefold(): continue
+        description = _extract_terminal_description(page.body)
+        if description:
+            return ResolutionResult(canonical_url(page.final_url or candidate), (source_url, candidate), page.body)
+    return ResolutionResult(None, (source_url,))
 
 
 def _find_next_intermediary_hop(body: str, base_url: str, visited: set[str]) -> str | None:
@@ -356,8 +389,12 @@ def _extract_posting_date_raw(html_text: str) -> str | None:
     return None
 
 
+def _has_vacancy_description(body: str) -> bool:
+    return bool(_extract_terminal_description(body))
+
+
 def _has_complete_vacancy_evidence(body: str) -> bool:
-    return bool(_extract_terminal_description(body) and _extract_posting_date_raw(body))
+    return _has_vacancy_description(body)
 
 
 def resolve_final_vacancy_url(url: str, *, fetcher: Fetcher) -> ResolutionResult:
@@ -423,7 +460,7 @@ def resolve_final_vacancy_url(url: str, *, fetcher: Fetcher) -> ResolutionResult
         if (
             final_candidate
             and _is_linkedin_url(final_candidate)
-            and _has_complete_vacancy_evidence(response.body)
+            and _has_vacancy_description(response.body)
             and _has_linkedin_quick_apply_signal(response.body)
         ):
             if final_candidate not in chain: chain.append(final_candidate)
@@ -458,7 +495,7 @@ def _acquire_once(source_url: str, fetcher: Fetcher) -> TerminalVacancyEvidence 
             return None
     description = _extract_terminal_description(body)
     date_posted = _extract_posting_date_raw(body)
-    if not description or not date_posted:
+    if not description:
         return None
     return TerminalVacancyEvidence(
         canonical_url=resolution.final_url,
@@ -476,7 +513,8 @@ def _acquire_linkedin_source_description(source_url: str, fetcher: Fetcher) -> T
     except Exception: return None
     description = _extract_terminal_description(response.body)
     if not description or len(description) < 80: return None
-    return TerminalVacancyEvidence(None, "", _extract_posting_date_raw(response.body) or "", "linkedin_source", (source_url, guest_url), description)
+    if not _has_linkedin_quick_apply_signal(response.body): return TerminalVacancyEvidence(None, "", _extract_posting_date_raw(response.body) or "", "linkedin_source", (source_url, guest_url), description)
+    return TerminalVacancyEvidence(canonical_url(source_url), "", _extract_posting_date_raw(response.body) or "", "linkedin_quick_apply", (source_url, guest_url), description)
 
 
 def acquire_terminal_vacancy_evidence(
@@ -484,6 +522,9 @@ def acquire_terminal_vacancy_evidence(
     *,
     fetcher: Fetcher,
     fallback_fetcher: Fetcher | None = None,
+    company: str | None = None,
+    role: str | None = None,
+    provider_job_id: str | None = None,
 ) -> TerminalVacancyEvidence | None:
     """Acquire authoritative terminal evidence, then one bounded fallback."""
     if not source_url or is_source_message_url(source_url):
@@ -492,7 +533,15 @@ def acquire_terminal_vacancy_evidence(
     if evidence is not None:
         return evidence
     if _is_linkedin_url(source_url):
-        return _acquire_linkedin_source_description(source_url, fetcher)
-    if fallback_fetcher is None:
-        return None
-    return _acquire_once(source_url, fallback_fetcher)
+        linkedin = _acquire_linkedin_source_description(source_url, fetcher)
+        if linkedin and linkedin.canonical_url: return linkedin
+    if fallback_fetcher is not None:
+        evidence = _acquire_once(source_url, fallback_fetcher)
+        if evidence is not None: return evidence
+        searched = _same_vacancy_search(source_url, company=company, role=role, provider_job_id=provider_job_id, fetcher=fallback_fetcher)
+        if searched.final_url and searched.verified_body:
+            body = searched.verified_body
+            description = _extract_terminal_description(body)
+            if description:
+                return TerminalVacancyEvidence(searched.final_url, description, _extract_posting_date_raw(body) or "", "same_vacancy_search", searched.chain)
+    return None

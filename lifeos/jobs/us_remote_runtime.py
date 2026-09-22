@@ -101,13 +101,7 @@ def _accepted_newsletter_message_ids(
         if message.state is not ParseState.PASS:
             continue
         message_results = [by_ref.get(observation.evidence_ref) for observation in message.observations]
-        if any(
-            result is None
-            or (result.disposition is Disposition.REVIEW_DEGRADED and not (
-                result.stable_job_key and (result.detail or "").startswith("evaluation pending")
-            ))
-            for result in message_results
-        ):
+        if any(result is None or result.disposition is Disposition.REVIEW_DEGRADED for result in message_results):
             continue
         if ":" not in message.message_ref:
             continue
