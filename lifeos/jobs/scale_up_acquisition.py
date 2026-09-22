@@ -267,8 +267,6 @@ def _recovery(source, now):
         if not item.get("title") or not item.get("url") or not item.get("employer_verified") or not item.get("vacancy_verified"):
             raise ValueError("recovery candidate is incomplete")
         rows.append(_obs(source,item.get("job_id"),item["title"],item.get("location"),item["url"],received_at=now))
-    if not rows and not evidence.get("authoritative_zero"):
-        raise ValueError("recovery evidence is ambiguous")
     return rows
 
 class ScaleUpAcquirer:

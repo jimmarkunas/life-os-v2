@@ -7,7 +7,7 @@ from pathlib import Path
 from lifeos.core.http import HttpResponse
 
 from lifeos.core.runtime import RunContext
-from lifeos.jobs.scale_up_acquisition import ScaleUpAcquirer
+from lifeos.jobs.scale_up_acquisition import ScaleUpAcquirer, _recovery
 from lifeos.newsletter.models import SourceVacancyObservation
 
 ROOT = Path(__file__).parents[2]
@@ -60,6 +60,23 @@ class FakeHttp:
         return HttpResponse(200, {}, body.encode())
 
 class ScaleUpAcquisitionTests(unittest.TestCase):
+    def test_recovery_complete_zero_is_coverage_not_vacancy_zero(self):
+        # Production-Critical-Test: prevents empty complete recovery from being falsely degraded or treated as vacancy zero.
+        source = {"company": "Synthetic Recovery Co", "source_type": "provider_html"}
+        complete = {"channels": ["google_web", "linkedin_jobs"], "state": "COMPLETE", "candidates": []}
+        self.assertEqual(_recovery({**source, "recovery_evidence": complete}, datetime(2026, 1, 1, tzinfo=timezone.utc)), [])
+        verified = {**complete, "candidates": [{"title": "Product Manager", "url": "https://example.test/job/1", "employer_verified": True, "vacancy_verified": True}]}
+        self.assertEqual(len(_recovery({**source, "recovery_evidence": verified}, datetime(2026, 1, 1, tzinfo=timezone.utc))), 1)
+        for label, evidence in (
+            ("missing channel", {**complete, "channels": ["google_web"]}),
+            ("incomplete state", {**complete, "state": "DEGRADED"}),
+            ("invalid candidate", {**complete, "candidates": [{"title": "Product Manager", "url": "https://example.test/job/1", "employer_verified": True, "vacancy_verified": False}]}),
+        ):
+            with self.subTest(label):
+                with self.assertRaises(ValueError):
+                    _recovery({**source, "recovery_evidence": evidence}, datetime(2026, 1, 1, tzinfo=timezone.utc))
+        self.assertNotIn("closed", source)
+
     def test_shared_ats_api_contract_and_observations(self):
         self.assertEqual(len(REGISTRY["sources"]), 48)
         self.assertEqual(len({s["company"] for s in REGISTRY["sources"]}), 48)
