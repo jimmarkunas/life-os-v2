@@ -1,6 +1,8 @@
 name: CI
+# Keep the existing pull_request check discoverable for every PR synchronization.
 
 on:
+  workflow_dispatch:
   pull_request:
   push:
     branches:
