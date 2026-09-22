@@ -55,6 +55,7 @@ jobs:
       GMAIL_OAUTH_REFRESH_TOKEN: ${{ secrets.GMAIL_OAUTH_REFRESH_TOKEN }}
       NOTION_API_TOKEN: ${{ secrets.NOTION_API_TOKEN }}
       NOTION_JOB_LEDGER_DATA_SOURCE_ID: ${{ secrets.NOTION_JOB_LEDGER_DATA_SOURCE_ID }}
+      SCALE_UP_RECOVERY_EVIDENCE_JSON: ${{ secrets.SCALE_UP_RECOVERY_EVIDENCE_JSON }}
     steps:
       - name: Checkout protected main
         uses: actions/checkout@v5
