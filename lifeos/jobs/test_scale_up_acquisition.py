@@ -1,5 +1,7 @@
 import json
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 from datetime import datetime, timezone
 from pathlib import Path
 from lifeos.core.http import HttpResponse
@@ -119,6 +121,23 @@ class ScaleUpAcquisitionTests(unittest.TestCase):
         with self.subTest("truncated registry"):
             result = ScaleUpAcquirer(context=RunContext.start(), http=FakeHttp()).acquire({"sources": REGISTRY["sources"][:-1]})
             self.assertFalse(result.complete)
+
+    def test_scale_up_production_main_composes_complete_runtime(self):
+        import scripts.run_scale_up_production as production
+        from lifeos.jobs.fit_scoring import FitProfile
+        from lifeos.jobs.qualification import LaneConfig
+        dimensions={key:("synthetic",) for key in ("role_seniority","functional","technical_platform","delivery_complexity","competitive_advantage")}
+        classes={key:("synthetic",) for key in ("DIRECT","ADJACENT","METHOD_EQUIVALENT","UNSUPPORTED")}
+        profile=FitProfile("V3", {"DIRECT":("manager",)}, ("automation",), dimensions, classes, ("delivery",), hard_family_patterns=("engineering",))
+        lane=LaneConfig("Scale-Up","UK",72,None,"any",None,False,None,True)
+        recovery={f"employer-{n}": {"channels":["google_web","linkedin_jobs"],"state":"COMPLETE","candidates":[],"authoritative_zero":True} for n in range(12)}
+        acquired=SimpleNamespace(complete=True, sources=tuple(range(48)), observations=())
+        result=SimpleNamespace(disposition=production.Disposition.CREATED)
+        config=SimpleNamespace(require=lambda name: "value")
+        with patch.object(production.RuntimeConfig,"load",return_value=config), patch.object(production.RunContext,"start",return_value=object()), patch.object(production,"NotionTransport"), patch.object(production,"_load_inputs",return_value=(lane,{"Scale-Up":0},profile,"UK","Scale-Up",recovery)), patch.object(production,"execute_scale_up",return_value=(acquired,[result])) as execute:
+            with patch.dict(production.os.environ,{"SCHEDULED_SLOT":"slot","TRIGGER_NONCE":"nonce"},clear=False), patch("sys.argv",["run_scale_up_production.py"]):
+                self.assertEqual(production.main(),0)
+        self.assertTrue(execute.call_args.kwargs["recovery_evidence"]["employer-0"]["authoritative_zero"])
         unknown = {"sources": [{**REGISTRY["sources"][0], "source_type": "unknown"}]}
         result = ScaleUpAcquirer(context=RunContext.start(), http=FakeHttp()).acquire(unknown)
         self.assertFalse(result.complete)

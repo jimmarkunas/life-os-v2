@@ -32,7 +32,9 @@ def _load_inputs(context,http,notion,token,slot,nonce):
     evidence=json.loads(http.request(context,"GET",_file_url(row,"Current Recovery Evidence"),timeout_seconds=10).body)
     lane,priority,profile,market,source_lane = _parse_private_policy(policy)
     if (lane.name != "Scale-Up" or lane.market != "UK" or lane.fit_floor != UNIVERSAL_FIT_FLOOR or lane.compensation_floor is not None or lane.freshness_gate or market != "UK" or source_lane != "Scale-Up" or "Scale-Up" not in priority): raise ValueError("private Scale-up policy is incompatible")
-    if not any(profile.title_patterns.values()) or not any(profile.evidence_patterns.values()) or not profile.direct_specialization_patterns: raise ValueError("private Fit policy is functionally empty")
+    dimensions=("role_seniority","functional","technical_platform","delivery_complexity","competitive_advantage")
+    evidence_classes=("DIRECT","ADJACENT","METHOD_EQUIVALENT","UNSUPPORTED")
+    if (profile.model_version != "V3" or not any(profile.title_patterns.values()) or not profile.direct_specialization_patterns or any(not profile.dimension_patterns.get(key) for key in dimensions) or any(not profile.evidence_patterns.get(key) for key in evidence_classes) or not profile.hard_family_patterns): raise ValueError("private Fit policy is non-scoring or incompatible")
     required={"google_web","linkedin_jobs"}; handoffs=evidence.get("handoffs",[]) if isinstance(evidence,dict) else []
     expected={x["company"] for x in json.loads((__import__("pathlib").Path(__file__).resolve().parents[1]/"contracts/scale_up_sources.json").read_text())["sources"] if x["source_type"] in {"provider_html","generic_html"}}
     companies=[x.get("company") for x in handoffs]
@@ -42,7 +44,7 @@ def _load_inputs(context,http,notion,token,slot,nonce):
         if set(item.get("channels",[]))!=required or not item.get("searched_at"): raise ValueError("recovery evidence channel/timestamp coverage incomplete")
         observed=datetime.fromisoformat(str(item["searched_at"]).replace("Z","+00:00"))
         if (now-observed).total_seconds() < 0 or (now-observed).total_seconds() > 86400: raise ValueError("recovery evidence is stale")
-    return lane,priority,profile,market,source_lane,{x["company"]:{"channels":x["channels"],"state":x.get("state","INCOMPLETE"),"candidates":x.get("candidates",[])} for x in handoffs}
+    return lane,priority,profile,market,source_lane,{x["company"]:{"channels":x["channels"],"state":x.get("state","INCOMPLETE"),"candidates":x.get("candidates",[]),"authoritative_zero":x.get("authoritative_zero",False)} for x in handoffs}
 def main() -> int:
     parser=argparse.ArgumentParser(); parser.add_argument("--timeout-seconds",type=float,default=300); args=parser.parse_args()
     config=RuntimeConfig.load(tuple(ConfigField(n) for n in ("NOTION_API_TOKEN", "NOTION_JOB_LEDGER_DATA_SOURCE_ID")))
