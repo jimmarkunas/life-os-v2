@@ -290,7 +290,7 @@ Content-Type: text/html; charset=utf-8
         # Production-Critical-Test: covers representative production-shaped JD markup across failing employers.
         from lifeos.jobs.terminal_evidence import MappingFetcher, acquire_terminal_vacancy_evidence
         samples = {
-            "Databricks": "<h2>Responsibilities</h2><ul><li>Lead program delivery.</li></ul><h2>Qualifications</h2><ul><li>Required: 8 years experience in program management and cloud platforms.</li></ul>",
+            "Databricks": "&lt;h2&gt;Responsibilities&lt;/h2&gt;&lt;ul&gt;&lt;li&gt;Lead program delivery.&lt;/li&gt;&lt;/ul&gt;&lt;h2&gt;Qualifications&lt;/h2&gt;&lt;ul&gt;&lt;li&gt;Required: 8 years experience in program management and cloud platforms.&lt;/li&gt;&lt;/ul&gt;",
             "Datadog": "<div>What you will do</div><div>Own strategy and delivery for platform programs.</div><div>Minimum 5 years experience required.</div>",
             "Figma": "<p>Responsibilities</p><ul><li>Drive product program delivery.</li><li>Partner with cloud teams.</li></ul><p>Required qualifications: experience leading complex programs.</p>",
             "ServiceNow": "<h3>About the role</h3><p>Lead program management and delivery strategy.</p><h3>Required</h3><p>Minimum 6 years experience with cloud platforms.</p>",
