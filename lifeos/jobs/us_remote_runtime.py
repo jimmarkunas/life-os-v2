@@ -30,8 +30,6 @@ NEWSLETTER_BOUNDARY = "J Newsletters"
 
 _SOURCE_REGISTRY = Path(__file__).resolve().parents[2] / "contracts" / "us_remote_sources.json"
 _TERMINAL_RESOLUTION_WORKERS = 8
-_TERMINAL_RESOLUTION_SLOT_SECONDS = 30.0
-_TERMINAL_FINALIZE_RESERVE_SECONDS = 60.0
 
 
 def load_registry() -> dict:
@@ -42,51 +40,6 @@ def load_registry() -> dict:
     if not isinstance(data, dict):
         raise ConfigurationError("US Remote source registry invalid")
     return data
-
-
-def _terminal_resolution_capacity(context: RunContext) -> int:
-    """Conservative downstream-work budget, expressed in Newsletter observations.
-
-    One resolver slot may consume the primary HTTP timeout plus bounded browser
-    fallback. Reserve time for persistence, Gmail cleanup, backlog read-back,
-    serialization, and process exit. Web work shares the same resolver budget.
-    """
-    usable_seconds = max(0.0, context.remaining_seconds() - _TERMINAL_FINALIZE_RESERVE_SECONDS)
-    total_slots = int(usable_seconds // _TERMINAL_RESOLUTION_SLOT_SECONDS) * _TERMINAL_RESOLUTION_WORKERS
-    return max(0, total_slots)
-
-
-def _select_newsletter_message_ids(
-    process_result,
-    terminal_observations: list[SourceVacancyObservation],
-    *,
-    context: RunContext,
-) -> tuple[set[str], int, int]:
-    """Select complete Gmail messages whose terminal work fits this run.
-
-    Selection is message-granular so a selected message can be safely marked
-    Processed only after every one of its observations is accounted for. Once
-    costly messages that do not fit remain queued while later messages may
-    use remaining capacity; zero-cost messages may always drain.
-    """
-    budget = _terminal_resolution_capacity(context)
-    terminal_refs = {observation.evidence_ref for observation in terminal_observations}
-    selected: set[str] = set()
-    admitted = 0
-    for message in process_result.messages:
-        if ":" not in message.message_ref:
-            continue
-        mailbox, message_id = message.message_ref.split(":", 1)
-        if mailbox != "gmail" or not message_id:
-            continue
-        cost = sum(1 for observation in message.observations if observation.evidence_ref in terminal_refs)
-        if cost == 0:
-            selected.add(message_id)
-            continue
-        if admitted + cost <= budget:
-            selected.add(message_id)
-            admitted += cost
-    return selected, budget, admitted
 
 
 def _accepted_newsletter_message_ids(
@@ -288,44 +241,17 @@ def execute_us_remote(
             else:
                 web_preexcluded.append(disposition)
         newsletter_terminal_required_total = len(newsletter_to_resolve)
-        selected_newsletter_message_ids, terminal_resolution_budget, terminal_resolution_admitted = (
-            _select_newsletter_message_ids(
-                newsletter_result,
-                newsletter_to_resolve,
-                context=context,
-            )
-        )
-        selected_newsletter_refs = {
-            observation.evidence_ref
-            for observation in newsletter_result.observations
-            if observation.source_message_id in selected_newsletter_message_ids
+        selected_newsletter_message_ids = {
+            message.message_ref.split(":", 1)[1]
+            for message in newsletter_result.messages
+            if ":" in message.message_ref and message.message_ref.split(":", 1)[0] == "gmail"
         }
-        newsletter_to_resolve = [
-            observation
-            for observation in newsletter_to_resolve
-            if observation.source_message_id in selected_newsletter_message_ids
-        ]
         web_terminal_required_total = len(web_to_resolve)
-        web_resolution_capacity = max(0, terminal_resolution_budget - terminal_resolution_admitted)
-        deferred_web = web_to_resolve[web_resolution_capacity:]
-        web_to_resolve = web_to_resolve[:web_resolution_capacity]
-        web_deferred_observations = web_terminal_required_total - len(web_to_resolve)
-        web_deferred_results = [
-            IngestResult(
-                observation.evidence_ref,
-                Disposition.REVIEW_DEGRADED,
-                None,
-                "terminal resolution budget deferred",
-            )
-            for observation in deferred_web
-        ]
-        newsletter_preexcluded = [
-            result for result in newsletter_preexcluded if result.evidence_ref in selected_newsletter_refs
-        ]
-        attempted_newsletter_observations = len(selected_newsletter_refs)
+        web_deferred_observations = 0
+        attempted_newsletter_observations = len(newsletter_result.observations)
         attempted_newsletter_messages = len(selected_newsletter_message_ids)
-        deferred_newsletter_observations = len(newsletter_result.observations) - attempted_newsletter_observations
-        deferred_newsletter_messages = len(newsletter_result.messages) - attempted_newsletter_messages
+        deferred_newsletter_observations = 0
+        deferred_newsletter_messages = 0
         timings["cheap_prefilter"] = round(perf_counter() - stage_started, 3)
 
         repository = NotionCareerRepository(
@@ -379,7 +305,7 @@ def execute_us_remote(
 
         newsletter_ingest_count = len(newsletter_candidates)
         newsletter_results = list(newsletter_preexcluded) + ingest_results[:newsletter_ingest_count]
-        web_results = list(web_preexcluded) + web_deferred_results + ingest_results[newsletter_ingest_count:]
+        web_results = list(web_preexcluded) + ingest_results[newsletter_ingest_count:]
         results = newsletter_results + web_results
 
         newsletter_fully_accounted = len(newsletter_results) == attempted_newsletter_observations
@@ -466,8 +392,8 @@ def execute_us_remote(
                 "deferred_messages": deferred_newsletter_messages,
                 "deferred_observations": deferred_newsletter_observations,
                 "terminal_resolution_required": newsletter_terminal_required_total,
-                "terminal_resolution_budget": terminal_resolution_budget,
-                "terminal_resolution_admitted": terminal_resolution_admitted,
+                "terminal_resolution_budget": None,
+                "terminal_resolution_admitted": attempted_newsletter_observations,
                 "state": newsletter_result.state.value,
                 "error_codes": [f"{item.operation}:{item.detail}" for item in newsletter_result.errors[:10]],
             },

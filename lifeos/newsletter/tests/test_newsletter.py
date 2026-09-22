@@ -15,6 +15,8 @@ from lifeos.jobs.repository import InMemoryCareerRepository
 from lifeos.jobs.qualification import LaneConfig
 from lifeos.jobs.identity import IdentityCollision, derive_identity_evidence, resolve_existing_identity
 from lifeos.jobs.newsletter_adapter import NewsletterJobsAdapter, NewsletterAdapterConfig
+from lifeos.jobs.newsletter_adapter import _adapt_all
+from lifeos.core.runtime import RunContext
 
 def msg(message_id, subject, body, *, sender="alerts@jobright.example.invalid", mailbox="gmail", minute=0, headers=None):
     return RoutedNewsletterMessage(mailbox,message_id,datetime(2026,1,15,12,minute,tzinfo=timezone.utc),sender,subject,body,headers or {})
@@ -27,6 +29,34 @@ class FakeSource:
 
 class NewsletterTests(unittest.TestCase):
     def setUp(self): self.start=datetime(2026,1,15,12,0,tzinfo=timezone.utc); self.end=self.start+timedelta(hours=1)
+    def test_terminal_resolution_attempts_more_than_former_count_cap_while_time_remains(self):
+        # Production-Critical-Test: prevents count-based starvation of legitimate web vacancies.
+        observations = tuple(SimpleNamespace(evidence_ref=f"terminal-{i}") for i in range(19))
+        calls = []
+        class Adapter:
+            def to_jobs_candidate(self, observation):
+                calls.append(observation.evidence_ref)
+                return observation
+        results = _adapt_all(observations, adapter=Adapter(), context=RunContext.start(timeout_seconds=30), max_workers=8)
+        self.assertEqual(len(calls), 19)
+        self.assertEqual(results, list(observations))
+
+    def test_terminal_resolution_stops_new_attempts_at_global_deadline(self):
+        # Production-Critical-Test: prevents deadline exhaustion from becoming silent completion.
+        ticks = iter((0.0, 2.0))
+        observations = tuple(SimpleNamespace(
+            evidence_ref=f"deadline-{i}", company="Synthetic Co", role="Program Manager",
+            location_text="Remote", compensation_text=None, provider_job_id=f"p-{i}",
+        ) for i in range(19))
+        calls = []
+        class Adapter:
+            def to_jobs_candidate(self, observation):
+                calls.append(observation.evidence_ref)
+                return observation
+        context = RunContext.start(timeout_seconds=1, monotonic_clock=lambda: next(ticks, 2.0))
+        results = _adapt_all(observations, adapter=Adapter(), context=context, max_workers=8)
+        self.assertLess(len(calls), len(observations))
+        self.assertEqual(len(results), len(observations))
     def test_adapter_passes_identity_to_terminal_evidence_search(self):
         # Production-Critical-Test: preserves same-vacancy search identity through the adapter boundary.
         from lifeos.jobs.terminal_evidence import TerminalVacancyEvidence
