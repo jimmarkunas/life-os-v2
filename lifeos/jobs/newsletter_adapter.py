@@ -240,6 +240,7 @@ class NewsletterJobsAdapter:
         fit_evidence_kind = FitEvidenceKind.NONE
         evidence_text = description_text if description_text and description_text.strip() else source_description_text
         unresolved_reason = None
+        fit_reason = None
         fit_authority = None
         if evidence_text and evidence_text.strip():
             fit_evidence_kind = (FitEvidenceKind.EMPLOYER_ATS_JD if description_text and description_text.strip() else FitEvidenceKind.SOURCE_DESCRIPTION)
@@ -254,7 +255,7 @@ class NewsletterJobsAdapter:
                 fit = compiled.fit_result.final_score if compiled.fit_result else None
                 fit_authority = compiled.authority
                 if fit is None and compiled.reason:
-                    unresolved_reason = f"Fit unresolved: {compiled.reason}"
+                    fit_reason = compiled.reason
             except ValueError:
                 fit = None
         return NormalizedCandidate(
@@ -264,6 +265,7 @@ class NewsletterJobsAdapter:
             unresolved_reason=unresolved_reason,
             **({"fit_authority": fit_authority} if fit_authority is not None else {}),
             fit_evidence_kind=fit_evidence_kind,
+            fit_reason=fit_reason,
             source_types=source_types,
         )
 
