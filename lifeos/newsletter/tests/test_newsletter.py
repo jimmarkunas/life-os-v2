@@ -275,6 +275,17 @@ Content-Type: text/html; charset=utf-8
         self.assertEqual(review[0]["Evidence Missing"], ["scoreable_jd_requirements"])
         self.assertEqual(review[0]["Review Reason"], "evaluation pending: missing_scoreable_jd_requirements")
 
+    def test_real_employer_jd_structural_text_reaches_fit_through_adapter_path(self):
+        # Production-Critical-Test: preserves real terminal HTML requirement clauses through adapter scoring.
+        from lifeos.jobs.terminal_evidence import MappingFetcher
+        profile = FitProfile("synthetic", {"DIRECT": ("program", "product"), "ADJACENT": ("architect",), "METHOD_EQUIVALENT": ("method",), "UNSUPPORTED": ("software engineer",)}, ("automation",), {"role_seniority": ("years? experience",), "functional": ("program",), "technical_platform": ("cloud",), "delivery_complexity": ("delivery",), "competitive_advantage": ("strategy",)}, {"DIRECT": ("must", "required"), "ADJACENT": ("adjacent",), "METHOD_EQUIVALENT": ("method",), "UNSUPPORTED": ("unsupported",)}, ("must", "required", "experience"), (), (r"hands-on software development",))
+        html = "<h1>Program Manager</h1><p>Responsibilities</p><ul><li>Lead program delivery and cloud platform adoption.</li><li>Own strategy across complex initiatives.</li></ul><p>Required qualifications: 5 years experience in program management.</p>"
+        observation = SimpleNamespace(company="Synthetic Co", role="Program Manager", location_text="Remote", compensation_text=None, source_apply_url="https://jobs.example/synthetic", provider_job_id="p-1", provider_score=None, source_description_text=None, source_provider="Employer", source_mailbox="gmail", evidence_ref="real-jd-path", issues=(), source_received_at=self.start)
+        candidate = NewsletterJobsAdapter(NewsletterAdapterConfig(fetcher=MappingFetcher({"pages": [{"url": observation.source_apply_url, "final_url": observation.source_apply_url, "html": html}]}), fit_profile=profile, market="US", source_lane="US Remote")).to_jobs_candidate(observation)
+        self.assertEqual(candidate.fit_evidence_kind, FitEvidenceKind.EMPLOYER_ATS_JD)
+        self.assertIsNotNone(candidate.fit)
+        self.assertNotEqual(candidate.fit_reason, "missing_scoreable_jd_requirements")
+
     def test_malformed_fit_evidence_is_not_a_source_fatality(self):
         import lifeos.jobs.newsletter_adapter as adapter_module
         profile = SimpleNamespace(title_patterns={}, direct_specialization_patterns={}, dimension_patterns={}, evidence_patterns={}, material_patterns=(), ignore_patterns=(), hard_family_patterns=())

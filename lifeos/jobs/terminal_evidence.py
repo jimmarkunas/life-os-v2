@@ -354,7 +354,8 @@ def extract_job_posting_jsonld(html_text: str) -> dict[str, Any] | None:
 
 
 def _html_to_text(html_text: str) -> str:
-    return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", html_text))).strip()
+    structured = re.sub(r"<(?:br\s*/?|/p|/div|/li|/h[1-6])\s*>", "\n", html_text, flags=re.I)
+    return re.sub(r"[ \t\r\f\v]+", " ", html.unescape(re.sub(r"<[^>]+>", " ", structured))).strip()
 
 
 def _extract_terminal_description(html_text: str) -> str | None:
