@@ -87,7 +87,7 @@ def _newsletter_source_types(*, provider: str, mailbox: str) -> tuple[str, ...]:
     source_types: list[str] = []
     provider = provider.strip()
     if provider:
-        source_types.append(provider)
+        source_types.append({"greenhouse": "Greenhouse"}.get(provider.casefold(), provider))
 
     mailbox_normalized = mailbox.casefold()
     if "outlook" in mailbox_normalized:
@@ -210,7 +210,7 @@ class NewsletterJobsAdapter:
         # identity.stable_job_key()'s own company+role+location fallback --
         # not here. unresolved_reason is reserved for observation.issues
         # above, which signals a parser-level identity problem.
-        apply_url: str | None = None
+        apply_url: str | None = observation.source_apply_url
         description_text: str | None = None
         source_description_text: str | None = observation.source_description_text
         posting_date: date | None = None
@@ -253,6 +253,8 @@ class NewsletterJobsAdapter:
                 compiled = compile_fit(title=role, title_semantics=title, requirements=list(extracted.requirements), evidence_kind=fit_evidence_kind, hard_family_mismatch=hard_family)
                 fit = compiled.fit_result.final_score if compiled.fit_result else None
                 fit_authority = compiled.authority
+                if fit is None and compiled.reason:
+                    unresolved_reason = f"Fit unresolved: {compiled.reason}"
             except ValueError:
                 fit = None
         return NormalizedCandidate(

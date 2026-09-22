@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
+import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from html import unescape
@@ -283,6 +285,26 @@ class ScaleUpAcquirer:
         self.context.require_time()
         return self.http.request(self.context, "GET", url, timeout_seconds=10, retry=RetryPolicy(max_attempts=2)).body.decode("utf-8", "replace")
 
+    def _render(self, url):
+        browser = next((shutil.which(name) for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser") if shutil.which(name)), None)
+        if not browser: raise RuntimeError("headless browser unavailable")
+        completed = subprocess.run([browser, "--headless", "--disable-gpu", "--no-sandbox", "--dump-dom", url], capture_output=True, text=True, timeout=30, check=True)
+        if len(completed.stdout.strip()) < 20: raise ValueError("rendered inventory is empty")
+        return completed.stdout
+
+    def _fallback_jobs(self, source):
+        kind, text = source["source_type"], self._render(source.get("careers_url") or source["canonical_endpoint"])
+        if kind in {"workable_public", "ashby", "pinpoint_json", "static_complete_html"}: return _generic_html(text, source, self.now)
+        if kind == "teamtailor_html": return _path_jobs(text, source, self.now, r"/jobs/[^/]+", reject=IGNORE)
+        if kind == "wttj_html": return _path_jobs(text, source, self.now, r"/jobs/[^/]+")
+        if kind == "stream_html": return _path_jobs(text, source, self.now, r"/(?:[a-z]{2}(?:-[a-z]{2})?/)?careers/[^/]+")
+        if kind == "popsa_html": return _path_jobs(text, source, self.now, r"/careers/[^/]+")
+        if kind == "join_html": return _join_jobs(text, source, self.now)
+        if kind == "bluestonex_html": return _bluestonex(text, source, self.now)
+        if kind == "revolut_html": return _revolut(text, source, self.now)
+        if kind == "doubleword_bundle": return _doubleword(text, source, self.now, self._html)
+        raise ValueError("no approved rendered fallback for source")
+
     def _jobs(self, source):
         kind, jobs = source["source_type"], None
         if kind in {"provider_html", "generic_html"}:
@@ -361,6 +383,12 @@ class ScaleUpAcquirer:
                 if source.get("source_type") not in KINDS: raise TypeError("unsupported source type")
                 rows=self._jobs(source); observations.extend(rows); health.append(ScaleUpSourceHealth(source["company"],"COMPLETE",len(rows)))
             except Exception as exc:
+                if isinstance(exc, HttpError) and exc.status_code == 403 and source.get("source_type") in {"workable_public", "ashby", "pinpoint_json", "teamtailor_html", "bluestonex_html", "static_complete_html", "stream_html", "join_html", "revolut_html", "doubleword_bundle"}:
+                    try:
+                        rows = self._fallback_jobs(source)
+                        observations.extend(rows); health.append(ScaleUpSourceHealth(source["company"], "COMPLETE", len(rows), "rendered source fallback")); continue
+                    except Exception as fallback_exc:
+                        exc = fallback_exc
                 state="DEGRADED" if isinstance(exc, ValueError) else "BLOCKED"
                 detail = str(exc)[:240]
                 diagnostic = {"error_type": type(exc).__name__, "adapter": source.get("source_type"), "endpoint_host": urlparse(source.get("canonical_endpoint", "")).netloc}
