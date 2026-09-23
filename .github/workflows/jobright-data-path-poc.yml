@@ -1,0 +1,97 @@
+name: Jobright Data Path POC
+
+on:
+  push:
+    branches:
+      - poc/free-browser-engines
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-jobright-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Inspect public Jobright page and same-origin application bundles
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, re, urllib.parse, urllib.request
+
+          target = "https://jobright.ai/jobs/info/6a63af088d53603449603a5e"
+          expected_job_id = "7774532"
+          headers = {
+              "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36",
+              "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+              "Accept-Language": "en-US,en;q=0.9",
+          }
+
+          def fetch(url, max_bytes=2_000_000):
+              req = urllib.request.Request(url, headers=headers)
+              with urllib.request.urlopen(req, timeout=20) as r:
+                  data = r.read(max_bytes)
+                  return r.status, r.headers.get("content-type", ""), data.decode("utf-8", errors="replace")
+
+          status, ctype, html = fetch(target)
+          low = html.casefold()
+          print(json.dumps({
+              "phase": "html",
+              "http_status": status,
+              "content_type": ctype,
+              "chars": len(html),
+              "challenge": any(x in low for x in ["just a moment", "verify you are human", "checking your browser"]),
+              "has_next_data": "__next_data__" in low,
+              "has_expected_greenhouse_id": expected_job_id in html,
+              "has_greenhouse": "greenhouse" in low,
+              "has_original_job_post": "original job post" in low,
+          }))
+
+          # Inspect embedded JSON/script data without printing payload contents.
+          interesting_keys = set()
+          patterns = [
+              r'"([A-Za-z0-9_]*(?:apply|source|external|original|job|url|link)[A-Za-z0-9_]*)"\s*:',
+              r"'([A-Za-z0-9_]*(?:apply|source|external|original|job|url|link)[A-Za-z0-9_]*)'\s*:",
+          ]
+          for pat in patterns:
+              interesting_keys.update(re.findall(pat, html, flags=re.I))
+          print(json.dumps({"phase":"embedded_keys","keys":sorted(interesting_keys)[:80]}))
+
+          # Extract same-origin JS bundles and inspect a bounded sample for endpoint/signature clues.
+          srcs = re.findall(r'<script[^>]+src=["\']([^"\']+)["\']', html, flags=re.I)
+          js_urls=[]
+          for src in srcs:
+              absolute=urllib.parse.urljoin(target, src)
+              if urllib.parse.urlsplit(absolute).hostname == "jobright.ai" and absolute not in js_urls:
+                  js_urls.append(absolute)
+          print(json.dumps({"phase":"scripts","count":len(js_urls)}))
+
+          endpoint_candidates=set()
+          signature_hits=set()
+          tokens=["greenhouse","originalJob","original_job","applyUrl","apply_url","sourceUrl","source_url","externalUrl","external_url","graphql","/api/"]
+          for url in js_urls[:40]:
+              try:
+                  _, _, js = fetch(url, max_bytes=1_500_000)
+              except Exception:
+                  continue
+              jl=js.casefold()
+              for token in tokens:
+                  if token.casefold() in jl:
+                      signature_hits.add(token)
+              for m in re.findall(r'["\'](https?://[^"\']+|/api/[^"\']+|/graphql[^"\']*)["\']', js, flags=re.I):
+                  if len(m) <= 300:
+                      endpoint_candidates.add(m)
+
+          safe_endpoints=[]
+          for e in sorted(endpoint_candidates):
+              # Do not emit tracking/query secrets; keep only host/path.
+              parsed=urllib.parse.urlsplit(urllib.parse.urljoin(target,e))
+              if parsed.hostname in {"jobright.ai", "www.jobright.ai"}:
+                  safe_endpoints.append(f"{parsed.scheme}://{parsed.netloc}{parsed.path}")
+          print(json.dumps({
+              "phase":"bundle_scan",
+              "signature_hits":sorted(signature_hits),
+              "same_origin_endpoint_candidates":sorted(set(safe_endpoints))[:100],
+          }))
+          PY
