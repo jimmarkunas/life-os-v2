@@ -346,7 +346,19 @@ class NotionCareerRepository:
                 written = self._transport.update_page(existing_page_id, properties)
             page_id = str(written.get("id") or existing_page_id)
         else:
-            written = self._transport.create_page(self._config.data_source_id, properties)
+            try:
+                written = self._transport.create_page(self._config.data_source_id, properties)
+            except TimeoutError:
+                # A create timeout is ambiguous: Notion may have committed
+                # the page before the client observed the timeout. Reconcile
+                # through the bounded canonical identity query before any
+                # retry so replay cannot create a second Job row.
+                observed = self.get_many([key]).get(key)
+                if observed is not None:
+                    if _canonical_view(observed) != _canonical_view(record):
+                        raise ReadBackMismatch(f"ambiguous create resolved to mismatched row for {key}")
+                    return observed
+                written = self._transport.create_page(self._config.data_source_id, properties)
             page_id = written.get("id")
             if not page_id:
                 raise ReadBackMismatch(f"Notion create response for {key} did not return a page id")
