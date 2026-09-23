@@ -216,6 +216,19 @@ Content-Type: text/html; charset=utf-8
                         self.assertEqual(obs_map[jid].source_description_text, exp_desc, f"{name}: job {jid}")
                 self.assertIn("123456790", obs_map, f"{name}: card-1 missing")
                 self.assertEqual(obs_map["123456790"].source_apply_url, "https://www.linkedin.com/jobs/view/123456790/", f"{name}: url")
+
+        # Production-shaped repeated LinkedIn projection: the preceding
+        # combined company/title line must not be shifted into a second card.
+        shifted = _li(
+            "",
+            "Program Manager, Software Delivery\nWalker & Dunlop\nUnited States\nView job: https://www.linkedin.com/jobs/view/4423006612/",
+            "Walker & Dunlop | Program Manager, Software Delivery\nUnited States\nView job: https://www.linkedin.com/jobs/view/4423006612/",
+        )
+        shifted_obs = [o for o in shifted.observations if o.provider_job_id == "4423006612"]
+        self.assertEqual(len(shifted_obs), 1)
+        self.assertEqual(shifted_obs[0].company, "Walker & Dunlop")
+        self.assertEqual(shifted_obs[0].role, "Program Manager, Software Delivery")
+        self.assertEqual(shifted_obs[0].location_text, "United States")
     def test_no_newsletter_source_ports_is_degraded(self):
         result=NewsletterProcessor().process_window([],self.start,self.end)
         self.assertEqual(result.state,NewsletterExecutionState.DEGRADED); self.assertFalse(result.cleanup_safe)
