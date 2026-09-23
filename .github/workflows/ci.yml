@@ -39,34 +39,6 @@ jobs:
       - name: Install test runner
         run: python -m pip install --disable-pip-version-check pytest
 
-      - name: One-shot R0-1C7 direct CDP proof
-        if: github.event_name == 'pull_request'
-        run: |
-          python - <<'PY'
-          import json, os, shutil, subprocess, tempfile, time, urllib.request
-          from lifeos.jobs.terminal_evidence import _DevToolsSocket
-          binary=shutil.which('google-chrome') or shutil.which('google-chrome-stable') or shutil.which('chromium') or shutil.which('chromium-browser'); print('CHROME',subprocess.run([binary,'--version'],capture_output=True,text=True).stdout.strip())
-          profile=tempfile.mkdtemp(prefix='r0-1c7-'); proc=subprocess.Popen([binary,'--headless=new','--no-sandbox','--disable-gpu','--remote-debugging-port=0','--remote-allow-origins=*','--user-data-dir='+profile,'about:blank'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-          try:
-              active=os.path.join(profile,'DevToolsActivePort'); deadline=time.monotonic()+10; lines=[]
-              while time.monotonic()<deadline:
-                  try: lines=open(active,encoding='utf-8').read().splitlines();
-                  except Exception: lines=[]
-                  if len(lines)>=2: break
-                  time.sleep(.1)
-              if len(lines)<2: raise SystemExit('TARGETED PROOF FAILED: DevToolsActivePort unavailable')
-              port=int(lines[0]); print('DISCOVERY DevToolsActivePort PASS PORT',port)
-              with _DevToolsSocket(f'ws://127.0.0.1:{port}{lines[1]}') as cdp:
-                  print('CDP_BROWSER_SOCKET PASS')
-                  infos=cdp.command('Target.getTargets').get('result',{}).get('targetInfos',[]); page=next((x for x in infos if x.get('type')=='page'),None); created=False
-                  if not page: page={'targetId':cdp.command('Target.createTarget',{'url':'about:blank'}).get('result',{}).get('targetId')}; created=True
-                  print('TARGET_CREATE', 'PASS' if page.get('targetId') else 'FAIL')
-                  attached=cdp.command('Target.attachToTarget',{'targetId':page['targetId'],'flatten':True}); session=attached.get('result',{}).get('sessionId'); print('TARGET_ATTACH','PASS' if session else 'FAIL')
-                  cdp.command('Runtime.enable',session_id=session); cdp.command('Page.enable',session_id=session); print('RUNTIME_EVALUATE','PASS' if cdp.evaluate('document.readyState',session_id=session) else 'FAIL')
-                  cdp.command('Page.navigate',{'url':'https://example.com'},session_id=session); time.sleep(2); state=cdp.evaluate('({title:document.title,bytes:document.documentElement.outerHTML.length})',session_id=session); print('EXAMPLE_NAVIGATION','PASS' if state else 'FAIL','DOM_READ','PASS' if state and state.get('bytes',0)>0 else 'FAIL')
-          finally:
-              proc.terminate(); proc.wait(timeout=3); shutil.rmtree(profile,ignore_errors=True)
-          PY
 
 
 
