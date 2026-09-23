@@ -80,6 +80,15 @@ class NewsletterTests(unittest.TestCase):
         self.assertEqual(acquire.call_args.kwargs["company"], "Synthetic Co")
         self.assertEqual(acquire.call_args.kwargs["role"], "Program Manager")
         self.assertEqual(acquire.call_args.kwargs["provider_job_id"], "provider-1")
+        from lifeos.jobs.terminal_evidence import MappingFetcher, acquire_terminal_vacancy_evidence
+        pages = MappingFetcher({"pages": [
+            {"url": "https://jobright.ai/jobs/info/provider-1", "final_url": "https://jobright.ai/jobs/info/provider-1", "html": "<html>shell</html>"},
+            {"url": "https://www.google.com/search?q=Synthetic+Co+Program+Manager+provider-1", "final_url": "https://www.google.com/search?q=Synthetic+Co+Program+Manager+provider-1", "html": '<a href="https://jobs.example/jobs/provider-1">Synthetic vacancy</a>'},
+            {"url": "https://jobs.example/jobs/provider-1", "final_url": "https://jobs.example/jobs/provider-1", "html": '<html><h1>Program Manager</h1><p>Synthetic Co</p><p>Lead program delivery and manage stakeholders with proven experience.</p></html>'},
+        ]})
+        recovered = acquire_terminal_vacancy_evidence("https://jobright.ai/jobs/info/provider-1", fetcher=pages, company="Synthetic Co", role="Program Manager", provider_job_id="provider-1")
+        self.assertIsNotNone(recovered)
+        self.assertEqual(recovered.canonical_url, "https://jobs.example/jobs/provider-1")
     def test_jobright_parses_every_candidate_and_preserves_unresolved_card(self):
         body = """[Synthetic Labs\n92%\nSenior Program Manager\nRemote\n$120K-$150K/yr](https://jobright.ai/jobs/info/synthetic-1)\n[Malformed card](https://jobright.ai/jobs/info/synthetic-2)\n[Unsubscribe](https://jobright.ai/unsubscribe)"""
         result = parse_message(msg("synthetic-news-1","Jobright daily jobs",body))
