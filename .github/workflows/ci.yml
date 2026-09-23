@@ -39,40 +39,6 @@ jobs:
       - name: Install test runner
         run: python -m pip install --disable-pip-version-check pytest
 
-      - name: One-shot R0-1C5 session diagnostic
-        if: github.event_name == 'pull_request'
-        run: |
-          python - <<'PY'
-          import base64, json, os, re, shutil, socket, subprocess, tempfile, time, urllib.request
-          from urllib.parse import urlparse
-          from lifeos.jobs.terminal_evidence import _DevToolsSocket, _free_tcp_port
-          job = base64.b64decode("aHR0cHM6Ly9qb2JyaWdodC5haS9qb2JzL2luZm8vNmE2M2FmMDg4ZDUzNjAzNDQ5NjAzYTVlP3V0bV9zb3VyY2U9MTEzNiZ1dG1faWQ9MTEzNiZ0b2I9dHJ1ZSZiYW5uZXI9ZmFsc2UmdXRtX21lZGl1bT1mZWVkJmNsaWNrX2lkPWU2OWE2MjNlNjNlODQ0OGVhNDZjNjc3NGI2MTc2OWZlb3V0YzEmY3JwdGRhdGE9R0ducUtRNmZwMFBGUjRkbC1YQW5YbVRUa0dha18xWWpfUFBWUVNKdW5LNTRkS0RmSTBkSUs3eHJNT29FeWpvUlBYRTkyTVJKZXBjcktOcDY2OE04b2FkcldxaEtRSU1fYzd1UzkwdWlLc2ZNMGl4U2tsZkM4ejZxRVBHQ3NOOTlVZFVLNGp6UEVmZlFTcmlNT194OVEmY3JwdGl2PUN3NzJLejVFVDJxUmRRQWROUzZrZVE=").decode()
-          lensa = base64.b64decode("aHR0cHM6Ly9sZW5zYS5jb20vY2d3LzJmNTVlYWQ4MzcwMTRkMmJhOWIzNjc1ZTdlNGY0ZWExdHBzam8xP2pwc2k9am9icmlnaHQuYWk=").decode()
-          def shape(value):
-              p = urlparse(value); return p.netloc + (p.path or "/")
-          def snapshot(cdp):
-              expr = """(() => { const b=document.body?.innerText||''; const e=[...performance.getEntriesByType('resource')].map(x=>({u:x.name,t:x.initiatorType,s:x.responseStatus||null})); return {href:location.href,title:document.title,ready:document.readyState,bytes:document.documentElement.outerHTML.length,prefix:b.slice(0,180),markers:{post:b.includes('Original Job Post'),posting:b.includes('Original Job Posting'),green:b.toLowerCase().includes('greenhouse'),challenge:/captcha|challenge|verify you are human|access denied/i.test(b)},webdriver:navigator.webdriver,ua:navigator.userAgent,viewport:[innerWidth,innerHeight],cookies:document.cookie.split(';').filter(Boolean).map(x=>x.split('=')[0]),local:Object.keys(localStorage),session:Object.keys(sessionStorage),resources:e}; })()"""
-              return cdp.evaluate(expr)
-          port=_free_tcp_port(); profile=tempfile.mkdtemp(prefix='r0-1c5-'); chrome=shutil.which('google-chrome') or shutil.which('google-chrome-stable') or shutil.which('chromium') or shutil.which('chromium-browser')
-          proc=subprocess.Popen([chrome,'--headless=new','--no-sandbox','--disable-gpu','--remote-debugging-port='+str(port),'--remote-allow-origins=*','--user-data-dir='+profile,'about:blank'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-          try:
-              end=time.monotonic()+12; page=None
-              while time.monotonic()<end:
-                  try:
-                      pages=json.loads(urllib.request.urlopen(f'http://127.0.0.1:{port}/json/list',timeout=.3).read()); page=next(x for x in pages if x.get('type')=='page')
-                      break
-                  except Exception: time.sleep(.1)
-              cdp=_DevToolsSocket(page['webSocketDebuggerUrl']); cdp.command('Page.enable'); cdp.command('Runtime.enable'); cdp.command('Network.enable'); cdp.command('Page.navigate',{'url':job})
-              for mark, wait in [('DOMContentLoaded',0),('load',1),('+2s',2),('+5s',5),('+8s',8)]:
-                  time.sleep(wait if mark=='+8s' else (wait if mark.startswith('+') else 0)); s=snapshot(cdp); print('JOBRIGHT_STAGE',mark,json.dumps({k:s.get(k) for k in ('href','title','ready','bytes','prefix','markers','webdriver','ua','viewport','cookies','local','session')}))
-              resources=s.get('resources',[]); print('JOBRIGHT_RESOURCES',json.dumps([{'host':shape(x['u']).split('/')[0],'path':shape(x['u']).split('/',1)[1],'type':x['t'],'status':x['s']} for x in resources]))
-          finally:
-              proc.terminate(); proc.wait(timeout=2); shutil.rmtree(profile,ignore_errors=True)
-          try:
-              response=urllib.request.urlopen(lensa,timeout=15); body=response.read(); print('LENSA_HTTP',response.status,shape(response.geturl()),response.headers.get_content_type(),len(body), 'jobright.ai' in body.decode(errors='ignore').lower())
-              hits=re.findall(r'https?://[^"\'<>\\ ]+',body.decode(errors='ignore'),re.I); print('LENSA_CANDIDATES',json.dumps([shape(x) for x in hits if 'jobright.ai' in x.lower()][:10]))
-          except Exception as exc: print('LENSA_HTTP_ERROR',type(exc).__name__)
-          PY
 
       - name: Development efficiency guard
         if: github.event_name == 'pull_request'
