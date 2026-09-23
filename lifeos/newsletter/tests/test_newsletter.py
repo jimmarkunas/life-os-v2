@@ -252,8 +252,10 @@ Content-Type: text/html; charset=utf-8
         legacy = SimpleNamespace(job=SimpleNamespace(stable_job_key="Sardine::4463920520"))
         self.assertEqual(resolve_existing_identity(evidence, records_by_stable_key={"Sardine::4463920520": legacy}, records_by_apply_url={}), "Sardine::4463920520")
         current = SimpleNamespace(job=SimpleNamespace(stable_job_key="sardine|technical program manager|united states"))
+        self.assertEqual(resolve_existing_identity(evidence, records_by_stable_key={"Sardine::4463920520": legacy, "sardine|technical program manager|united states": current}, records_by_apply_url={}), "Sardine::4463920520")
+        other_alias = SimpleNamespace(job=SimpleNamespace(stable_job_key="Sardine::other-provider-id"))
         with self.assertRaises(IdentityCollision):
-            resolve_existing_identity(evidence, records_by_stable_key={"Sardine::4463920520": legacy, "sardine|technical program manager|united states": current}, records_by_apply_url={})
+            resolve_existing_identity(evidence, records_by_stable_key={"Sardine::4463920520": legacy, "Sardine::other-provider-id": other_alias, "sardine|technical program manager|united states": current}, records_by_apply_url={})
 
     def test_jobs_persist_before_fit_evaluation_and_fail_closed(self):
         import lifeos.jobs.newsletter_contract as contract
