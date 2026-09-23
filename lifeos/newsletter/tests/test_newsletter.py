@@ -222,7 +222,7 @@ Content-Type: text/html; charset=utf-8
         shifted = _li(
             "",
             "Program Manager, Software Delivery\nWalker & Dunlop\nUnited States\nView job: https://www.linkedin.com/jobs/view/4423006612/",
-            "Walker & Dunlop | Program Manager, Software Delivery\nUnited States\nView job: https://www.linkedin.com/jobs/view/4423006612/",
+            "Walker & Dunlop\nUnited States\nWalker & Dunlop\nView job: https://www.linkedin.com/jobs/view/4423006612/",
         )
         shifted_obs = [o for o in shifted.observations if o.provider_job_id == "4423006612"]
         self.assertEqual(len(shifted_obs), 1)

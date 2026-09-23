@@ -588,6 +588,10 @@ def _linkedin_auxiliary_line(text: str) -> bool:
     )
 
 
+def _linkedin_location_like(text: str) -> bool:
+    return bool(re.fullmatch(r"(?:united states|u\.?s\.?|usa)", text.strip(), re.I))
+
+
 def _parse_linkedin(
     text: str, *, raw_mime_html: str | None = None, preheader: str | None = None
 ) -> tuple[list[dict[str, object]], str | None]:
@@ -619,7 +623,7 @@ def _parse_linkedin(
         # not reinterpret that line as a new role, which shifts the next
         # card's company/location fields and emits a second observation for
         # the same vacancy.  Without an explicit card boundary, fail closed.
-        if " | " in role or role.casefold() == company.casefold():
+        if " | " in role or role.casefold() == company.casefold() or _linkedin_location_like(company):
             continue
         if len(company) < 2 or len(role) < 3:
             continue
