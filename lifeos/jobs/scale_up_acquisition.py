@@ -214,11 +214,51 @@ def _doubleword(text, source, now, fetch_text):
 def _revolut_slug(title):
     return re.sub(r"[^a-z0-9]+","-",str(title or "").casefold()).strip("-")
 
+def _revolut_flight_payload(text):
+    """Extract the current App Router payload without treating arbitrary JSON as jobs."""
+    scripts = re.findall(r"<script[^>]*>(.*?)</script>", text, re.I | re.S)
+    chunks = []
+    for raw in scripts:
+        if "self.__next_f.push" not in raw: continue
+        match = re.search(r"self\.__next_f\.push\((\[.*\])\)", raw, re.S)
+        if not match: continue
+        try:
+            value = json.loads(match.group(1))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(value, list):
+            chunks.extend(str(item) for item in value if isinstance(item, str))
+    return "\n".join(chunks)
+
+def _revolut_current_shape(text):
+    flight = _revolut_flight_payload(text)
+    if not flight: return None, None
+    marker = re.search(r"[\"'](?:positions|jobs)[\"']\s*:\s*\[", flight, re.I)
+    if not marker: return None, None
+    start = flight.find("[", marker.start())
+    try:
+        positions, _ = json.JSONDecoder().raw_decode(flight[start:])
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None, None
+    if not isinstance(positions, list) or not all(isinstance(item, dict) for item in positions): return None, None
+    count = None
+    for key, value in re.findall(r"[\"']([A-Za-z][A-Za-z0-9_]*)[\"']\s*:\s*(\d+)", flight, re.I):
+        folded = key.casefold()
+        if any(token in folded for token in ("position", "job", "role")) and any(token in folded for token in ("count", "total")):
+            count = int(value); break
+    return positions, count
+
 def _revolut(text, source, now):
     plain = _strip_html(text)
     script=re.search(r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>',text,re.I|re.S)
-    if not script: raise ValueError("Revolut __NEXT_DATA__ missing")
-    payload=json.loads(unescape(script.group(1))); positions=payload.get("props",{}).get("pageProps",{}).get("positions")
+    payload = None
+    positions = None
+    if script:
+        payload=json.loads(unescape(script.group(1))); positions=payload.get("props",{}).get("pageProps",{}).get("positions")
+    else:
+        positions, current_count = _revolut_current_shape(text)
+        if positions is None: raise ValueError("Revolut current first-party inventory missing")
+        payload = {"current_count": current_count}
     if not isinstance(positions,list): raise ValueError("Revolut positions is not a list")
     count = None
     visible = re.search(r"(?:we have|currently have)\s+(\d+)\s+(?:open positions|open roles|positions)|showing\s+\d+\s*(?:[-–]\s*\d+\s+of\s+|of\s+)(\d+)\s+(?:jobs|roles|positions)", plain, re.I)
@@ -237,6 +277,7 @@ def _revolut(text, source, now):
                 if found is not None: return found
         return None
     if count is None: count = embedded_total(payload)
+    if count is None and not script: count = payload.get("current_count")
     if count is None: raise ValueError("Revolut authoritative open-position count missing")
     ids=[str(r.get("id") or "") for r in positions if isinstance(r,dict)]
     if len(positions)!=count or len(ids)!=count or any(not x for x in ids) or len(set(ids))!=count: raise ValueError("Revolut exhaustive inventory mismatch")
