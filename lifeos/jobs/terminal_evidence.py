@@ -11,14 +11,9 @@ import html
 import json
 import os
 import re
-import shutil
-import subprocess
-import tempfile
-import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from html.parser import HTMLParser
-from threading import Semaphore
 from typing import Any, Protocol
 from urllib.parse import urljoin, urlsplit
 from urllib.parse import quote_plus
@@ -36,7 +31,6 @@ _JSONLD_SCRIPT = re.compile(r'<script[^>]*type=["\']application/ld\+json["\'][^>
 _META_DESCRIPTION = re.compile(r'<meta[^>]+(?:name|property)=["\'](?:description|og:description)["\'][^>]+content=["\']([^"\']+)["\']', re.I | re.S)
 
 MAX_INTERMEDIARY_HOPS = 4
-JOBRIGHT_HYDRATION_TIMEOUT_SECONDS = 8.0
 
 DISCOVERY_INTERMEDIARY_HOSTS = {
     "jobright.ai", "lensa.com", "linkedin.com", "dice.com", "jobgether.com",
@@ -250,70 +244,6 @@ class MappingFetcher(Fetcher):
         return self._pages[url]
 
 
-class PlaywrightFetcher(Fetcher):
-    """Bounded branded-Chrome browser fallback with rendered DOM conditions."""
-
-    def __init__(self, context: RunContext, *, max_concurrency: int = 2) -> None:
-        self._context = context
-        try:
-            from playwright.sync_api import sync_playwright
-        except ImportError:
-            sync_playwright = None
-        self._playwright = sync_playwright
-        self._permits = Semaphore(max(1, min(int(max_concurrency), 2)))
-
-    @property
-    def available(self) -> bool:
-        return self._playwright is not None and bool(shutil.which("google-chrome") or shutil.which("google-chrome-stable"))
-
-    def get(self, url: str) -> FetchResponse:
-        if not self._binary:
-            raise RuntimeError("headless browser unavailable")
-        wait = self._context.require_time(0.5)
-        acquired = self._permits.acquire(timeout=wait)
-        if not acquired:
-            raise DeadlineExceeded("browser fallback concurrency wait exhausted deadline")
-        try:
-            with self._context.http_permit():
-                remaining = self._context.require_time(0.5)
-                timeout = max(0.5, min(12.0, remaining - 0.25))
-                return self._get_rendered(url, timeout)
-        finally:
-            self._permits.release()
-
-    def _get_rendered(self, url: str, timeout: float) -> FetchResponse:
-        if not self._playwright: raise RuntimeError("Playwright unavailable")
-        with self._playwright() as playwright:
-            browser = playwright.chromium.launch(channel="chrome", headless=False, args=["--no-sandbox", "--disable-dev-shm-usage"])
-            try:
-                context = browser.new_context()
-                page = context.new_page()
-                page.goto(url, wait_until="domcontentloaded", timeout=int(timeout * 1000))
-                host = _host(url)
-                if host == "jobright.ai" or host.endswith(".jobright.ai"):
-                    page.wait_for_function("""() => document.querySelector('a[href*="job-boards.greenhouse.io"]') || /Original Job Post(?:ing)?/.test(document.body?.innerText || '')""", timeout=int(JOBRIGHT_HYDRATION_TIMEOUT_SECONDS * 1000))
-                elif host == "lensa.com" or host.endswith(".lensa.com"):
-                    page.wait_for_function("""() => location.hostname.endsWith('jobright.ai') || [...document.querySelectorAll('a[href]')].some(a => new URL(a.href).hostname.endsWith('jobright.ai'))""", timeout=int(JOBRIGHT_HYDRATION_TIMEOUT_SECONDS * 1000))
-                return FetchResponse(final_url=page.url, body=page.content())
-            finally:
-                browser.close()
-
-
-class CompositeFetcher(Fetcher):
-    def __init__(self, fetchers: list[Fetcher]) -> None:
-        self._fetchers = tuple(fetchers)
-
-    def get(self, url: str) -> FetchResponse:
-        for fetcher in self._fetchers:
-            try:
-                return fetcher.get(url)
-            except DeadlineExceeded:
-                raise
-            except Exception:
-                continue
-        raise RuntimeError("all browser fallback transports failed")
-
-
 def browser_evidence() -> dict | None:
     raw = os.getenv("US_REMOTE_BROWSER_EVIDENCE_JSON")
     if not raw:
@@ -332,8 +262,16 @@ def browser_evidence() -> dict | None:
 
 
 def fallback_fetcher(context: RunContext, evidence: dict | None) -> Fetcher | None:
-    fetchers = [fetcher for fetcher in (MappingFetcher(evidence), PlaywrightFetcher(context)) if fetcher.available]
-    return CompositeFetcher(fetchers) if fetchers else None
+    """Return only externally acquired browser evidence.
+
+    Daily Runs owns browser execution. GitHub runtime resolution is
+    deterministic and fail-closed when that evidence is absent or unusable.
+    ``context`` remains in the signature so composition callers do not need a
+    second boundary-specific construction path.
+    """
+    del context
+    mapping = MappingFetcher(evidence)
+    return mapping if mapping.available else None
 
 
 @dataclass(frozen=True)

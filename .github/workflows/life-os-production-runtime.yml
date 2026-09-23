@@ -151,15 +151,6 @@ jobs:
           echo "historical_inbox_recovery_hours=$historical_inbox_recovery_hours" >> "$GITHUB_OUTPUT"
           echo "nonce=$nonce" >> "$GITHUB_OUTPUT"
 
-      - name: Verify headless browser fallback
-        shell: bash
-        run: |
-          set -euo pipefail
-          command -v google-chrome >/dev/null || \
-          command -v google-chrome-stable >/dev/null || \
-          command -v chromium >/dev/null || \
-          command -v chromium-browser >/dev/null
-
       - name: Execute US Remote runtime
         if: steps.trigger.outputs.module != 'scale-up'
         env:
