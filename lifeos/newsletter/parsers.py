@@ -34,7 +34,7 @@ NOISE = {
     "remote",
 }
 
-_LENSA_VACANCY_PATH_PREFIXES = ("/ls/click", "/f/a/", "/c/")
+_LENSA_VACANCY_PATH_PREFIXES = ("/ls/click", "/f/a/", "/c/", "/cgw/")
 _CONTROL_LINK_TERMS = ("unsubscribe", "privacy", "preference", "settings", "gig jobs", "more jobs", "view all jobs")
 
 

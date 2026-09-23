@@ -11,12 +11,9 @@ import html
 import json
 import os
 import re
-import shutil
-import subprocess
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from html.parser import HTMLParser
-from threading import Semaphore
 from typing import Any, Protocol
 from urllib.parse import urljoin, urlsplit
 from urllib.parse import quote_plus
@@ -247,64 +244,6 @@ class MappingFetcher(Fetcher):
         return self._pages[url]
 
 
-class ChromeFetcher(Fetcher):
-    """Bounded headless-browser fallback using the GitHub runner's Chrome."""
-
-    def __init__(self, context: RunContext, *, max_concurrency: int = 2) -> None:
-        self._context = context
-        self._binary = (
-            shutil.which("google-chrome")
-            or shutil.which("google-chrome-stable") or shutil.which("chromium") or shutil.which("chromium-browser")
-        )
-        self._permits = Semaphore(max(1, min(int(max_concurrency), 2)))
-
-    @property
-    def available(self) -> bool:
-        return bool(self._binary)
-
-    def get(self, url: str) -> FetchResponse:
-        if not self._binary:
-            raise RuntimeError("headless browser unavailable")
-        wait = self._context.require_time(0.5)
-        acquired = self._permits.acquire(timeout=wait)
-        if not acquired:
-            raise DeadlineExceeded("browser fallback concurrency wait exhausted deadline")
-        try:
-            with self._context.http_permit():
-                remaining = self._context.require_time(0.5)
-                timeout = max(0.5, min(12.0, remaining - 0.25))
-                completed = subprocess.run(
-                    [self._binary, "--headless=new", "--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage", "--dump-dom", url],
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                    check=False,
-                )
-        except subprocess.TimeoutExpired as exc:
-            raise RuntimeError("browser fallback timed out") from exc
-        finally:
-            self._permits.release()
-        body = completed.stdout or ""
-        if completed.returncode != 0 or len(body.strip()) < 20:
-            raise RuntimeError("browser fallback did not return usable DOM")
-        return FetchResponse(final_url=url, body=body)
-
-
-class CompositeFetcher(Fetcher):
-    def __init__(self, fetchers: list[Fetcher]) -> None:
-        self._fetchers = tuple(fetchers)
-
-    def get(self, url: str) -> FetchResponse:
-        for fetcher in self._fetchers:
-            try:
-                return fetcher.get(url)
-            except DeadlineExceeded:
-                raise
-            except Exception:
-                continue
-        raise RuntimeError("all browser fallback transports failed")
-
-
 def browser_evidence() -> dict | None:
     raw = os.getenv("US_REMOTE_BROWSER_EVIDENCE_JSON")
     if not raw:
@@ -323,8 +262,16 @@ def browser_evidence() -> dict | None:
 
 
 def fallback_fetcher(context: RunContext, evidence: dict | None) -> Fetcher | None:
-    fetchers = [fetcher for fetcher in (MappingFetcher(evidence), ChromeFetcher(context)) if fetcher.available]
-    return CompositeFetcher(fetchers) if fetchers else None
+    """Return only externally acquired browser evidence.
+
+    Daily Runs owns browser execution. GitHub runtime resolution is
+    deterministic and fail-closed when that evidence is absent or unusable.
+    ``context`` remains in the signature so composition callers do not need a
+    second boundary-specific construction path.
+    """
+    del context
+    mapping = MappingFetcher(evidence)
+    return mapping if mapping.available else None
 
 
 @dataclass(frozen=True)
@@ -467,6 +414,8 @@ def resolve_final_vacancy_url(url: str, *, fetcher: Fetcher) -> ResolutionResult
             if final_candidate not in chain: chain.append(final_candidate)
             return ResolutionResult(final_candidate, tuple(chain), response.body)
         next_hop = _find_next_intermediary_hop(response.body, response.final_url, visited)
+        if not next_hop and final_candidate and is_provider_intermediary_source(final_candidate) and final_candidate not in visited:
+            next_hop = final_candidate
         if not next_hop:
             return ResolutionResult(None, tuple(chain))
         if next_hop not in chain: chain.append(next_hop)
