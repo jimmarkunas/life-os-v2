@@ -12,13 +12,9 @@ import json
 import os
 import re
 import shutil
-import base64
-import socket
-import struct
 import subprocess
 import tempfile
 import time
-import urllib.request
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from html.parser import HTMLParser
@@ -40,7 +36,6 @@ _JSONLD_SCRIPT = re.compile(r'<script[^>]*type=["\']application/ld\+json["\'][^>
 _META_DESCRIPTION = re.compile(r'<meta[^>]+(?:name|property)=["\'](?:description|og:description)["\'][^>]+content=["\']([^"\']+)["\']', re.I | re.S)
 
 MAX_INTERMEDIARY_HOPS = 4
-JOBRIGHT_HYDRATION_BUDGET_MS = 8_000
 JOBRIGHT_HYDRATION_TIMEOUT_SECONDS = 8.0
 
 DISCOVERY_INTERMEDIARY_HOSTS = {
@@ -255,20 +250,21 @@ class MappingFetcher(Fetcher):
         return self._pages[url]
 
 
-class ChromeFetcher(Fetcher):
-    """Bounded headless Chromium fallback with condition-aware DOM polling."""
+class PlaywrightFetcher(Fetcher):
+    """Bounded branded-Chrome browser fallback with rendered DOM conditions."""
 
     def __init__(self, context: RunContext, *, max_concurrency: int = 2) -> None:
         self._context = context
-        self._binary = (
-            shutil.which("google-chrome")
-            or shutil.which("google-chrome-stable") or shutil.which("chromium") or shutil.which("chromium-browser")
-        )
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            sync_playwright = None
+        self._playwright = sync_playwright
         self._permits = Semaphore(max(1, min(int(max_concurrency), 2)))
 
     @property
     def available(self) -> bool:
-        return bool(self._binary)
+        return self._playwright is not None and bool(shutil.which("google-chrome") or shutil.which("google-chrome-stable"))
 
     def get(self, url: str) -> FetchResponse:
         if not self._binary:
@@ -286,102 +282,21 @@ class ChromeFetcher(Fetcher):
             self._permits.release()
 
     def _get_rendered(self, url: str, timeout: float) -> FetchResponse:
-        profile = tempfile.mkdtemp(prefix="lifeos-chrome-")
-        process = subprocess.Popen(
-            [self._binary, "--headless=new", "--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage",
-             "--remote-debugging-port=0", "--remote-allow-origins=*", "--user-data-dir=" + profile,
-             "about:blank"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        try:
-            deadline = time.monotonic() + min(timeout, JOBRIGHT_HYDRATION_TIMEOUT_SECONDS)
-            active = os.path.join(profile, "DevToolsActivePort")
-            port = None; browser_path = None
-            while time.monotonic() < deadline and process.poll() is None:
-                try:
-                    lines = open(active, encoding="utf-8").read().splitlines()
-                    port = int(lines[0]); browser_path = lines[1]
-                except Exception:
-                    pass
-                if port and browser_path: break
-                time.sleep(0.05)
-            if not port or not browser_path: raise RuntimeError("browser fallback did not expose DevToolsActivePort")
-            with _DevToolsSocket(f"ws://127.0.0.1:{port}{browser_path}") as cdp:
-                targets = cdp.command("Target.getTargets").get("result", {}).get("targetInfos", [])
-                page = next((x for x in targets if x.get("type") == "page"), None)
-                if not page:
-                    page = cdp.command("Target.createTarget", {"url": "about:blank"}).get("result", {})
-                    page = {"targetId": page.get("targetId")}
-                attached = cdp.command("Target.attachToTarget", {"targetId": page["targetId"], "flatten": True})
-                session = attached.get("result", {}).get("sessionId")
-                if not session: raise RuntimeError("browser fallback target attach failed")
-                cdp.command("Page.enable", session_id=session)
-                cdp.command("Runtime.enable", session_id=session)
-                cdp.command("Page.navigate", {"url": url}, session_id=session)
-                expression = """(() => { const a = [...document.querySelectorAll('a[href*="job-boards.greenhouse.io"]')][0]; const text = document.body?.innerText || ''; return {ready: !!a || /Original Job Post(?:ing)?/.test(text), html: document.documentElement.outerHTML}; })()"""
-                while time.monotonic() < deadline:
-                    value = cdp.evaluate(expression, session_id=session)
-                    if _host(url) != "jobright.ai" and not _host(url).endswith(".jobright.ai"):
-                        value = cdp.evaluate("({ready: document.readyState === 'complete', html: document.documentElement.outerHTML})", session_id=session)
-                    if isinstance(value, dict) and value.get("ready"):
-                        body = str(value.get("html") or "")
-                        if len(body.strip()) >= 20: return FetchResponse(final_url=url, body=body)
-                    time.sleep(0.1)
-            raise RuntimeError("browser fallback hydration condition timed out")
-        finally:
-            process.terminate()
-            try: process.wait(timeout=1)
-            except subprocess.TimeoutExpired: process.kill()
-            shutil.rmtree(profile, ignore_errors=True)
-
-
-def _free_tcp_port() -> int:
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
-
-
-class _DevToolsSocket:
-    def __init__(self, url: str) -> None:
-        parts = urlsplit(url); self._sock = socket.create_connection((parts.hostname, parts.port), timeout=5)
-        key = base64.b64encode(os.urandom(16)).decode()
-        path = parts.path + ("?" + parts.query if parts.query else "")
-        self._sock.sendall((f"GET {path} HTTP/1.1\r\nHost: {parts.hostname}:{parts.port}\r\nOrigin: http://localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
-        response = self._read_http()
-        if b" 101 " not in response.split(b"\r\n", 1)[0]: raise RuntimeError("DevTools websocket handshake failed")
-        self._next_id = 0
-
-    def _read_http(self):
-        data = b""
-        while b"\r\n\r\n" not in data: data += self._sock.recv(4096)
-        return data
-
-    def _frame(self, payload: bytes) -> None:
-        length = len(payload); mask = os.urandom(4); encoded = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
-        header = bytes([0x81, 0x80 | length]) if length < 126 else bytes([0x81, 0x80 | 126]) + struct.pack("!H", length)
-        self._sock.sendall(header + mask + encoded)
-
-    def _message(self):
-        head = self._sock.recv(2); length = head[1] & 0x7f
-        if length == 126: length = struct.unpack("!H", self._sock.recv(2))[0]
-        if head[1] & 0x80: mask = self._sock.recv(4)
-        payload = self._sock.recv(length)
-        return payload
-
-    def command(self, method: str, params: dict | None = None, *, session_id: str | None = None):
-        self._next_id += 1; ident = self._next_id
-        message = {"id": ident, "method": method, "params": params or {}}
-        if session_id: message["sessionId"] = session_id
-        self._frame(json.dumps(message).encode())
-        while True:
-            message = json.loads(self._message())
-            if message.get("id") == ident: return message
-
-    def evaluate(self, expression: str, *, session_id: str | None = None):
-        result = self.command("Runtime.evaluate", {"expression": expression, "returnByValue": True}, session_id=session_id)
-        return result.get("result", {}).get("result", {}).get("value")
-
-    def __enter__(self): return self
-    def __exit__(self, *_): self._sock.close()
+        if not self._playwright: raise RuntimeError("Playwright unavailable")
+        with self._playwright() as playwright:
+            browser = playwright.chromium.launch(channel="chrome", headless=False, args=["--no-sandbox", "--disable-dev-shm-usage"])
+            try:
+                context = browser.new_context()
+                page = context.new_page()
+                page.goto(url, wait_until="domcontentloaded", timeout=int(timeout * 1000))
+                host = _host(url)
+                if host == "jobright.ai" or host.endswith(".jobright.ai"):
+                    page.wait_for_function("""() => document.querySelector('a[href*="job-boards.greenhouse.io"]') || /Original Job Post(?:ing)?/.test(document.body?.innerText || '')""", timeout=int(JOBRIGHT_HYDRATION_TIMEOUT_SECONDS * 1000))
+                elif host == "lensa.com" or host.endswith(".lensa.com"):
+                    page.wait_for_function("""() => location.hostname.endsWith('jobright.ai') || [...document.querySelectorAll('a[href]')].some(a => new URL(a.href).hostname.endsWith('jobright.ai'))""", timeout=int(JOBRIGHT_HYDRATION_TIMEOUT_SECONDS * 1000))
+                return FetchResponse(final_url=page.url, body=page.content())
+            finally:
+                browser.close()
 
 
 class CompositeFetcher(Fetcher):
@@ -417,7 +332,7 @@ def browser_evidence() -> dict | None:
 
 
 def fallback_fetcher(context: RunContext, evidence: dict | None) -> Fetcher | None:
-    fetchers = [fetcher for fetcher in (MappingFetcher(evidence), ChromeFetcher(context)) if fetcher.available]
+    fetchers = [fetcher for fetcher in (MappingFetcher(evidence), PlaywrightFetcher(context)) if fetcher.available]
     return CompositeFetcher(fetchers) if fetchers else None
 
 
