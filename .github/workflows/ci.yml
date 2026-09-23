@@ -39,6 +39,43 @@ jobs:
       - name: Install test runner
         run: python -m pip install --disable-pip-version-check pytest
 
+      - name: One-shot R0-1C5R provider session diagnostic
+        if: github.event_name == 'pull_request'
+        run: |
+          python - <<'PY'
+          import base64, json, os, re, shutil, subprocess, tempfile, time, urllib.request
+          from urllib.parse import urlparse
+          from lifeos.jobs.terminal_evidence import _DevToolsSocket
+          job=base64.b64decode('aHR0cHM6Ly9qb2JyaWdodC5haS9qb2JzL2luZm8vNmE2M2FmMDg4ZDUzNjAzNDQ5NjAzYTVlP3V0bV9zb3VyY2U9MTEzNiZ1dG1faWQ9MTEzNiZ0b2I9dHJ1ZSZiYW5uZXI9ZmFsc2UmdXRtX21lZGl1bT1mZWVkJmNsaWNrX2lkPWU2OWE2MjNlNjNlODQ0OGVhNDZjNjc3NGI2MTc2OWZlb3V0YzEmY3JwdGRhdGE9R0ducUtRNmZwMFBGUjRkbC1YQW5YbVRUa0dha18xWWpfUFBWUVNKdW5LNTRkS0RmSTBkSUs3eHJNT29FeWpvUlBYRTkyTVJKZXBjcktOcDY2OE04b2FkcldxaEtRSU1fYzd1UzkwdWlLc2ZNMGl4U2tsZkM4ejZxRVBHQ3NOOTlVZFVLNGp6UEVmZlFTcmlNT194OVEmY3JwdGl2PUN3NzJLejVFVDJxUmRRQWROUzZrZVE=').decode()
+          lensa=base64.b64decode('aHR0cHM6Ly9sZW5zYS5jb20vY2d3LzJmNTVlYWQ4MzcwMTRkMmJhOWIzNjc1ZTdlNGY0ZWExdHBzam8xP2pwc2k9am9icmlnaHQuYWk=').decode()
+          def shape(value):
+              p=urlparse(value); return p.netloc+(p.path or '/')
+          def snapshot(cdp, session):
+              expr="""(() => { const u=x=>{try{let p=new URL(x);return p.host+p.pathname}catch{return 'invalid'}}; const b=document.body?.innerText||''; return {loc:u(location.href),title:document.title,ready:document.readyState,bytes:document.documentElement.outerHTML.length,prefix:b.slice(0,140).replace(/https?:\\/\\/\\S+/g,'[URL]'),markers:{post:b.includes('Original Job Post'),posting:b.includes('Original Job Posting'),green:/greenhouse/i.test(b),challenge:/captcha|challenge|verify you are human|access denied/i.test(b)},webdriver:navigator.webdriver,ua:navigator.userAgent,viewport:[innerWidth,innerHeight],cookies:document.cookie.split(';').filter(Boolean).map(x=>x.split('=')[0]),local:Object.keys(localStorage),session:Object.keys(sessionStorage),resources:[...performance.getEntriesByType('resource')].map(x=>({u:u(x.name),type:x.initiatorType,status:x.responseStatus||null,size:x.transferSize||0}))}; })()"""
+              return cdp.evaluate(expr,session_id=session)
+          binary=shutil.which('google-chrome') or shutil.which('google-chrome-stable') or shutil.which('chromium') or shutil.which('chromium-browser'); profile=tempfile.mkdtemp(prefix='r0-1c5r-'); proc=subprocess.Popen([binary,'--headless=new','--no-sandbox','--disable-gpu','--remote-debugging-port=0','--remote-allow-origins=*','--user-data-dir='+profile,'about:blank'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+          try:
+              active=os.path.join(profile,'DevToolsActivePort'); deadline=time.monotonic()+10; lines=[]
+              while time.monotonic()<deadline:
+                  try: lines=open(active).read().splitlines()
+                  except Exception: lines=[]
+                  if len(lines)>=2: break
+                  time.sleep(.1)
+              with _DevToolsSocket(f'ws://127.0.0.1:{int(lines[0])}{lines[1]}') as cdp:
+                  infos=cdp.command('Target.getTargets').get('result',{}).get('targetInfos',[]); page=next((x for x in infos if x.get('type')=='page'),None)
+                  if not page: page={'targetId':cdp.command('Target.createTarget',{'url':'about:blank'}).get('result',{}).get('targetId')}
+                  session=cdp.command('Target.attachToTarget',{'targetId':page['targetId'],'flatten':True}).get('result',{}).get('sessionId'); cdp.command('Runtime.enable',session_id=session); cdp.command('Page.enable',session_id=session)
+                  cdp.command('Page.addScriptToEvaluateOnNewDocument',{'source':"window.__r0e={errors:[],exceptions:[]};addEventListener('error',e=>__r0e.errors.push(String(e.message)));addEventListener('unhandledrejection',e=>__r0e.exceptions.push(String(e.reason)));"},session_id=session); cdp.command('Page.navigate',{'url':job},session_id=session)
+                  for label,wait in [('DOMContentLoaded',0),('load',1),('+2s',2),('+5s',5),('+8s',8)]:
+                      time.sleep(wait if label.startswith('+') else 0); s=snapshot(cdp,session); print('JOBRIGHT_STAGE',label,json.dumps({k:s.get(k) for k in ('loc','title','ready','bytes','prefix','markers','webdriver','ua','viewport','cookies','local','session')}));
+                  print('JOBRIGHT_RESOURCES',json.dumps(s.get('resources',[]))); print('JOBRIGHT_JS_ERRORS',json.dumps(cdp.evaluate('window.__r0e',session_id=session)))
+          finally:
+              proc.terminate(); proc.wait(timeout=3); shutil.rmtree(profile,ignore_errors=True)
+          try:
+              response=urllib.request.urlopen(lensa,timeout=15); raw=response.read(); text=raw.decode(errors='ignore'); print('LENSA_HTTP',response.status,shape(response.geturl()),response.headers.get_content_type(),len(raw),'jobright.ai' in text.lower()); hits=re.findall(r'https?://[^"\'<>\\ ]+',text,re.I); print('LENSA_CANDIDATES',json.dumps([shape(x) for x in hits if 'jobright.ai' in x.lower()][:10]))
+          except Exception as exc: print('LENSA_HTTP_ERROR',type(exc).__name__)
+          PY
+
 
 
 
