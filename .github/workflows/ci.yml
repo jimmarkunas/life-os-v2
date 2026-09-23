@@ -39,6 +39,30 @@ jobs:
       - name: Install test runner
         run: python -m pip install --disable-pip-version-check pytest playwright
 
+      - name: One-shot R0-1C8 Playwright Chrome acceptance
+        if: github.event_name == 'pull_request'
+        run: |
+          xvfb-run -a python - <<'PY'
+          import base64, json, time
+          from urllib.parse import urlsplit
+          from playwright.sync_api import sync_playwright
+          sources = {
+              "JOBRIGHT": base64.b64decode('aHR0cHM6Ly9qb2JyaWdodC5haS9qb2JzL2luZm8vNmE2M2FmMDg4ZDUzNjAzNDQ5NjAzYTVlP3V0bV9zb3VyY2U9MTEzNiZ1dG1faWQ9MTEzNiZ0b2I9dHJ1ZSZiYW5uZXI9ZmFsc2UmdXRtX21lZGl1bT1mZWVkJmNsaWNrX2lkPWU2OWE2MjNlNjNlODQ0OGVhNDZjNjc3NGI2MTc2OWZlb3V0YzEmY3JwdGRhdGE9R0ducUtRNmZwMFBGUjRkbC1YQW5YbVRUa0dha18xWWpfUFBWUVNKdW5LNTRkS0RmSTBkSUs3eHJNT29FeWpvUlBYRTkyTVJKZXBjcktOcDY2OE04b2FkcldxaEtRSU1fYzd1UzkwdWlLc2ZNMGl4U2tsZkM4ejZxRVBHQ3NOOTlVZFVLNGp6UEVmZlFTcmlNT194OVEmY3JwdGl2PUN3NzJLejVFVDJxUmRRQWROUzZrZVE=').decode(),
+              "LENSA": base64.b64decode('aHR0cHM6Ly9sZW5zYS5jb20vY2d3LzJmNTVlYWQ4MzcwMTRkMmJhOWIzNjc1ZTdlNGY0ZWExdHBzam8xP2pwc2k9am9icmlnaHQuYWk=').decode(),
+          }
+          with sync_playwright() as pw:
+            browser=pw.chromium.launch(channel='chrome',headless=False,args=['--no-sandbox','--disable-dev-shm-usage']); context=browser.new_context(); page=context.new_page()
+            for label, source in sources.items():
+              started=time.monotonic(); result={"url":"NONE","title":"NONE","original":0,"ats":0,"failure":"NONE"}
+              try:
+                  page.goto(source,wait_until='domcontentloaded',timeout=15000); result["url"]=urlsplit(page.url).netloc+urlsplit(page.url).path; result["title"]=page.title(); page.wait_for_timeout(8000); result["original"]=page.get_by_text('Original Job Post',exact=False).count()+page.get_by_text('Original Job Posting',exact=False).count(); result["ats"]=page.locator('a[href*="job-boards.greenhouse.io"]').count()
+                  if not result["original"]: result["failure"]='ORIGINAL_POST_MISSING'
+                  elif not result["ats"]: result["failure"]='ATS_HREF_MISSING'
+              except Exception as exc: result["failure"]=type(exc).__name__
+              print(label,json.dumps(result),f"elapsed={time.monotonic()-started:.2f}s")
+            browser.close()
+          PY
+
 
 
 
