@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import parse_qs, urljoin, urlsplit
 
 from lifeos.core.http import HttpClient, RetryPolicy
 from lifeos.core.runtime import RunContext
@@ -40,6 +40,8 @@ _ROLE = re.compile(
 _REMOTE = re.compile(r"\b(remote|distributed|work from home|wfh)\b", re.I)
 _US = re.compile(r"\b(united states|usa|u\.s\.|us|north america|americas)\b", re.I)
 _JOB_PATH = re.compile(r"/(?:job|jobs|career|careers|position|positions|opening|openings|requisition)/", re.I)
+_JOB_QUERY_KEYS = frozenset({"id", "job", "jobid", "job_id", "position", "positionid", "requisition", "req"}); _CONTROL_TEXT = re.compile(r"\b(?:view all|see all|search|filter|category|categories|sign in|log in|subscribe|learn more|privacy|terms)\b", re.I)
+_GENERIC_CTA = frozenset({"apply", "apply now", "view job", "view details", "job details", "learn more", "read more"}); _CARD_MARKERS = re.compile(r"(?:job|vacancy|position|posting|card|result-item|search-result)", re.I)
 
 
 @dataclass(frozen=True)
@@ -63,26 +65,50 @@ class AcquisitionResult:
 class _AnchorParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
-        self._href: str | None = None
-        self._parts: list[str] = []
-        self.anchors: list[tuple[str, str]] = []
+        self._stack: list[tuple[str, dict[str, str], list[str]]] = []
+        self.anchors: list[tuple[str, str, dict[str, str], str]] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag.casefold() != "a":
-            return
-        self._href = next((value for key, value in attrs if key.casefold() == "href" and value), None)
-        self._parts = []
+        self._stack.append((tag.casefold(), {key.casefold(): str(value) for key, value in attrs if value is not None}, []))
 
     def handle_data(self, data: str) -> None:
-        if self._href:
-            self._parts.append(data)
+        for _, _, parts in self._stack:
+            parts.append(data)
 
     def handle_endtag(self, tag: str) -> None:
-        if tag.casefold() == "a" and self._href:
-            text = " ".join(" ".join(self._parts).split())
-            self.anchors.append((self._href, text))
-            self._href = None
-            self._parts = []
+        tag = tag.casefold()
+        index = next((i for i in range(len(self._stack) - 1, -1, -1) if self._stack[i][0] == tag), None)
+        if index is None:
+            return
+        _, attrs, parts = self._stack[index]
+        if tag == "a" and attrs.get("href"):
+            card = next((node for node in reversed(self._stack[:index]) if _is_card_node(node)), None)
+            card_attrs, card_parts = (card[1], card[2]) if card else (attrs, parts)
+            self.anchors.append((attrs["href"], " ".join(" ".join(parts).split()), {**card_attrs, **attrs}, "\n".join(" ".join(part.split()) for part in card_parts if part.strip())))
+        del self._stack[index:]
+
+
+def _is_card_node(node: tuple[str, dict[str, str], list[str]]) -> bool:
+    tag, attrs, _ = node
+    return tag in {"article", "li"} or any(key.startswith("data-job") or key in {"data-title", "data-job-title", "data-requisition-id"} for key in attrs) or bool(_CARD_MARKERS.search(f"{attrs.get('class', '')} {attrs.get('id', '')}"))
+def _vacancy_url(url: str, anchor_text: str) -> bool:
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    path = (parts.path or "").rstrip("/").casefold()
+    if not path or _CONTROL_TEXT.search(anchor_text) or path in {"/jobs", "/careers", "/job-search", "/search"}: return False
+    return bool(_JOB_PATH.search(path) or any(key.casefold() in _JOB_QUERY_KEYS and value for key, values in parse_qs(parts.query).items() for value in values) or re.search(r"/(?:view|detail|posting|vacancy|opening|position|requisition)(?:/|$)", path, re.I))
+
+
+def _role_from_anchor(anchor_text: str, anchor_attrs: dict[str, str], card_text: str) -> str | None:
+    values = [anchor_attrs.get(key) for key in ("data-job-title", "data-title", "aria-label", "title")] + [anchor_text]
+    values.extend(part.strip(" -|·") for part in re.split(r"\s*[|\n]\s*", card_text) if part.strip())
+    for value in values:
+        candidate = " ".join((value or "").split()).strip()
+        if not candidate or candidate.casefold() in _GENERIC_CTA or _CONTROL_TEXT.search(candidate): continue
+        if _ROLE.search(candidate) and len(candidate) <= 180: return candidate
+    return None
 
 
 def _opaque_ref(source_id: str, provider_id: str | None, url: str | None) -> str:
@@ -442,18 +468,19 @@ class USRemoteAcquirer:
         parser.feed(body)
         seen: set[str] = set()
         out: list[SourceVacancyObservation] = []
-        for href, text in parser.anchors:
-            absolute = urljoin(base_url, href)
-            if absolute in seen or not _JOB_PATH.search(absolute) or not _ROLE.search(text):
+        for href, text, attrs, card_text in parser.anchors:
+            absolute = urljoin(base_url, href).split("#", 1)[0]
+            role = _role_from_anchor(text, attrs, card_text)
+            if absolute in seen or not _vacancy_url(absolute, text) or not role:
                 continue
             seen.add(absolute)
             out.append(
                 _observation(
                     source_id=source["id"],
                     company=source["company"],
-                    role=text,
+                    role=role,
                     url=absolute,
-                    location="Remote" if _REMOTE.search(text) else None,
+                    location="Remote" if _REMOTE.search(f"{role} {card_text}") else None,
                     provider_job_id=None,
                     received_at=now,
                 )
@@ -498,14 +525,15 @@ class USRemoteAcquirer:
                 continue
             role = str(item.get("role") or item.get("title") or "")
             location = str(item.get("location") or "") or None
-            if not _ROLE.search(role):
+            url = str(item.get("url") or "").strip()
+            if not _ROLE.search(role) or not url or not _vacancy_url(url, role):
                 continue
             rows.append(
                 _observation(
                     source_id=str(source["id"]),
                     company=str(item.get("company") or source.get("company") or ""),
                     role=role,
-                    url=item.get("url"),
+                    url=url,
                     location=location,
                     compensation=item.get("compensation"),
                     provider_job_id=str(item.get("provider_job_id") or "") or None,
