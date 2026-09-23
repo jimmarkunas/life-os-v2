@@ -203,8 +203,8 @@ def _same_vacancy_search(source_url: str, *, company: str | None, role: str | No
             continue
         text = _html_to_text(page.body).casefold()
         if company and company.casefold() not in text: continue
-        if role and not any(part.casefold() in text for part in role.split() if len(part) >= 4): continue
-        if provider_job_id and provider_job_id.casefold() not in text and provider_job_id.casefold() not in candidate.casefold(): continue
+        role_terms = [part.casefold() for part in re.findall(r"[A-Za-z0-9]+", role or "") if len(part) >= 4]
+        if role_terms and not all(part in text for part in role_terms): continue
         description = _extract_terminal_description(page.body)
         if description:
             return ResolutionResult(canonical_url(page.final_url or candidate), (source_url, candidate), page.body)
@@ -497,16 +497,20 @@ def acquire_terminal_vacancy_evidence(
     if fallback_fetcher is not None:
         evidence = _acquire_once(source_url, fallback_fetcher)
         if evidence is not None: return evidence
-        # Direct employer/ATS URLs have already identified the vacancy. A
-        # search fan-out after their bounded browser attempt adds up to six
-        # more browser/network operations without improving identity. Keep
-        # the search recovery for intermediary URLs, where discovery is the
-        # unresolved part of terminal resolution.
-        if is_provider_intermediary_source(source_url):
-            searched = _same_vacancy_search(source_url, company=company, role=role, provider_job_id=provider_job_id, fetcher=fallback_fetcher)
-            if searched.final_url and searched.verified_body:
-                body = searched.verified_body
-                description = _extract_terminal_description(body)
-                if description:
-                    return TerminalVacancyEvidence(searched.final_url, description, _extract_posting_date_raw(body) or "", "same_vacancy_search", searched.chain)
+    # Direct employer/ATS URLs have already identified the vacancy. A search
+    # fan-out is bounded to intermediary sources, where discovery remains the
+    # unresolved part of terminal resolution.
+    if is_provider_intermediary_source(source_url):
+        searched = _same_vacancy_search(
+            source_url,
+            company=company,
+            role=role,
+            provider_job_id=provider_job_id,
+            fetcher=fallback_fetcher or fetcher,
+        )
+        if searched.final_url and searched.verified_body:
+            body = searched.verified_body
+            description = _extract_terminal_description(body)
+            if description:
+                return TerminalVacancyEvidence(searched.final_url, description, _extract_posting_date_raw(body) or "", "same_vacancy_search", searched.chain)
     return None

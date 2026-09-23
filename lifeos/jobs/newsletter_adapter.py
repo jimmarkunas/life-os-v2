@@ -300,9 +300,10 @@ class NewsletterJobsAdapter:
         # Protect only cache access. Holding this lock across network/browser
         # resolution serialized every distinct job URL and defeated _adapt_all's
         # worker pool under large Newsletter batches.
+        cache_key = f"{company or ''}|{provider_job_id or ''}" if provider_job_id else source_apply_url
         with self._terminal_evidence_lock:
-            if source_apply_url in self._terminal_evidence_cache:
-                return self._terminal_evidence_cache[source_apply_url]
+            if cache_key in self._terminal_evidence_cache:
+                return self._terminal_evidence_cache[cache_key]
 
         try:
             evidence = acquire_terminal_vacancy_evidence(
@@ -319,4 +320,4 @@ class NewsletterJobsAdapter:
         with self._terminal_evidence_lock:
             # A concurrent duplicate URL may have completed first. Preserve the
             # first cached result while allowing distinct URLs to resolve in parallel.
-            return self._terminal_evidence_cache.setdefault(source_apply_url, evidence)
+            return self._terminal_evidence_cache.setdefault(cache_key, evidence)
