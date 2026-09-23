@@ -34,6 +34,7 @@ _JSONLD_SCRIPT = re.compile(r'<script[^>]*type=["\']application/ld\+json["\'][^>
 _META_DESCRIPTION = re.compile(r'<meta[^>]+(?:name|property)=["\'](?:description|og:description)["\'][^>]+content=["\']([^"\']+)["\']', re.I | re.S)
 
 MAX_INTERMEDIARY_HOPS = 4
+JOBRIGHT_HYDRATION_BUDGET_MS = 8_000
 
 DISCOVERY_INTERMEDIARY_HOSTS = {
     "jobright.ai", "lensa.com", "linkedin.com", "dice.com", "jobgether.com",
@@ -274,7 +275,11 @@ class ChromeFetcher(Fetcher):
                 remaining = self._context.require_time(0.5)
                 timeout = max(0.5, min(12.0, remaining - 0.25))
                 completed = subprocess.run(
-                    [self._binary, "--headless=new", "--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage", "--dump-dom", url],
+                    [
+                        self._binary, "--headless=new", "--disable-gpu", "--no-sandbox",
+                        "--disable-dev-shm-usage", f"--virtual-time-budget={JOBRIGHT_HYDRATION_BUDGET_MS}",
+                        "--dump-dom", url,
+                    ],
                     capture_output=True,
                     text=True,
                     timeout=timeout,

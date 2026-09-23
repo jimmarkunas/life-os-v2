@@ -65,6 +65,7 @@ class NewsletterTests(unittest.TestCase):
         self.assertEqual(len(results), len(observations))
     def test_adapter_passes_identity_to_terminal_evidence_search(self):
         # Production-Critical-Test: preserves same-vacancy search identity through the adapter boundary.
+        from lifeos.jobs.test_terminal_evidence import run_r0_1c3_regression_scenarios
         from lifeos.jobs.terminal_evidence import TerminalVacancyEvidence
         observation = SimpleNamespace(
             company="Synthetic Co", role="Program Manager", location_text="Remote", compensation_text=None,
@@ -80,6 +81,7 @@ class NewsletterTests(unittest.TestCase):
         self.assertEqual(acquire.call_args.kwargs["company"], "Synthetic Co")
         self.assertEqual(acquire.call_args.kwargs["role"], "Program Manager")
         self.assertEqual(acquire.call_args.kwargs["provider_job_id"], "provider-1")
+        run_r0_1c3_regression_scenarios()
     def test_jobright_parses_every_candidate_and_preserves_unresolved_card(self):
         body = """[Synthetic Labs\n92%\nSenior Program Manager\nRemote\n$120K-$150K/yr](https://jobright.ai/jobs/info/synthetic-1)\n[Malformed card](https://jobright.ai/jobs/info/synthetic-2)\n[Unsubscribe](https://jobright.ai/unsubscribe)"""
         result = parse_message(msg("synthetic-news-1","Jobright daily jobs",body))
