@@ -38,6 +38,14 @@ class IngestResult:
     persistence_verified: bool = False
 
 
+def result_is_accounted(result: IngestResult | None) -> bool:
+    """A degraded result is complete only after its canonical mutation read-back."""
+    return result is not None and (
+        result.disposition is not Disposition.REVIEW_DEGRADED
+        or result.persistence_verified
+    )
+
+
 def derive_review_these_jobs(observations: list[SourceVacancyObservation], candidates: list[NormalizedCandidate], results: list[IngestResult]) -> list[dict[str, object]]:
     candidates_by_ref = {item.evidence_ref: item for item in candidates}
     results_by_ref = {item.evidence_ref: item for item in results}

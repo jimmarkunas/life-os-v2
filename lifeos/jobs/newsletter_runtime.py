@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from time import perf_counter
 from typing import Any
+from dataclasses import replace
 
 from lifeos.core.http import HttpClient
 from lifeos.core.runtime import DeadlineExceeded, RunContext
@@ -14,7 +15,7 @@ from lifeos.integrations.gmail import GmailInboxMetadataPort, GmailMailboxTransp
 from lifeos.integrations.notion import NotionTransport
 from lifeos.jobs.fit_scoring import FitProfile
 from lifeos.jobs.newsletter_adapter import HttpClientFetcher, NewsletterAdapterConfig, NewsletterJobsAdapter
-from lifeos.jobs.newsletter_contract import Disposition, IngestResult, derive_review_these_jobs, ingest
+from lifeos.jobs.newsletter_contract import Disposition, IngestResult, derive_review_these_jobs, ingest, result_is_accounted
 from lifeos.jobs.newsletter_adapter import _adapt_all
 from lifeos.jobs.notion_repository import NotionCareerRepository, NotionCareerRepositoryConfig
 from lifeos.jobs.qualification import LaneConfig
@@ -109,6 +110,18 @@ def execute_newsletter(
         verified_refs = {candidate.evidence_ref for candidate, result in zip(identity_candidates, initial_results) if result.persistence_verified}
         enrich_observations = tuple(observation for observation in newsletter_to_resolve if observation.evidence_ref in verified_refs)
         candidates = _adapt_all(enrich_observations, adapter=adapter, context=context, max_workers=8)
+        initial_by_ref = {candidate.evidence_ref: result for candidate, result in zip(identity_candidates, initial_results)}
+        candidates = [
+            replace(
+                candidate,
+                job=replace(candidate.job, canonical_identity=initial_by_ref[candidate.evidence_ref].stable_job_key),
+                unresolved_reason=None,
+                fit_reason="terminal_unresolved",
+            )
+            if candidate.unresolved_reason and initial_by_ref[candidate.evidence_ref].stable_job_key
+            else candidate
+            for candidate in candidates
+        ]
         timings["terminal_resolution"] = round(perf_counter() - stage_started, 3)
 
         stage_started = perf_counter()
@@ -135,7 +148,7 @@ def execute_newsletter(
         deferred_messages = 0
         terminal_admitted = len(newsletter_to_resolve)
         fully_accounted = len(newsletter_results) == attempted_observations
-        unresolved = any(item.disposition is Disposition.REVIEW_DEGRADED for item in newsletter_results)
+        unresolved = any(not result_is_accounted(item) for item in newsletter_results)
         observations_by_ref = {observation.evidence_ref: observation for observation in newsletter_result.observations}
         candidates_by_ref = {candidate.evidence_ref: candidate for candidate in candidates}
         results_by_ref = {result.evidence_ref: result for result in newsletter_results}
