@@ -51,6 +51,8 @@ def _require_env() -> dict[str, str]:
 _GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 _NOTION_SEARCH_URL, _NOTION_VERSION = "https://api.notion.com/v1/search", "2026-03-11"
 _POLICY_DATABASE_TITLE, _POLICY_LANE, _POLICY_FILE_PROPERTY = "Job Lane Configuration", "US Remote", "Private Policy File"
+_RECOVERY_EVIDENCE_FILE_PROPERTY = "Current Recovery Evidence"
+
 
 def _exchange_gmail_access_token(context: RunContext, http: HttpClient, *, client_id: str, client_secret: str, refresh_token: str) -> str:
     body = urlencode({"client_id": client_id, "client_secret": client_secret, "refresh_token": refresh_token, "grant_type": "refresh_token"}).encode("utf-8")
@@ -78,6 +80,7 @@ def _parse_private_policy(raw: dict) -> tuple[LaneConfig, dict[str, int], FitPro
     except (KeyError, TypeError, ValueError) as exc:
         raise ConfigurationError(f"private policy is invalid: {type(exc).__name__}") from exc
 
+
 def _load_private_policy(path: str) -> tuple[LaneConfig, dict[str, int], FitProfile, str, str]:
     try:
         with open(path, "r", encoding="utf-8") as handle:
@@ -85,17 +88,32 @@ def _load_private_policy(path: str) -> tuple[LaneConfig, dict[str, int], FitProf
     except (OSError, json.JSONDecodeError) as exc: raise ConfigurationError(f"could not read private policy fixture: {type(exc).__name__}") from exc
     if not isinstance(raw, dict): raise ConfigurationError("private policy fixture was not an object")
     return _parse_private_policy(raw)
+
+
 def _plain_title(item: dict) -> str:
     return "".join(str(part.get("plain_text") or "") for part in (item.get("title") or []) if isinstance(part, dict)).strip()
 
-def _policy_file_url(page: dict) -> str:
-    files = (((page.get("properties") or {}).get(_POLICY_FILE_PROPERTY) or {}).get("files") or [])
-    if len(files) != 1 or not isinstance(files[0], dict): raise ConfigurationError("US Remote private policy file is missing or ambiguous")
+
+def _file_url(page: dict, property_name: str, *, required: bool) -> str | None:
+    files = (((page.get("properties") or {}).get(property_name) or {}).get("files") or [])
+    if not files:
+        if required:
+            raise ConfigurationError(f"US Remote {property_name} file is missing or ambiguous")
+        return None
+    if len(files) != 1 or not isinstance(files[0], dict):
+        raise ConfigurationError(f"US Remote {property_name} file is missing or ambiguous")
     entry = files[0]
     payload = entry.get("file") if entry.get("type") == "file" else entry.get("external")
     url = payload.get("url") if isinstance(payload, dict) else None
-    if not url: raise ConfigurationError("US Remote private policy file has no readable URL")
+    if not url:
+        raise ConfigurationError(f"US Remote {property_name} file has no readable URL")
     return str(url)
+
+
+def _policy_file_url(page: dict) -> str:
+    url = _file_url(page, _POLICY_FILE_PROPERTY, required=True)
+    assert url is not None
+    return url
 
 
 def _load_private_policy_from_notion(context, http, notion, *, notion_token: str):
@@ -108,7 +126,13 @@ def _load_private_policy_from_notion(context, http, notion, *, notion_token: str
     row = rows[0]
     raw = http.request_json(context, "GET", _policy_file_url(row), timeout_seconds=10.0, retry=RetryPolicy(max_attempts=2, backoff_seconds=0.1, max_backoff_seconds=1.0))
     if not isinstance(raw, dict): raise ConfigurationError("canonical private policy was not a JSON object")
-    return _parse_private_policy(raw)
+    recovery_evidence = None
+    recovery_url = _file_url(row, _RECOVERY_EVIDENCE_FILE_PROPERTY, required=False)
+    if recovery_url:
+        recovery_evidence = http.request_json(context, "GET", recovery_url, timeout_seconds=10.0, retry=RetryPolicy(max_attempts=2, backoff_seconds=0.1, max_backoff_seconds=1.0))
+        if not isinstance(recovery_evidence, dict):
+            raise ConfigurationError("US Remote current recovery evidence was not a JSON object")
+    return (*_parse_private_policy(raw), recovery_evidence)
 
 
 def _args(argv: list[str]) -> argparse.Namespace:
@@ -171,12 +195,14 @@ def main(argv: list[str] | None = None) -> int:
         if fixture:
             lane, lane_priority, fit_profile, market, newsletter_source_lane = _load_private_policy(fixture)
         else:
-            lane, lane_priority, fit_profile, market, newsletter_source_lane = _load_private_policy_from_notion(
+            lane, lane_priority, fit_profile, market, newsletter_source_lane, notion_browser_evidence = _load_private_policy_from_notion(
                 context,
                 http,
                 notion,
                 notion_token=env["NOTION_API_TOKEN"],
             )
+            if browser_evidence_payload is None:
+                browser_evidence_payload = notion_browser_evidence
         gmail_token = _exchange_gmail_access_token(
             context,
             http,
