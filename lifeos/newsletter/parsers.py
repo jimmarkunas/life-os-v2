@@ -614,6 +614,13 @@ def _parse_linkedin(
         if len(previous) < 3:
             continue
         location, company, role = previous[-1], previous[-2], _clean_candidate(previous[-3])
+        # Some production LinkedIn MIME/plain projections repeat a card's
+        # combined company/title line immediately before the next card.  Do
+        # not reinterpret that line as a new role, which shifts the next
+        # card's company/location fields and emits a second observation for
+        # the same vacancy.  Without an explicit card boundary, fail closed.
+        if " | " in role or role.casefold() == company.casefold():
+            continue
         if len(company) < 2 or len(role) < 3:
             continue
         seen.add(job_id)
