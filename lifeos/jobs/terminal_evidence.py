@@ -12,7 +12,13 @@ import json
 import os
 import re
 import shutil
+import base64
+import socket
+import struct
 import subprocess
+import tempfile
+import time
+import urllib.request
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from html.parser import HTMLParser
@@ -35,6 +41,7 @@ _META_DESCRIPTION = re.compile(r'<meta[^>]+(?:name|property)=["\'](?:description
 
 MAX_INTERMEDIARY_HOPS = 4
 JOBRIGHT_HYDRATION_BUDGET_MS = 8_000
+JOBRIGHT_HYDRATION_TIMEOUT_SECONDS = 8.0
 
 DISCOVERY_INTERMEDIARY_HOSTS = {
     "jobright.ai", "lensa.com", "linkedin.com", "dice.com", "jobgether.com",
@@ -249,7 +256,7 @@ class MappingFetcher(Fetcher):
 
 
 class ChromeFetcher(Fetcher):
-    """Bounded headless-browser fallback using the GitHub runner's Chrome."""
+    """Bounded headless Chromium fallback with condition-aware DOM polling."""
 
     def __init__(self, context: RunContext, *, max_concurrency: int = 2) -> None:
         self._context = context
@@ -274,25 +281,105 @@ class ChromeFetcher(Fetcher):
             with self._context.http_permit():
                 remaining = self._context.require_time(0.5)
                 timeout = max(0.5, min(12.0, remaining - 0.25))
-                completed = subprocess.run(
-                    [
-                        self._binary, "--headless=new", "--disable-gpu", "--no-sandbox",
-                        "--disable-dev-shm-usage", f"--virtual-time-budget={JOBRIGHT_HYDRATION_BUDGET_MS}",
-                        "--dump-dom", url,
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                    check=False,
-                )
-        except subprocess.TimeoutExpired as exc:
-            raise RuntimeError("browser fallback timed out") from exc
+                return self._get_rendered(url, timeout)
         finally:
             self._permits.release()
-        body = completed.stdout or ""
-        if completed.returncode != 0 or len(body.strip()) < 20:
-            raise RuntimeError("browser fallback did not return usable DOM")
-        return FetchResponse(final_url=url, body=body)
+
+    def _get_rendered(self, url: str, timeout: float) -> FetchResponse:
+        if _host(url) != "jobright.ai" and not _host(url).endswith(".jobright.ai"):
+            completed = subprocess.run(
+                [self._binary, "--headless=new", "--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage",
+                 f"--virtual-time-budget={JOBRIGHT_HYDRATION_BUDGET_MS}", "--dump-dom", url],
+                capture_output=True, text=True, timeout=timeout, check=False,
+            )
+            body = completed.stdout or ""
+            if completed.returncode != 0 or len(body.strip()) < 20:
+                raise RuntimeError("browser fallback did not return usable DOM")
+            return FetchResponse(final_url=url, body=body)
+        port = _free_tcp_port()
+        profile = tempfile.mkdtemp(prefix="lifeos-chrome-")
+        process = subprocess.Popen(
+            [self._binary, "--headless=new", "--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage",
+             "--remote-debugging-port=" + str(port), "--remote-allow-origins=*", "--user-data-dir=" + profile,
+             "about:blank"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        try:
+            deadline = time.monotonic() + min(timeout, JOBRIGHT_HYDRATION_TIMEOUT_SECONDS)
+            page = None
+            while time.monotonic() < deadline and process.poll() is None:
+                try:
+                    pages = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/json/list", timeout=0.25).read())
+                    page = next((item for item in pages if item.get("type") == "page" and item.get("webSocketDebuggerUrl")), None)
+                except Exception:
+                    pass
+                if page: break
+                time.sleep(0.05)
+            if not page: raise RuntimeError("browser fallback did not expose DevTools page")
+            with _DevToolsSocket(page["webSocketDebuggerUrl"]) as cdp:
+                cdp.command("Page.enable")
+                cdp.command("Runtime.enable")
+                cdp.command("Page.navigate", {"url": url})
+                expression = """(() => { const a = [...document.querySelectorAll('a[href*="job-boards.greenhouse.io"]')][0]; const text = document.body?.innerText || ''; return {ready: !!a || /Original Job Post(?:ing)?/.test(text), html: document.documentElement.outerHTML}; })()"""
+                while time.monotonic() < deadline:
+                    value = cdp.evaluate(expression)
+                    if isinstance(value, dict) and value.get("ready"):
+                        body = str(value.get("html") or "")
+                        if len(body.strip()) >= 20: return FetchResponse(final_url=url, body=body)
+                    time.sleep(0.1)
+            raise RuntimeError("browser fallback hydration condition timed out")
+        finally:
+            process.terminate()
+            try: process.wait(timeout=1)
+            except subprocess.TimeoutExpired: process.kill()
+            shutil.rmtree(profile, ignore_errors=True)
+
+
+def _free_tcp_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+class _DevToolsSocket:
+    def __init__(self, url: str) -> None:
+        parts = urlsplit(url); self._sock = socket.create_connection((parts.hostname, parts.port), timeout=1)
+        key = base64.b64encode(os.urandom(16)).decode()
+        path = parts.path + ("?" + parts.query if parts.query else "")
+        self._sock.sendall((f"GET {path} HTTP/1.1\r\nHost: {parts.hostname}:{parts.port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
+        response = self._read_http()
+        if b" 101 " not in response.split(b"\r\n", 1)[0]: raise RuntimeError("DevTools websocket handshake failed")
+        self._next_id = 0
+
+    def _read_http(self):
+        data = b""
+        while b"\r\n\r\n" not in data: data += self._sock.recv(4096)
+        return data
+
+    def _frame(self, payload: bytes) -> None:
+        length = len(payload); mask = os.urandom(4); encoded = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+        header = bytes([0x81, 0x80 | length]) if length < 126 else bytes([0x81, 0x80 | 126]) + struct.pack("!H", length)
+        self._sock.sendall(header + mask + encoded)
+
+    def _message(self):
+        head = self._sock.recv(2); length = head[1] & 0x7f
+        if length == 126: length = struct.unpack("!H", self._sock.recv(2))[0]
+        if head[1] & 0x80: mask = self._sock.recv(4)
+        payload = self._sock.recv(length)
+        return payload
+
+    def command(self, method: str, params: dict | None = None):
+        self._next_id += 1; ident = self._next_id
+        self._frame(json.dumps({"id": ident, "method": method, "params": params or {}}).encode())
+        while True:
+            message = json.loads(self._message())
+            if message.get("id") == ident: return message
+
+    def evaluate(self, expression: str):
+        result = self.command("Runtime.evaluate", {"expression": expression, "returnByValue": True})
+        return result.get("result", {}).get("result", {}).get("value")
+
+    def __enter__(self): return self
+    def __exit__(self, *_): self._sock.close()
 
 
 class CompositeFetcher(Fetcher):
@@ -472,6 +559,8 @@ def resolve_final_vacancy_url(url: str, *, fetcher: Fetcher) -> ResolutionResult
             if final_candidate not in chain: chain.append(final_candidate)
             return ResolutionResult(final_candidate, tuple(chain), response.body)
         next_hop = _find_next_intermediary_hop(response.body, response.final_url, visited)
+        if not next_hop and final_candidate and is_provider_intermediary_source(final_candidate) and final_candidate not in visited:
+            next_hop = final_candidate
         if not next_hop:
             return ResolutionResult(None, tuple(chain))
         if next_hop not in chain: chain.append(next_hop)
