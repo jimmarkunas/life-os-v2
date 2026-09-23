@@ -108,6 +108,13 @@ def _is_linkedin_url(url: str) -> bool:
     return host == "linkedin.com" or host.endswith(".linkedin.com")
 
 
+def _linkedin_evidence_key(url: str) -> str | None:
+    if not _is_linkedin_url(url):
+        return None
+    match = re.search(r"/jobs/view/(\d{6,})(?:/|$)", urlsplit(url).path, re.I)
+    return f"linkedin-job:{match.group(1)}" if match else None
+
+
 def _has_linkedin_quick_apply_signal(body: str) -> bool:
     text = _html_to_text(body).casefold()
     if "easy apply is not available" in text or "quick apply is not available" in text:
@@ -228,20 +235,30 @@ class MappingFetcher(Fetcher):
     """Optional explicitly supplied browser evidence, kept in memory only."""
 
     def __init__(self, evidence: dict | None) -> None:
-        self._pages = {
-            str(item.get("url")): FetchResponse(str(item.get("final_url") or item.get("url") or ""), str(item.get("html") or ""))
-            for item in (evidence or {}).get("pages", [])
-            if isinstance(item, dict) and item.get("url") and item.get("html")
-        }
+        self._pages: dict[str, FetchResponse] = {}
+        for item in (evidence or {}).get("pages", []):
+            if not isinstance(item, dict) or not item.get("url") or not item.get("html"):
+                continue
+            url = str(item["url"])
+            response = FetchResponse(str(item.get("final_url") or url), str(item["html"]))
+            self._pages[url] = response
+            stable_key = _linkedin_evidence_key(url)
+            if stable_key:
+                self._pages.setdefault(stable_key, response)
 
     @property
     def available(self) -> bool:
         return bool(self._pages)
 
     def get(self, url: str) -> FetchResponse:
-        if url not in self._pages:
+        response = self._pages.get(url)
+        if response is None:
+            stable_key = _linkedin_evidence_key(url)
+            if stable_key:
+                response = self._pages.get(stable_key)
+        if response is None:
             raise RuntimeError("injected browser evidence unavailable")
-        return self._pages[url]
+        return response
 
 
 def browser_evidence() -> dict | None:
