@@ -85,6 +85,26 @@ Target state for Codex/Tech Lead work:
 - minimal wrappers and compatibility paths;
 - no historical architecture living beside current architecture merely for reference.
 
+### TST-1 — TestKit consolidation
+
+Immediately after current R0 acceptance, migrate the existing scattered collected tests into the composable TestKit layer. Preserve meaningful behavioral coverage while collapsing duplicate setup and scenario variants into a smaller number of durable contract tests. Scenario data and reusable setup belong in TestKit rather than one collected test function per case.
+
+**Exit:** existing behavior remains covered, the collected-test surface is materially reduced, and TestKit is the normal home for reusable test mechanics/cases.
+
+### TST-2 — New-test staging guardrail
+
+All newly created test scenarios must enter `tests/testkit/candidates.py` first rather than creating new collected `test_*` functions/files across the product tree. The CI/development guard must reject newly collected tests outside the approved TestKit architecture while grandfathering existing tests until TST-1 migrates them. Do not raise the test limit or weaken the existing ratchet.
+
+**Exit:** new test scenarios can be added without increasing collected-test count; additions outside the approved TestKit path fail closed.
+
+### TST-3 — Candidate inventory and triage
+
+`tests/testkit/candidates.py` is a temporary staging inventory for Jim + Tech Lead/ChatGPT review, not a permanent archive or second framework. Periodically classify staged scenarios as `PRODUCTIZE`, `MERGE_DEDUPLICATE`, or `KILL`, then move durable coverage into the appropriate TestKit contract or delete temporary/redundant cases.
+
+**Exit:** every staged candidate has an explicit disposition; temporary investigation tests do not accumulate indefinitely.
+
+TST-1 through TST-3 run after R0 acceptance and before JCS-1. They are test-surface consolidation/guardrail work, not product behavior changes.
+
 ### JCS-1 — Execution-surface convergence
 
 Inspect the remaining Newsletter workflow/entry surfaces, especially `.github/workflows/newsletter-preflight-manual.yml`, `.github/workflows/newsletter-uat-manual.yml`, and the canonical production runtime. Preserve any unique operator/preflight capability, but retire or converge redundant execution surfaces once the same behavior is proven elsewhere. Do not create another workflow or orchestration layer.
