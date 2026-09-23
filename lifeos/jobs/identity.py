@@ -106,6 +106,7 @@ class IdentityEvidence:
 
     stable_job_keys: tuple[str, ...]
     canonical_apply_urls: tuple[str, ...]
+    provider_alias: str | None = None
 
 
 class IdentityCollision(ValueError):
@@ -143,6 +144,7 @@ def derive_identity_evidence(job: JobObservation) -> IdentityEvidence:
     return IdentityEvidence(
         stable_job_keys=tuple(dict.fromkeys(keys)),
         canonical_apply_urls=tuple(dict.fromkeys(urls)),
+        provider_alias=alias,
     )
 
 
@@ -169,6 +171,17 @@ def resolve_existing_identity(
         if record is not None:
             matches.add(record.job.stable_job_key)
 
+    if len(matches) > 1 and evidence.provider_alias:
+        alias_record = records_by_stable_key.get(evidence.provider_alias)
+        if alias_record is not None:
+            alias_key = alias_record.job.stable_job_key
+            alias_matches = {
+                record.job.stable_job_key
+                for key, record in records_by_stable_key.items()
+                if key.startswith(f"{evidence.provider_alias.split('::', 1)[0]}::")
+            }
+            if alias_matches == {alias_key}:
+                return alias_key
     if len(matches) > 1:
         raise IdentityCollision(f"identity evidence matched multiple existing Jobs: {', '.join(sorted(matches))}")
     return next(iter(matches), None)
