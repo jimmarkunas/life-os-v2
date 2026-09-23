@@ -1,0 +1,71 @@
+name: Rayobrowse POC Retry
+
+on:
+  push:
+    branches:
+      - poc/free-browser-engines
+
+permissions:
+  contents: read
+
+jobs:
+  rayobrowse-poc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      JOBRIGHT_URL: https://jobright.ai/jobs/info/6a63af088d53603449603a5e
+      LENSA_PUBLIC_URL: https://lensa.com/job-v1/blenderbox/remote/senior-digital-project-manager/3e18abacaaf87e0ef9eb0a11b7b5b772
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Rayobrowse corrected POC
+        shell: bash
+        run: |
+          set -e
+          git clone --depth 1 https://github.com/rayobyte-data/rayobrowse.git /tmp/rayobrowse
+          cd /tmp/rayobrowse
+          cp .env.example .env
+          docker compose up -d
+          ready=0
+          for i in $(seq 1 45); do
+            if curl -fsS http://127.0.0.1:9222/health >/dev/null; then ready=1; break; fi
+            sleep 2
+          done
+          if [ "$ready" != 1 ]; then
+            docker compose logs --tail=120
+            exit 1
+          fi
+          python -m venv /tmp/rayobrowse-venv
+          /tmp/rayobrowse-venv/bin/pip install --disable-pip-version-check -q httpx playwright
+          /tmp/rayobrowse-venv/bin/python - <<'PY'
+          import json, os, time
+          import httpx
+          from playwright.sync_api import sync_playwright
+
+          targets={"jobright":os.environ["JOBRIGHT_URL"],"lensa_public":os.environ["LENSA_PUBLIC_URL"]}
+          def inspect(page,name,url):
+              started=time.time(); out={"target":name,"status":"FAIL"}
+              try:
+                  page.goto(url,wait_until="domcontentloaded",timeout=30000)
+                  page.wait_for_timeout(6000)
+                  body=page.locator("body").inner_text(timeout=5000) or ""
+                  hrefs=page.locator("a").evaluate_all("els => els.map(a => a.href).filter(Boolean)")
+                  low=body.casefold()
+                  out.update(status="PASS",final_host=page.url.split('/')[2] if '://' in page.url else page.url,title=page.title(),body_chars=len(body),webdriver=page.evaluate("navigator.webdriver"),original_job_post=("original job post" in low),greenhouse_href=next((h for h in hrefs if "greenhouse.io" in h),None),jobright_href=next((h for h in hrefs if "jobright.ai" in h),None),challenge=("just a moment" in page.title().casefold() or "verify you are human" in low or "checking your browser" in low))
+              except Exception as exc:
+                  out.update(error=type(exc).__name__,detail=str(exc)[:300])
+              out["elapsed_seconds"]=round(time.time()-started,2)
+              return out
+          results=[]
+          r=httpx.get("http://127.0.0.1:9222/connect",params={"os":"windows","headless":"false","vnc":"false","maxLifetime":"120"},timeout=120)
+          r.raise_for_status(); cdp=r.text.strip()
+          with sync_playwright() as p:
+              browser=p.chromium.connect_over_cdp(cdp)
+              context=browser.contexts[0] if browser.contexts else browser.new_context()
+              for name,url in targets.items():
+                  page=context.new_page(); results.append(inspect(page,name,url)); page.close()
+              browser.close()
+          print(json.dumps({"engine":"rayobrowse","results":results},indent=2))
+          PY
+          docker compose down -v
