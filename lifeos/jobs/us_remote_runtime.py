@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from dataclasses import dataclass
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -15,7 +16,7 @@ from lifeos.integrations.gmail import GmailInboxMetadataPort, GmailMailboxTransp
 from lifeos.integrations.notion import NotionTransport
 from lifeos.jobs.fit_scoring import FitProfile
 from lifeos.jobs.newsletter_adapter import HttpClientFetcher, NewsletterAdapterConfig, NewsletterJobsAdapter
-from lifeos.jobs.newsletter_contract import Disposition, IngestResult, derive_review_these_jobs, ingest
+from lifeos.jobs.newsletter_contract import Disposition, IngestResult, derive_review_these_jobs, ingest, result_is_accounted
 from lifeos.jobs.newsletter_adapter import _adapt_all
 from lifeos.jobs.notion_repository import NotionCareerRepository, NotionCareerRepositoryConfig
 from lifeos.jobs.qualification import LaneConfig
@@ -54,7 +55,7 @@ def _accepted_newsletter_message_ids(
         if message.state is not ParseState.PASS:
             continue
         message_results = [by_ref.get(observation.evidence_ref) for observation in message.observations]
-        if any(result is None or result.disposition is Disposition.REVIEW_DEGRADED for result in message_results):
+        if any(not result_is_accounted(result) for result in message_results):
             continue
         if ":" not in message.message_ref:
             continue
@@ -327,6 +328,28 @@ def execute_us_remote(
             context=context,
             max_workers=8,
         )
+        newsletter_candidates = [
+            replace(
+                candidate,
+                job=replace(candidate.job, canonical_identity=initial_by_ref[candidate.evidence_ref].stable_job_key),
+                unresolved_reason=None,
+                fit_reason="terminal_unresolved",
+            )
+            if candidate.unresolved_reason and initial_by_ref[candidate.evidence_ref].stable_job_key
+            else candidate
+            for candidate in newsletter_candidates
+        ]
+        web_candidates = [
+            replace(
+                candidate,
+                job=replace(candidate.job, canonical_identity=initial_by_ref[candidate.evidence_ref].stable_job_key),
+                unresolved_reason=None,
+                fit_reason="terminal_unresolved",
+            )
+            if candidate.unresolved_reason and initial_by_ref[candidate.evidence_ref].stable_job_key
+            else candidate
+            for candidate in web_candidates
+        ]
         timings["terminal_resolution"] = round(perf_counter() - stage_started, 3)
         stage_started = perf_counter()
         enrichment_ingest_results = ingest(
@@ -347,7 +370,7 @@ def execute_us_remote(
         results = newsletter_results + web_results
 
         newsletter_fully_accounted = len(newsletter_results) == attempted_newsletter_observations
-        newsletter_unresolved = any(item.disposition is Disposition.REVIEW_DEGRADED for item in newsletter_results)
+        newsletter_unresolved = any(not result_is_accounted(item) for item in newsletter_results)
         web_fully_accounted = len(web_results) == len(web_result.observations)
         web_unresolved = any(item.disposition is Disposition.REVIEW_DEGRADED for item in web_results)
         fully_accounted = len(results) == attempted_newsletter_observations + len(web_result.observations)

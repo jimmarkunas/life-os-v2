@@ -327,7 +327,7 @@ Content-Type: text/html; charset=utf-8
         failed, gmail, calls, _repo = run(Broken(), None)
         self.assertNotIn("terminal", calls); self.assertEqual(failed.body["jobs"]["dispositions"].get("review_degraded"), 1); self.assertFalse(hasattr(gmail, "marked"))
         unresolved, gmail, calls, repo = run(InMemoryCareerRepository(), None)
-        self.assertEqual(unresolved.body["jobs"]["dispositions"].get("review_degraded"), 1); self.assertFalse(hasattr(gmail, "marked")); self.assertEqual(len(repo._store), 1)
+        self.assertEqual(unresolved.body["jobs"]["dispositions"].get("review_degraded"), 1); self.assertEqual(gmail.marked, "msg-1"); self.assertEqual(len(repo._store), 1)
         return
         # Production-Critical-Test: prevents terminal enrichment from running before canonical read-back.
         from lifeos.jobs.terminal_evidence import TerminalVacancyEvidence
