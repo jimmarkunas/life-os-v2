@@ -18,6 +18,7 @@ from lifeos.newsletter.models import SourceVacancyObservation
 
 KINDS = frozenset({"workable_public", "ashby", "workday_public", "greenhouse", "pinpoint_json", "lever_public", "teamtailor_html", "static_complete_html", "wttj_html", "rippling_html", "join_html", "stream_html", "popsa_html", "bluestonex_html", "sixflow_html", "futuristic_html", "doubleword_bundle", "revolut_html", "tg0_html", "veramed_html", "provider_html", "generic_html"})
 IGNORE = re.compile(r"(privacy|login|sign.?in|cookie|benefit|culture|people|about|contact|connect|alert|talent.?community)", re.I)
+TEAMTAILOR_IGNORE = re.compile(r"(privacy|login|sign.?in|cookie|benefit|culture|people|about|contact|connect|alert)", re.I)
 NON_JOB = re.compile(r"^(careers?|jobs?( explore jobs)?|current openings?|open positions?|see open positions?|view open roles?|view career openings?|view job|apply|apply now|join us|opportunities|get in touch\.?)$", re.I)
 JOBISH = re.compile(r"(job|career|position|vacanc|opening|role|apply)", re.I)
 ATS_HOSTS = ("ashbyhq.com", "greenhouse.io", "lever.co", "workdayjobs.com", "teamtailor.com", "join.com", "workable.com", "pinpointhq.com", "rippling.com")
@@ -214,15 +215,30 @@ def _revolut_slug(title):
     return re.sub(r"[^a-z0-9]+","-",str(title or "").casefold()).strip("-")
 
 def _revolut(text, source, now):
-    visible=re.search(r"(?:we have|showing|currently have)\s+(\d+)\s+(?:open positions|open roles|positions)",_strip_html(text),re.I)
-    if not visible:
-        visible=re.search(r"(\d+)\s+(?:open positions|open roles|positions)\b",_strip_html(text),re.I)
-    if not visible: raise ValueError("Revolut visible open-position count missing")
+    plain = _strip_html(text)
     script=re.search(r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>',text,re.I|re.S)
     if not script: raise ValueError("Revolut __NEXT_DATA__ missing")
     payload=json.loads(unescape(script.group(1))); positions=payload.get("props",{}).get("pageProps",{}).get("positions")
     if not isinstance(positions,list): raise ValueError("Revolut positions is not a list")
-    count=int(visible.group(1)); ids=[str(r.get("id") or "") for r in positions if isinstance(r,dict)]
+    count = None
+    visible = re.search(r"(?:we have|currently have)\s+(\d+)\s+(?:open positions|open roles|positions)|showing\s+\d+\s*(?:[-–]\s*\d+\s+of\s+|of\s+)(\d+)\s+(?:jobs|roles|positions)", plain, re.I)
+    if visible: count = int(next(group for group in visible.groups() if group is not None))
+    def embedded_total(value):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                folded = str(key).casefold()
+                if isinstance(child, int) and not isinstance(child, bool) and ("count" in folded or "total" in folded) and any(token in folded for token in ("position", "job", "role", "open")):
+                    return child
+                found = embedded_total(child)
+                if found is not None: return found
+        elif isinstance(value, list):
+            for child in value:
+                found = embedded_total(child)
+                if found is not None: return found
+        return None
+    if count is None: count = embedded_total(payload)
+    if count is None: raise ValueError("Revolut authoritative open-position count missing")
+    ids=[str(r.get("id") or "") for r in positions if isinstance(r,dict)]
     if len(positions)!=count or len(ids)!=count or any(not x for x in ids) or len(set(ids))!=count: raise ValueError("Revolut exhaustive inventory mismatch")
     rows=[]
     for p in positions:
@@ -256,6 +272,21 @@ def _veramed_detail(text, source, url, now):
     return _obs(source,job_id,titles[-1],None,url,received_at=now)
 
 def _veramed(text, source, now, fetch_text):
+    card_rows=[]
+    card_pattern=re.compile(r'<section\b(?=[^>]*\bdata-role=)[^>]*>.*?</section>', re.I|re.S)
+    for raw_card in card_pattern.findall(text):
+        card=_parse_page(raw_card)
+        title=next((value for tag,value in card.headings if tag == "h2"), None)
+        url=next((urljoin(source["canonical_endpoint"],href) for href,_ in card.links if "gh_jid=" in href), None)
+        if title or url: card_rows.append((title,url))
+    if card_rows:
+        if any(not title or not url or "gh_jid=" not in url for title,url in card_rows): raise ValueError("Veramed vacancy card missing title or index")
+        rows=[]
+        for title,url in card_rows:
+            match=re.search(r'[?&]gh_jid=([^&]+)',url)
+            if not match: raise ValueError("Veramed link missing gh_jid")
+            rows.append(_obs(source,match.group(1),title,None,url,received_at=now))
+        return rows
     parser=_parse_page(text); urls=[]; seen=set()
     for href,_ in parser.links:
         url=urljoin(source["canonical_endpoint"],href)
@@ -338,7 +369,7 @@ class ScaleUpAcquirer:
         if kind in {"teamtailor_html", "wttj_html", "rippling_html", "stream_html", "popsa_html", "bluestonex_html", "join_html", "static_complete_html"}:
             text=self._html(source["canonical_endpoint"]); marker=source.get("zero_marker")
             if kind == "teamtailor_html":
-                rows=_path_jobs(text,source,self.now,r"/jobs/[^/]+",reject=IGNORE)
+                rows=_path_jobs(text,source,self.now,r"/jobs/[^/]+",reject=TEAMTAILOR_IGNORE)
                 if not rows and source.get("company") == "Sano Genetics Limited" and re.search(r"no (?:open )?positions|no matching jobs|don't have any open", text, re.I): return []
             elif kind == "wttj_html": rows=_path_jobs(text,source,self.now,r"/jobs/[^/]+")
             elif kind == "stream_html": rows=_path_jobs(text,source,self.now,r"/(?:[a-z]{2}(?:-[a-z]{2})?/)?careers/[^/]+")

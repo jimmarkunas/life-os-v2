@@ -7,7 +7,7 @@ from pathlib import Path
 from lifeos.core.http import HttpResponse
 
 from lifeos.core.runtime import RunContext
-from lifeos.jobs.scale_up_acquisition import ScaleUpAcquirer, _recovery
+from lifeos.jobs.scale_up_acquisition import ScaleUpAcquirer, _recovery, _revolut, _veramed
 from lifeos.newsletter.models import SourceVacancyObservation
 
 ROOT = Path(__file__).parents[2]
@@ -128,6 +128,29 @@ class ScaleUpAcquisitionTests(unittest.TestCase):
                 observation=next(o for o in result.observations if o.company == company)
                 self.assertEqual(observation.role,title)
                 self.assertEqual(observation.source_received_at,acquired_at)
+        with self.subTest("Teamtailor talent-community page shape"):
+            source = next(item for item in REGISTRY["sources"] if item["company"] == "Breathe Battery Technologies Limited")
+            class BreatheHttp(FakeHttp):
+                def request(self, context, method, url, **kwargs):
+                    return HttpResponse(200, {}, b'<a href="/jobs/4796211-breathe-battery-technologies-talent-community">Breathe Battery Technologies Talent Community</a>')
+            result = ScaleUpAcquirer(context=RunContext.start(now=acquired_at), http=BreatheHttp()).acquire({"sources": [source]})
+            self.assertEqual(result.sources[0].state, "COMPLETE")
+            self.assertEqual(result.observations[0].role, "Breathe Battery Technologies Talent Community")
+        with self.subTest("Revolut embedded inventory total"):
+            source = next(item for item in REGISTRY["sources"] if item["company"] == "Revolut Ltd")
+            payload = {"props": {"pageProps": {"positions": [{"id": "rv-1", "text": "Revolut Product Manager", "locations": [{"name": "London"}]}], "totalPositions": 1}}}
+            text = f'<script id="__NEXT_DATA__" type="application/json">{json.dumps(payload)}</script>'
+            rows = _revolut(text, source, acquired_at)
+            self.assertEqual(len(rows), 1)
+            with self.assertRaises(ValueError):
+                _revolut(text.replace(', "totalPositions": 1', ''), source, acquired_at)
+        with self.subTest("Veramed pairs vacancy cards"):
+            source = next(item for item in REGISTRY["sources"] if item["company"] == "Veramed Limited")
+            text = '<section class="panel" data-role="ops"><h2>Role One</h2><a href="/job-detail/?gh_jid=1">VIEW JOB</a></section><section class="panel" data-role="ops"><h2>Role Two</h2><a href="/job-detail/?gh_jid=2">VIEW JOB</a></section>'
+            rows = _veramed(text, source, acquired_at, lambda _url: "")
+            self.assertEqual([(row.role, row.provider_job_id) for row in rows], [("Role One", "1"), ("Role Two", "2")])
+            with self.assertRaises(ValueError):
+                _veramed('<section class="panel" data-role="ops"><h2>Role One</h2><a href="/about">ABOUT</a></section>', source, acquired_at, lambda _url: "")
 
     def test_shared_ats_api_failure_is_not_complete(self):
         broken = REGISTRY["sources"][0]["canonical_endpoint"]
