@@ -8,6 +8,11 @@ on:
         required: false
         type: boolean
         default: false
+      original_post_inspect:
+        description: Temporary read-only provider DOM inspection
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -19,7 +24,7 @@ concurrency:
 jobs:
   uat:
     name: Bounded Newsletter production UAT
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || inputs.original_post_inspect
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
@@ -34,7 +39,7 @@ jobs:
       - name: Checkout main
         uses: actions/checkout@v5
         with:
-          ref: main
+          ref: ${{ inputs.original_post_inspect && github.ref_name || 'main' }}
           persist-credentials: false
 
       - name: Set up Python 3.12
@@ -43,6 +48,7 @@ jobs:
           python-version: "3.12"
 
       - name: Newsletter production run
+        if: ${{ !inputs.original_post_inspect }}
         shell: bash
         run: |
           set +e
@@ -86,8 +92,12 @@ jobs:
           print("Newsletter UAT PASS: isolated Newsletter runtime and Newsletter/Mail acceptance boundary passed.")
           PY
 
+      - name: Temporary original-post inspection
+        if: ${{ inputs.original_post_inspect }}
+        run: PYTHONPATH="$GITHUB_WORKSPACE" python3.12 scripts/r0_1c_jobright_inspect.py
+
       - name: Newsletter production replay (idempotency proof)
-        if: ${{ inputs.replay_idempotency }}
+        if: ${{ inputs.replay_idempotency && !inputs.original_post_inspect }}
         shell: bash
         run: |
           set +e
