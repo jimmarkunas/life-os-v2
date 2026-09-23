@@ -39,6 +39,34 @@ jobs:
       - name: Install test runner
         run: python -m pip install --disable-pip-version-check pytest
 
+      - name: One-shot R0-1C3 live acceptance
+        if: github.event_name == 'pull_request'
+        env:
+          JOBRIGHT_URL_B64: aHR0cHM6Ly9qb2JyaWdodC5haS9qb2JzL2luZm8vNmE2M2FmMDg4ZDUzNjAzNDQ5NjAzYTVlP3V0bV9zb3VyY2U9MTEzNiZ1dG1faWQ9MTEzNiZ0b2I9dHJ1ZSZiYW5uZXI9ZmFsc2UmdXRtX21lZGl1bT1mZWVkJmNsaWNrX2lkPWU2OWE2MjNlNjNlODQ0OGVhNDZjNjc3NGI2MTc2OWZlb3V0YzEmY3JwdGRhdGE9R0ducUtRNmZwMFBGUjRkbC1YQW5YbVRUa0dha18xWWpfUFBWUVNKdW5LNTRkS0RmSTBkSUs3eHJNT29FeWpvUlBYRTkyTVJKZXBjcktOcDY2OE04b2FkcldxaEtRSU1fYzd1UzkwdWlLc2ZNMGl4U2tsZkM4ejZxRVBHQ3NOOTlVZFVLNGp6UEVmZlFTcmlNT194OVEmY3JwdGl2PUN3NzJLejVFVDJxUmRRQWROUzZrZVE=
+          LENSA_URL_B64: aHR0cHM6Ly9sZW5zYS5jb20vY2d3LzJmNTVlYWQ4MzcwMTRkMmJhOWIzNjc1ZTdlNGY0ZWExdHBzam8xP2pwc2k9am9icmlnaHQuYWk=
+        run: |
+          python - <<'PY'
+          import base64, os, shutil, time
+          from lifeos.core.runtime import RunContext
+          from lifeos.jobs.terminal_evidence import ChromeFetcher, _extract_terminal_description, resolve_final_vacancy_url
+          def check(label, key):
+              start=time.monotonic(); out={"browser":False,"hydrated":False,"original":False,"ats":False,"terminal":False,"jd":False,"first":"NONE"}
+              try:
+                  f=ChromeFetcher(RunContext.start(timeout_seconds=45))
+                  out["browser"]=f.available
+                  if not f.available: out["first"]="CHROMIUM_UNAVAILABLE"
+                  else:
+                      r=resolve_final_vacancy_url(base64.b64decode(os.environ[key]).decode(), fetcher=f)
+                      body=r.verified_body or ""; out["hydrated"]=bool(r.verified_body); out["original"]=("Original Job Post" in body or "Original Job Posting" in body); out["ats"]="job-boards.greenhouse.io" in body; out["terminal"]=bool(r.final_url and "greenhouse.io" in r.final_url); out["jd"]=bool(_extract_terminal_description(body)) if body else False
+                      if not out["hydrated"]: out["first"]="HYDRATION_OR_RESOLUTION"
+                      elif not out["ats"]: out["first"]="ATS_HREF_MISSING"
+                      elif not out["terminal"]: out["first"]="TERMINAL_ATS_NOT_REACHED"
+                      elif not out["jd"]: out["first"]="JD_MISSING"
+              except Exception as e: out["first"]=type(e).__name__
+              print(label, out, f"elapsed={time.monotonic()-start:.2f}s")
+          check("JOBRIGHT", "JOBRIGHT_URL_B64"); check("LENSA", "LENSA_URL_B64")
+          PY
+
       - name: Development efficiency guard
         if: github.event_name == 'pull_request'
         env:
