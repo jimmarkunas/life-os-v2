@@ -144,6 +144,15 @@ class ScaleUpAcquisitionTests(unittest.TestCase):
             self.assertEqual(len(rows), 1)
             with self.assertRaises(ValueError):
                 _revolut(text.replace(', "totalPositions": 1', ''), source, acquired_at)
+        with self.subTest("Revolut current Flight payload"):
+            source = next(item for item in REGISTRY["sources"] if item["company"] == "Revolut Ltd")
+            payload = {"positions": [{"id": "rv-1", "text": "Revolut Product Manager", "locations": [{"name": "London"}]}], "totalPositions": 1}
+            flight = json.dumps([1, json.dumps(payload)])
+            rows = _revolut(f'<script>self.__next_f.push({flight})</script>', source, acquired_at)
+            self.assertEqual(rows[0].provider_job_id, "rv-1")
+            missing_total = json.dumps([1, json.dumps({"positions": payload["positions"]})])
+            with self.assertRaises(ValueError):
+                _revolut(f'<script>self.__next_f.push({missing_total})</script>', source, acquired_at)
         with self.subTest("Veramed pairs vacancy cards"):
             source = next(item for item in REGISTRY["sources"] if item["company"] == "Veramed Limited")
             text = '<section class="panel" data-role="ops"><h2>Role One</h2><a href="/job-detail/?gh_jid=1">VIEW JOB</a></section><section class="panel" data-role="ops"><h2>Role Two</h2><a href="/job-detail/?gh_jid=2">VIEW JOB</a></section>'
