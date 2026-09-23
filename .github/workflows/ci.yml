@@ -39,6 +39,40 @@ jobs:
       - name: Install test runner
         run: python -m pip install --disable-pip-version-check pytest
 
+      - name: One-shot R0-1C6 CDP startup proof
+        if: github.event_name == 'pull_request'
+        run: |
+          python - <<'PY'
+          import json, shutil, subprocess, tempfile, time, urllib.request
+          from lifeos.jobs.terminal_evidence import _DevToolsSocket
+          binary = shutil.which('google-chrome') or shutil.which('google-chrome-stable') or shutil.which('chromium') or shutil.which('chromium-browser')
+          print('CHROMIUM_BINARY', binary or 'NONE')
+          if not binary: raise SystemExit('TARGETED PROOF FAILED: Chromium binary unavailable')
+          version = subprocess.run([binary, '--version'], capture_output=True, text=True, check=False).stdout.strip(); print('CHROMIUM_VERSION', version)
+          def proof(negative=False):
+              profile=tempfile.mkdtemp(prefix='r0-1c6-'); start=time.monotonic(); proc=subprocess.Popen([binary,'--headless=new','--no-sandbox','--disable-gpu','--user-data-dir='+profile,'--remote-debugging-port=0','--remote-allow-origins=*','about:blank'],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+              try:
+                  active=profile+'/DevToolsActivePort'; port=None; endpoint=None
+                  for _ in range(120):
+                      try:
+                          lines=open(active).read().splitlines(); port=int(lines[0]); endpoint=lines[1] if len(lines)>1 else ''; break
+                      except Exception: time.sleep(.1)
+                  if negative: print('NEGATIVE_CONTROL', 'PASS' if port is None else 'FAIL'); return
+                  print('LAUNCH_ALIVE', proc.poll() is None, 'DEVTOOLS_ACTIVE_PORT', bool(port), 'PORT', port or 'NONE', 'ENDPOINT_SHAPE', ('/' + endpoint.rsplit('/',1)[-1]) if endpoint else 'NONE', 'STARTUP_SECONDS', round(time.monotonic()-start,2))
+                  if not port or not endpoint: raise SystemExit('TARGETED PROOF FAILED: DevToolsActivePort absent')
+                  version_ok=False; targets=[]
+                  try: json.loads(urllib.request.urlopen(f'http://127.0.0.1:{port}/json/version',timeout=1).read()); version_ok=True; targets=json.loads(urllib.request.urlopen(f'http://127.0.0.1:{port}/json/list',timeout=1).read())
+                  except Exception: pass
+                  print('JSON_VERSION', 'PASS' if version_ok else 'FAIL', 'PAGE_TARGETS', len(targets))
+                  page=next((x for x in targets if x.get('type')=='page' and x.get('webSocketDebuggerUrl')),None)
+                  if not page: raise SystemExit('TARGETED PROOF FAILED: page target absent')
+                  with _DevToolsSocket(page['webSocketDebuggerUrl']) as cdp:
+                      cdp.command('Runtime.enable'); value=cdp.evaluate('document.readyState'); print('CDP_CONNECT PASS PAGE_TARGET PASS RUNTIME_EVALUATE', 'PASS' if value=='complete' else 'FAIL', 'VALUE', value)
+              finally:
+                  proc.terminate(); proc.wait(timeout=3); shutil.rmtree(profile,ignore_errors=True)
+          proof(); proof(negative=True)
+          PY
+
 
       - name: Development efficiency guard
         if: github.event_name == 'pull_request'
