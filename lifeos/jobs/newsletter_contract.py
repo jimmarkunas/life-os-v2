@@ -37,6 +37,7 @@ class IngestResult:
     diagnostic: dict | None = None
     persistence_verified: bool = False
     terminal_evidence_satisfied: bool = False
+    terminal_evidence_diagnostics: tuple[str, ...] = ()
 
 
 def result_is_accounted(result: IngestResult | None) -> bool:
@@ -296,8 +297,16 @@ def ingest(
                 and persisted.job.job.apply_url is not None
                 and i not in qualification_errors
             )
+            _diagnostics = tuple(
+                name for name, missing in (
+                    ("missing_fit", persisted.job.fit is None),
+                    ("non_authoritative_fit", persisted.job.fit is not None and persisted.job.fit_authority != FitAuthority.AUTHORITATIVE),
+                    ("missing_apply_url", persisted.job.job.apply_url is None),
+                    ("qualification_error", i in qualification_errors),
+                ) if missing
+            )
             if evaluation_pending:
-                results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, persisted.job.stable_job_key, evaluation_pending if isinstance(evaluation_pending, str) else "evaluation pending", {"company": candidate.job.company.name, "role": candidate.job.role, "source": candidate.job.source_provider, "fit_evidence": candidate.fit_evidence_kind.value}, True, _tes)
+                results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, persisted.job.stable_job_key, evaluation_pending if isinstance(evaluation_pending, str) else "evaluation pending", {"company": candidate.job.company.name, "role": candidate.job.role, "source": candidate.job.source_provider, "fit_evidence": candidate.fit_evidence_kind.value}, True, _tes, _diagnostics)
                 continue
             if i == primary_index:
                 results[i] = IngestResult(
@@ -308,6 +317,7 @@ def ingest(
                     None,
                     True,
                     _tes,
+                    _diagnostics,
                 )
             else:
                 results[i] = IngestResult(
@@ -318,6 +328,7 @@ def ingest(
                     None,
                     True,
                     _tes,
+                    _diagnostics,
                 )
 
     assert all(result is not None for result in results), "every input candidate must receive exactly one result"
