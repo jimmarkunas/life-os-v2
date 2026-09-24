@@ -12,7 +12,7 @@ from enum import Enum
 
 from lifeos.core.runtime import RunContext
 from lifeos.jobs.dedupe import LaneObservation, reconcile
-from lifeos.jobs.identity import IdentityCollision, derive_identity_evidence, resolve_existing_identity, stable_job_key
+from lifeos.jobs.identity import IdentityCollision, canonical_url, derive_identity_evidence, resolve_existing_identity, stable_job_key
 from lifeos.jobs.lifecycle import apply_observation, new_record
 from lifeos.jobs.models import AdmissionStatus, NormalizedCandidate
 from lifeos.newsletter.models import SourceVacancyObservation
@@ -128,6 +128,7 @@ def ingest(
     records_by_stable_key = {}
     records_by_apply_url = {}
     if evidence_by_index:
+        queried_stable_keys = set(candidate_stable_keys)
         lookup_failed = False
         try:
             known = getattr(repository, "known", None)
@@ -159,9 +160,11 @@ def ingest(
         if not lookup_failed:
             try:
                 unresolved_urls = [
-                    url for i in evidence_by_index
-                    if not any(key in records_by_stable_key for key in evidence_by_index[i].stable_job_keys)
+                    url
+                    for i in evidence_by_index
                     for url in evidence_by_index[i].canonical_apply_urls
+                    if not any(key in records_by_stable_key for key in evidence_by_index[i].stable_job_keys)
+                    if f"url:{canonical_url(url)}" not in queried_stable_keys
                 ]
                 if unresolved_urls:
                     records_by_apply_url = repository.get_by_apply_urls(list(dict.fromkeys(unresolved_urls)))
