@@ -291,6 +291,12 @@ class NotionCareerRepository:
         self._transport = transport
         self._config = config
         self._page_ids: dict[str, str] = {}
+        self._records: dict[str, JobLedgerRecord] = {}
+        self._last_persistence_accounting = {"input": 0, "unchanged": 0, "updated": 0, "created": 0, "authoritative_read_back_verified": 0}
+
+    @property
+    def last_persistence_accounting(self) -> dict[str, int]:
+        return dict(self._last_persistence_accounting)
 
     def get_many(self, stable_job_keys: list[str]) -> dict[str, JobLedgerRecord]:
         if not stable_job_keys:
@@ -313,6 +319,7 @@ class NotionCareerRepository:
                 page_id = page.get("id")
                 if page_id:
                     self._page_ids[key] = str(page_id)
+                self._records[key] = record
         return found
 
     def get_by_apply_urls(self, apply_urls: list[str]) -> dict[str, JobLedgerRecord]:
@@ -335,10 +342,15 @@ class NotionCareerRepository:
                 page_id = page.get("id")
                 if page_id:
                     self._page_ids[record.job.stable_job_key] = str(page_id)
+                self._records[record.job.stable_job_key] = record
         return found
 
     def upsert(self, record: JobLedgerRecord) -> JobLedgerRecord:
         key = record.job.stable_job_key
+        existing = self._records.get(key)
+        if existing is not None and _canonical_view(existing) == _canonical_view(record):
+            self._last_persistence_accounting = {"input": 1, "unchanged": 1, "updated": 0, "created": 0, "authoritative_read_back_verified": 0}
+            return existing
         properties = _record_to_properties(record)
         existing_page_id = self._page_ids.get(key)
 
@@ -352,6 +364,7 @@ class NotionCareerRepository:
                 # target, then perform one idempotent retry only if needed.
                 observed = _page_to_record(self._transport.get_page(existing_page_id))
                 if _canonical_view(observed) == _canonical_view(record):
+                    self._records[key] = observed
                     return observed
                 written = self._transport.update_page(existing_page_id, properties)
             page_id = str(written.get("id") or existing_page_id)
@@ -369,6 +382,7 @@ class NotionCareerRepository:
                 if observed is not None:
                     if _canonical_view(observed) != _canonical_view(record):
                         raise ReadBackMismatch(f"ambiguous create resolved to mismatched row for {key}")
+                    self._records[key] = observed
                     return observed
                 written = self._transport.create_page(self._config.data_source_id, properties)
             page_id = written.get("id")
@@ -385,12 +399,17 @@ class NotionCareerRepository:
             fields = ("stable_job_key", "company", "role", "location", "work_mode", "compensation", "apply_url", "posting_date", "fit", "fit_authority", "source_providers", "source_types", "eligible_lanes", "primary_lane", "provider_score", "admission_status", "first_surfaced", "last_seen")
             mismatches = [{"field": field, "expected": repr(left)[:180], "actual": repr(right)[:180]} for field, left, right in zip(fields, expected, actual) if left != right]
             raise ReadBackMismatch(f"read-back mismatch for {key}", mismatches=mismatches)
+        self._records[key] = persisted
+        self._last_persistence_accounting = {"input": 1, "unchanged": 0, "updated": 1 if existing_page_id else 0, "created": 0 if existing_page_id else 1, "authoritative_read_back_verified": 1}
         return persisted
 
     def upsert_many(self, records: list[JobLedgerRecord]) -> dict[str, JobLedgerRecord]:
         expected = {record.job.stable_job_key: record for record in records}
         if len(expected) != len(records): raise ReadBackMismatch("duplicate stable Job Key in persistence batch")
-        for key, record in expected.items():
+        unchanged = {key: self._records[key] for key, record in expected.items() if key in self._records and _canonical_view(self._records[key]) == _canonical_view(record)}
+        pending = {key: record for key, record in expected.items() if key not in unchanged}
+        self._last_persistence_accounting = {"input": len(records), "unchanged": len(unchanged), "updated": sum(key in self._page_ids for key in pending), "created": sum(key not in self._page_ids for key in pending), "authoritative_read_back_verified": 0}
+        for key, record in pending.items():
             properties, page_id = _record_to_properties(record), self._page_ids.get(key)
             if page_id:
                 try:
@@ -416,9 +435,10 @@ class NotionCareerRepository:
             page_id = written.get("id")
             if not page_id: raise ReadBackMismatch(f"Notion create response for {key} did not return a page id")
             self._page_ids[key] = str(page_id)
-        persisted = self.get_many(list(expected))
-        missing = [key for key in expected if key not in persisted]
+        persisted = self.get_many(list(pending)) if pending else {}
+        missing = [key for key in pending if key not in persisted]
         if missing: raise ReadBackMismatch(f"authoritative batch read-back missing {missing[0]}")
-        for key, record in expected.items():
+        for key, record in pending.items():
             if _canonical_view(persisted[key]) != _canonical_view(record): raise ReadBackMismatch(f"read-back mismatch for {key}")
-        return persisted
+        self._last_persistence_accounting["authoritative_read_back_verified"] = len(pending)
+        return {**unchanged, **persisted}
