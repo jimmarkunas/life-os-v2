@@ -98,6 +98,35 @@ class _FakeAcquirer:
         )
 
 
+class _CountingAuthoritativeRepository(InMemoryCareerRepository):
+    """Production-shaped lookup accounting.
+
+    ``known`` models the repository's execution-local authoritative read-back
+    index. Only persistence lookups are counted, so enrichment can prove it
+    reuses the first-pass identity rather than querying Notion again.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.stable_key_queries = 0
+        self.apply_url_queries = 0
+
+    def known(self, stable_job_keys):
+        return {
+            key: self._store[key]
+            for key in stable_job_keys
+            if key in self._store
+        }
+
+    def get_many(self, stable_job_keys):
+        self.stable_key_queries += 1
+        return super().get_many(stable_job_keys)
+
+    def get_by_apply_urls(self, apply_urls):
+        self.apply_url_queries += 1
+        return super().get_by_apply_urls(apply_urls)
+
+
 class _BrokenSourceAcquirer(_FakeAcquirer):
     def acquire(self, registry, **kwargs):
         return AcquisitionResult(
@@ -184,6 +213,40 @@ class UsRemoteReentryProof(unittest.TestCase):
         self.assertEqual(degraded.body["web"]["status"], "DEGRADED")
         self.assertEqual(degraded.body["web"]["degraded_sources"][0]["source_id"], "synthetic-source")
         self.assertEqual(len(repository._store), 1)
+
+    def test_execute_us_remote_two_pass_reuses_authoritative_identity_during_enrichment(self):
+        """The real runtime's initial and terminal ingest passes share identity state."""
+        repository = _CountingAuthoritativeRepository()
+        browser_evidence = {
+            "pages": [{
+                "url": "https://boards.greenhouse.io/synthetic/jobs/1",
+                "final_url": "https://boards.greenhouse.io/synthetic/jobs/1",
+                "html": "<h1>Program Manager</h1><p>Responsibilities</p><ul><li>Lead program delivery and cloud platform adoption.</li><li>Own strategy across complex initiatives.</li></ul><p>Required qualifications: 5 years experience in program management.</p>",
+            }]
+        }
+        common = dict(
+            context=RunContext.start(timeout_seconds=30), http=_FakeHttp(), notion=SimpleNamespace(),
+            gmail=_FakeGmail(), registry={"tier1_employers": [], "staffing_agencies": [], "discovery_helpers": []},
+            browser_evidence=browser_evidence, lane=LANE, lane_priority={"US Remote": 0},
+            fit_profile=PROFILE, market="US", newsletter_source_lane="US Remote",
+            notion_job_ledger_data_source_id="synthetic", inbox_start=NOW, inbox_mode="historical_recovery",
+            start=NOW, end=NOW, web_since=NOW, dry_run=False, full_web_sweep=True,
+        )
+        with patch("lifeos.jobs.us_remote_runtime.MailRouter", _FakeMailRouter), \
+             patch("lifeos.jobs.us_remote_runtime.NewsletterProcessor", _FakeNewsletterProcessor), \
+             patch("lifeos.jobs.us_remote_runtime.USRemoteAcquirer", _FakeAcquirer), \
+             patch("lifeos.jobs.us_remote_runtime.NotionCareerRepository", lambda **kwargs: repository):
+            result = execute_us_remote(**common)
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.body["status"], "PASS")
+        self.assertEqual(len(repository._store), 1)
+        self.assertGreater(repository.stable_key_queries, 0, "initial ingest did not perform canonical lookup")
+        self.assertGreaterEqual(repository.apply_url_queries, 0)
+        # The terminal candidate carries the first pass's authoritative key;
+        # execution-local known() satisfies enrichment without either query.
+        self.assertEqual(repository.stable_key_queries, 1)
+        self.assertEqual(repository.apply_url_queries, 0)
 
     def test_production_script_is_the_composition_root_and_passes_full_sweep(self):
         from scripts import run_us_remote_production
