@@ -1,4 +1,4 @@
-"""Focused production-shaped proof for the six US Remote HTML sources."""
+"""Focused production-shaped proof for bounded US Remote web sources."""
 from __future__ import annotations
 
 __test__ = False
@@ -48,6 +48,20 @@ class _Http:
         if url not in self.pages:
             raise RuntimeError("synthetic source unavailable")
         return _Response(self.pages[url], url)
+
+
+class _JsonHttp(_Http):
+    def __init__(self, pages, json_pages):
+        super().__init__(pages)
+        self.json_pages = json_pages
+
+    def request_json(self, context, method, url, **kwargs):
+        value = self.json_pages.get(url)
+        if isinstance(value, Exception):
+            raise value
+        if value is None:
+            raise RuntimeError("synthetic provider unavailable")
+        return value
 
 
 def _registry():
@@ -167,16 +181,42 @@ class UsRemoteHtmlRecoveryProof(unittest.TestCase):
         robert_rows = USRemoteAcquirer._html_rows(robert, robert_html, "https://www.roberthalf.com/us/en/jobs", NOW)
         self.assertEqual(len(robert_rows), 1)
         self.assertIn("/us/en/job/", robert_rows[0].source_apply_url)
-        github = {"id": "github", "company": "GitHub", "kind": "html", "url": "https://www.github.careers/careers-home/jobs", "enabled": True}
-        github_result = USRemoteAcquirer(context=RunContext.start(timeout_seconds=30), http=_Http({})).acquire(
-            {"tier1_employers": [github], "staffing_agencies": [], "discovery_helpers": []},
-            browser_evidence={"sources": [{"source_id": "github", "state": "SEARCHED_NO_TARGET_MATCHES"}]},
-            full_sweep=True,
-            now=NOW,
+
+    def test_github_jibe_and_robert_half_routes_complete_together(self):
+        github = {"id": "github", "company": "GitHub", "kind": "jibe", "url": "https://www.github.careers/api/jobs", "job_base_url": "https://www.github.careers/careers-home/jobs", "enabled": True}
+        robert = {"id": "robert-half", "company": "Robert Half", "kind": "html", "url": "https://www.roberthalf.com/us/en/jobs/all/remote", "enabled": True}
+        jibe_url = "https://www.github.careers/api/jobs?page={}&sortBy=relevance&descending=false&internal=false"
+        json_pages = {
+            jibe_url.format(1): {"jobs": [{"data": {"slug": "5770", "req_id": "5770", "title": "Technical Program Manager", "full_location": "Remote, United States"}}, {"data": {"slug": "5715", "req_id": "5715", "title": "Software Engineer", "full_location": "Remote, United States"}}], "totalCount": 3},
+            jibe_url.format(2): {"jobs": [{"data": {"slug": "5780", "req_id": "5780", "title": "Product Manager", "full_location": "United States"}}], "totalCount": 3},
+        }
+        robert_html = '<article class="job-card"><a href="/us/en/job/minneapolis-minnesota/assistant-project-manager/02340-0013423909-usen">Assistant Project Manager</a></article><a href="/us/en/jobs">All jobs</a>'
+        result = USRemoteAcquirer(context=RunContext.start(timeout_seconds=30), http=_JsonHttp({robert["url"]: robert_html}, json_pages)).acquire(
+            {"tier1_employers": [github], "staffing_agencies": [robert], "discovery_helpers": []}, full_sweep=True, now=NOW
         )
-        self.assertTrue(github_result.complete)
-        self.assertEqual(github_result.sources[0].state, "COMPLETE")
-        self.assertEqual(github_result.observations, ())
+        self.assertTrue(result.complete)
+        self.assertEqual({source.source_id for source in result.sources}, {"github", "robert-half"})
+        self.assertEqual({item.source_provider for item in result.observations}, {"github", "robert-half"})
+        github_row = next(item for item in result.observations if item.provider_job_id == "5770")
+        self.assertEqual(github_row.provider_job_id, "5770")
+        self.assertEqual(github_row.source_apply_url, "https://www.github.careers/careers-home/jobs/5770?lang=en-us")
+        self.assertEqual(len(result.observations), 3)
+
+    def test_github_jibe_zero_malformed_inconsistent_and_http_fail_closed(self):
+        source = {"id": "github", "company": "GitHub", "kind": "jibe", "url": "https://www.github.careers/api/jobs", "job_base_url": "https://www.github.careers/careers-home/jobs", "enabled": True}
+        base = "https://www.github.careers/api/jobs?page={}&sortBy=relevance&descending=false&internal=false"
+        cases = (
+            ({base.format(1): {"jobs": [], "totalCount": 0}}, "COMPLETE", 0),
+            ({base.format(1): {"jobs": {}, "totalCount": 1}}, "DEGRADED", 0),
+            ({base.format(1): {"jobs": [{"data": {"slug": "1", "title": "Product Manager"}}], "totalCount": 2}, base.format(2): {"jobs": [], "totalCount": 2}}, "DEGRADED", 0),
+            ({base.format(1): HttpError(HttpErrorKind.HTTP_STATUS, status_code=503)}, "DEGRADED", 0),
+        )
+        registry = {"tier1_employers": [source], "staffing_agencies": [], "discovery_helpers": []}
+        for pages, state, count in cases:
+            with self.subTest(state=state, pages=pages):
+                result = USRemoteAcquirer(context=RunContext.start(timeout_seconds=30), http=_JsonHttp({}, pages)).acquire(registry, full_sweep=True, now=NOW)
+                self.assertEqual(result.sources[0].state, state)
+                self.assertEqual(len(result.observations), count)
 
 
 if __name__ == "__main__":
