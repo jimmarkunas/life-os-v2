@@ -10,6 +10,7 @@ from unittest.mock import patch
 from lifeos.core.http import HttpError, HttpErrorKind
 from lifeos.core.runtime import RunContext
 from lifeos.jobs.us_remote_acquisition import USRemoteAcquirer
+from lifeos.jobs.us_remote_runtime import load_registry
 from lifeos.newsletter.models import SourceVacancyObservation
 
 NOW = datetime(2026, 1, 15, 12, tzinfo=timezone.utc)
@@ -24,12 +25,12 @@ SOURCES = (
 )
 
 FIXTURES = {
-    "akkodis": '<section class="search-result-card" data-job-title="Technical Program Manager"><a href="/en/job/akk-123">View Job</a><span>Remote</span></section><a href="/en/job-search">Technical Program Manager</a>',
-    "experis": '<article class="search-result" data-title="Senior Project Manager"><a href="/jobdetail.ftl?job=exp-456">View Details</a><span>United States</span></article>',
+    "akkodis": '<section class="search-result-card" data-job-title="Technical Program Manager"><a href="/en-us/careers/jobs/technical-program-manager/us_en_6_973631_1624091">View Job</a><span>Remote</span></section><a href="/en-us/careers">Technical Program Manager</a>',
+    "experis": '<article class="search-result" data-title="Senior Project Manager"><a href="/en/job/123456/senior-project-manager">View Details</a><span>United States</span></article>',
     "kforce": '<li class="job-card" data-job-id="kf-789"><h2>Program Manager</h2><a href="/careersection/ex/jobdetail.ftl?job=kf-789">Apply</a></li><a href="/careersection/ex/moresearch.ftl">Search jobs</a>',
     "linkedin-jobs": '<div class="base-card" data-job-title="Technical Program Manager"><a href="/jobs/view/987654">View Job</a><span>Remote</span></div><a href="/jobs/search/">Search</a>',
     "motion-recruitment": '<div class="job-card"><h2>Product Manager</h2><a href="/jobs/product-manager-123">View Job</a><span>Remote</span></div><a href="/categories/product">Product categories</a>',
-    "teksystems": '<article data-requisition-id="ts-321"><h3>Technical Project Manager</h3><a href="/positions/ts-321">View Job</a><span>United States</span></article><a href="/us/en/c/project-manager-jobs">Project Manager category</a>',
+    "teksystems": '<article data-requisition-id="ts-321"><h3>Technical Project Manager</h3><a href="/us/en/job/JP-006282425/technical-project-manager">View Job</a><span>United States</span></article><a href="/us/en/c/project-manager-jobs">Project Manager category</a>',
 }
 
 
@@ -130,6 +131,23 @@ class UsRemoteHtmlRecoveryProof(unittest.TestCase):
             self.assertEqual(result.sources[0].detail, detail)
             self.assertEqual(result.observations, ())
             self.assertLessEqual(len(result.sources[0].detail or ""), 105)
+
+    def test_current_source_routes_use_explicit_recovery_without_fabricating_rows(self):
+        configured = load_registry()
+        ids = {"akkodis", "experis", "kforce", "linkedin-jobs", "motion-recruitment", "postman", "teksystems"}
+        registry = {bucket: [source for source in configured[bucket] if source["id"] in ids] for bucket in configured if bucket != "schema_version"}
+        evidence = {"sources": [{"source_id": source["id"], "state": "SEARCHED_NO_TARGET_MATCHES"}
+                                  for bucket in registry.values() for source in bucket]}
+        result = USRemoteAcquirer(context=RunContext.start(timeout_seconds=30), http=_Http({})).acquire(
+            registry, browser_evidence=evidence, full_sweep=True, now=NOW
+        )
+        self.assertTrue(result.complete)
+        self.assertEqual({source.source_id for source in result.sources}, ids)
+        self.assertTrue(all(source.state == "COMPLETE" and source.candidate_count == 0 for source in result.sources))
+        self.assertEqual(result.observations, ())
+        postman = next(source for bucket in configured.values() if isinstance(bucket, list) for source in bucket if source["id"] == "postman")
+        self.assertEqual(postman["url"], "https://www.postman.com/company/careers/open-positions/")
+        self.assertNotIn("greenhouse", postman["url"])
 
 
 if __name__ == "__main__":
