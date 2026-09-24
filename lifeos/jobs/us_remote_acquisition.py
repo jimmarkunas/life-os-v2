@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from typing import Any
-from urllib.parse import parse_qs, urljoin, urlsplit
+from urllib.parse import parse_qs, quote, urlencode, urljoin, urlsplit
 
 from lifeos.core.http import HttpClient, RetryPolicy
 from lifeos.core.runtime import RunContext
@@ -302,6 +302,8 @@ class USRemoteAcquirer:
             return self._smartrecruiters(source, now, since)
         if kind == "workday_adobe":
             return self._workday_adobe(source, now, since)
+        if kind == "jibe":
+            return self._jibe(source, now, since)
         if kind == "html":
             return self._html(source, now)
         raise ValueError("unsupported-source-kind")
@@ -456,6 +458,51 @@ class USRemoteAcquirer:
                         received_at=now,
                     )
                 )
+        return out
+
+    def _jibe(
+        self, source: dict[str, Any], now: datetime, since: datetime | None
+    ) -> list[SourceVacancyObservation]:
+        base_url = str(source.get("url") or "").rstrip("?")
+        job_base_url = str(source.get("job_base_url") or "").rstrip("/")
+        if not base_url or not job_base_url:
+            raise RuntimeError("invalid-jibe-source-config")
+        out, seen_ids, page, consumed, total = [], set(), 1, 0, None
+        while total is None or consumed < total:
+            query = urlencode({"page": page, "sortBy": "relevance", "descending": "false", "internal": "false"})
+            payload = self._json("GET", f"{base_url}?{query}")
+            if not isinstance(payload, dict) or not isinstance(payload.get("jobs"), list):
+                raise RuntimeError("invalid-jibe-payload")
+            page_jobs, page_total = payload["jobs"], payload.get("totalCount")
+            if isinstance(page_total, bool) or not isinstance(page_total, int) or page_total < 0:
+                raise RuntimeError("invalid-jibe-pagination")
+            if total is None:
+                total = page_total
+                if total > 2000:
+                    raise RuntimeError("jibe-total-bound-exceeded")
+            elif page_total != total:
+                raise RuntimeError("inconsistent-jibe-total-count")
+            if not page_jobs:
+                if consumed < total:
+                    raise RuntimeError("incomplete-jibe-pagination")
+                break
+            for item in page_jobs:
+                data = item.get("data", item) if isinstance(item, dict) else None
+                provider_id = str(data.get("slug") or data.get("req_id") or "").strip() if isinstance(data, dict) else ""
+                role = " ".join(str(data.get("title") or "").split()) if isinstance(data, dict) else ""
+                if not provider_id or not role or provider_id in seen_ids:
+                    raise RuntimeError("invalid-jibe-job")
+                seen_ids.add(provider_id)
+                consumed += 1
+                location = " ".join(" ".join(str(data.get(key) or "").split()) for key in ("full_location", "short_location", "location_name", "country") if data.get(key))
+                if _plausible(role, location) and _recent_payload(
+                    data, since, "update_date", "posted_date", "create_date"
+                ):
+                    out.append(_observation(source_id=source["id"], company=source["company"], role=role,
+                        url=f"{job_base_url}/{quote(provider_id, safe='')}?lang=en-us", location=location or None,
+                        provider_job_id=provider_id, received_at=now))
+            if consumed > total: raise RuntimeError("inconsistent-jibe-pagination")
+            page += 1
         return out
 
     def _html(self, source: dict[str, Any], now: datetime) -> list[SourceVacancyObservation]:

@@ -22,7 +22,7 @@
     {"id":"okta","company":"Okta","kind":"greenhouse","slug":"okta","enabled":true},
     {"id":"atlassian","company":"Atlassian","kind":"html","url":"https://www.atlassian.com/company/careers/all-jobs","enabled":true},
     {"id":"cloudflare","company":"Cloudflare","kind":"greenhouse","slug":"cloudflare","enabled":true},
-    {"id":"github","company":"GitHub","kind":"html","url":"https://www.github.careers/careers-home/jobs","enabled":true},
+    {"id":"github","company":"GitHub","kind":"jibe","url":"https://www.github.careers/api/jobs","job_base_url":"https://www.github.careers/careers-home/jobs","enabled":true},
     {"id":"gitlab","company":"GitLab","kind":"greenhouse","slug":"gitlab","enabled":true},
     {"id":"pagerduty","company":"PagerDuty","kind":"greenhouse","slug":"pagerduty","enabled":true},
     {"id":"notion","company":"Notion","kind":"ashby","slug":"notion","enabled":true},
@@ -40,7 +40,7 @@
     {"id":"akkodis","company":"Akkodis","kind":"html","url":"https://www.akkodis.com/en-us/careers/job-results","enabled":true},
     {"id":"apex-systems","company":"Apex Systems","kind":"smartrecruiters","slug":"apexsystems3","enabled":true},
     {"id":"kforce","company":"Kforce","kind":"html","url":"https://myhiring.kforce.com/careersection/ex/moresearch.ftl","enabled":true},
-    {"id":"robert-half","company":"Robert Half","kind":"html","url":"https://www.roberthalf.com/us/en/jobs","enabled":true},
+    {"id":"robert-half","company":"Robert Half","kind":"html","url":"https://www.roberthalf.com/us/en/jobs/all/remote","enabled":true},
     {"id":"experis","company":"Experis","kind":"html","url":"https://www.experis.com/en/all-jobs","enabled":true},
     {"id":"dexian","company":"Dexian","kind":"html","url":"https://dexian.com/jobs/","enabled":true}
   ],
