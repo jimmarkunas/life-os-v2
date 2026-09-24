@@ -15,8 +15,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from html.parser import HTMLParser
 from typing import Any, Protocol
-from urllib.parse import urljoin, urlsplit
-from urllib.parse import quote_plus
+from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlsplit
 
 from lifeos.core.runtime import DeadlineExceeded, RunContext
 from lifeos.jobs.identity import canonical_url
@@ -144,6 +143,19 @@ def _downstream_score(value: str) -> tuple[int, str | None]:
     return -1, None
 
 
+def _unwrap_google_result(value: str) -> str:
+    """Return the destination from Google's bounded result-link wrappers."""
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return value
+    if _host(value) not in {"google.com", "google.co.uk"} or parts.path.casefold() != "/url":
+        return value
+    params = parse_qs(parts.query)
+    destination = params.get("q", params.get("url", [None]))[0]
+    return unquote(destination) if destination else value
+
+
 class _HrefCollector(HTMLParser):
     def __init__(self) -> None:
         super().__init__(); self.hrefs: list[str] = []
@@ -181,7 +193,7 @@ def _downstream_candidates(body: str, base_url: str) -> list[str]:
 
 def _same_vacancy_search(source_url: str, *, company: str | None, role: str | None, provider_job_id: str | None, fetcher: Fetcher) -> ResolutionResult:
     """One bounded public-web lookup for the same vacancy, never a crawler."""
-    terms = [item for item in (company, role, provider_job_id) if item]
+    terms = [item for item in (company, role) if item] or ([provider_job_id] if provider_job_id else [])
     if not terms: return ResolutionResult(None, (source_url,))
     query = quote_plus(" ".join(terms))
     try:
@@ -191,6 +203,7 @@ def _same_vacancy_search(source_url: str, *, company: str | None, role: str | No
     source_host = _host(source_url)
     candidates = []
     for candidate in _collect_hrefs(response.body, response.final_url or "https://www.google.com/"):
+        candidate = _unwrap_google_result(candidate)
         if is_provider_intermediary_source(candidate) or _host(candidate) in {"google.com", "google.co.uk"}:
             continue
         score, trusted = _downstream_score(candidate)

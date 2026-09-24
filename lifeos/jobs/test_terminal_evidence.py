@@ -10,6 +10,7 @@ from dataclasses import replace
 from datetime import date, datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
+from urllib.parse import quote, quote_plus
 import unittest
 
 from lifeos.jobs.identity import stable_job_key
@@ -57,6 +58,62 @@ def _adapter(fetcher) -> NewsletterJobsAdapter:
 
 
 class TerminalEvidenceProofs(unittest.TestCase):
+    def test_jobright_semantic_search_unwraps_google_result_to_amazon(self):
+        source_url = "https://jobright.ai/jobs/info/6a638e578d53603449602dc0"
+        amazon_url = "https://amazon.jobs/en/jobs/10483583/sr-technical-program-manager-content-localization-understanding-and-enrichment"
+        company = "Amazon"
+        role = "Sr. Technical Program Manager, Content Localization, Understanding and Enrichment"
+        search_url = "https://www.google.com/search?q=" + quote_plus(f"{company} {role}")
+        google_body = f'<a href="/url?q={quote(amazon_url, safe="")}">Amazon vacancy</a>'
+        amazon_body = (
+            f"<h1>{role}</h1><p>{company}</p>"
+            '<script type="application/ld+json">'
+            '{"@type":"JobPosting","description":"<p>Lead localization programs and '
+            'manage technical content enrichment.</p>","datePosted":"2026-01-10"}'
+            '</script>'
+        )
+
+        class RecordingFetcher:
+            def __init__(self):
+                self.requests = []
+
+            def get(self, url):
+                self.requests.append(url)
+                pages = {
+                    source_url: (source_url, "<html>source card only</html>"),
+                    search_url: (search_url, google_body),
+                    amazon_url: (amazon_url, amazon_body),
+                }
+                final_url, body = pages[url]
+                return SimpleNamespace(final_url=final_url, body=body)
+
+        fetcher = RecordingFetcher()
+        evidence = acquire_terminal_vacancy_evidence(
+            source_url,
+            fetcher=fetcher,
+            company=company,
+            role=role,
+            provider_job_id="6a638e578d53603449602dc0",
+        )
+        self.assertIsNotNone(evidence)
+        self.assertIn(search_url, fetcher.requests)
+        self.assertNotIn("6a638e578d53603449602dc0", search_url)
+        self.assertEqual(evidence.canonical_url, amazon_url)
+        self.assertNotIn("jobright.ai", evidence.canonical_url)
+        self.assertIn("localization programs", evidence.description_text)
+
+    def test_same_vacancy_search_fails_closed_without_valid_terminal_vacancy(self):
+        source_url = "https://jobright.ai/jobs/info/opaque"
+        search_url = "https://www.google.com/search?q=Amazon+Program+Manager"
+        fetcher = MappingFetcher({"pages": [
+            {"url": source_url, "final_url": source_url, "html": "<p>source card</p>"},
+            {"url": search_url, "final_url": search_url, "html": '<a href="/url?q=https%3A%2F%2Famazon.jobs%2Fnot-a-vacancy">bad</a>'},
+            {"url": "https://amazon.jobs/not-a-vacancy", "final_url": "https://amazon.jobs/not-a-vacancy", "html": "<p>not enough evidence</p>"},
+        ]})
+        self.assertIsNone(acquire_terminal_vacancy_evidence(
+            source_url, fetcher=fetcher, company="Amazon", role="Program Manager", provider_job_id="opaque"
+        ))
+
     def test_intermediary_urls_require_bounded_terminal_proof(self):
         source_urls = (
             "https://www.linkedin.com/jobs/view/123456789/",
