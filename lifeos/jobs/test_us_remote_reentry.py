@@ -301,7 +301,11 @@ class UsRemoteReentryProof(unittest.TestCase):
         self.assertEqual(repository.stable_key_queries, 1)
         self.assertEqual(repository.apply_url_queries, 0)
 
-        with patch("lifeos.jobs.newsletter_contract.qualify", side_effect=RuntimeError("synthetic qualification failure")):
+        with patch("lifeos.jobs.newsletter_contract.qualify", side_effect=RuntimeError("synthetic qualification failure")), \
+             patch("lifeos.jobs.us_remote_runtime.MailRouter", _FakeMailRouter), \
+             patch("lifeos.jobs.us_remote_runtime.NewsletterProcessor", _FakeNewsletterProcessor), \
+             patch("lifeos.jobs.us_remote_runtime.USRemoteAcquirer", _FakeAcquirer), \
+             patch("lifeos.jobs.us_remote_runtime.NotionCareerRepository", lambda **kwargs: repository):
             degraded = execute_us_remote(**{**common, "context": RunContext.start(timeout_seconds=30)})
         self.assertEqual(degraded.exit_code, 1)
         self.assertEqual(degraded.body["status"], "DEGRADED")
