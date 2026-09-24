@@ -83,7 +83,7 @@ class NewsletterTests(unittest.TestCase):
         from lifeos.jobs.terminal_evidence import MappingFetcher, acquire_terminal_vacancy_evidence
         pages = MappingFetcher({"pages": [
             {"url": "https://jobright.ai/jobs/info/provider-1", "final_url": "https://jobright.ai/jobs/info/provider-1", "html": "<html>shell</html>"},
-            {"url": "https://www.google.com/search?q=Synthetic+Co+Program+Manager+provider-1", "final_url": "https://www.google.com/search?q=Synthetic+Co+Program+Manager+provider-1", "html": '<a href="https://jobs.example/jobs/provider-1">Synthetic vacancy</a>'},
+            {"url": "https://www.google.com/search?q=Synthetic+Co+Program+Manager", "final_url": "https://www.google.com/search?q=Synthetic+Co+Program+Manager", "html": '<a href="https://jobs.example/jobs/provider-1">Synthetic vacancy</a>'},
             {"url": "https://jobs.example/jobs/provider-1", "final_url": "https://jobs.example/jobs/provider-1", "html": '<html><h1>Program Manager</h1><p>Synthetic Co</p><p>Lead program delivery and manage stakeholders with proven experience.</p></html>'},
         ]})
         recovered = acquire_terminal_vacancy_evidence("https://jobright.ai/jobs/info/provider-1", fetcher=pages, company="Synthetic Co", role="Program Manager", provider_job_id="provider-1")
