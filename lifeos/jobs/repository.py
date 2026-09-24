@@ -31,6 +31,14 @@ class ReadBackMismatch(RuntimeError):
 
 
 class CareerRepository(Protocol):
+    def known(self, stable_job_keys: list[str]) -> dict[str, JobLedgerRecord]:
+        """Return only execution-local authoritative rows already known.
+
+        This is intentionally not a persistence lookup and must never query
+        the canonical store.
+        """
+        ...
+
     def get_many(self, stable_job_keys: list[str]) -> dict[str, JobLedgerRecord]:
         """Narrow identity lookup for exactly the keys this run needs.
         Must never require scanning the full canonical store."""
@@ -59,6 +67,9 @@ class InMemoryCareerRepository:
 
     def get_many(self, stable_job_keys: list[str]) -> dict[str, JobLedgerRecord]:
         return {key: self._store[key] for key in stable_job_keys if key in self._store}
+
+    def known(self, stable_job_keys: list[str]) -> dict[str, JobLedgerRecord]:
+        return self.get_many(stable_job_keys)
 
     def get_by_apply_urls(self, apply_urls: list[str]) -> dict[str, JobLedgerRecord]:
         requested = {url for url in (canonical_url(value) for value in apply_urls) if url}

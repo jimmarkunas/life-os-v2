@@ -130,7 +130,22 @@ def ingest(
     if evidence_by_index:
         lookup_failed = False
         try:
-            records_by_stable_key = repository.get_many(list(dict.fromkeys(candidate_stable_keys)))
+            known = getattr(repository, "known", None)
+            records_by_stable_key = (
+                known(list(dict.fromkeys(candidate_stable_keys)))
+                if callable(known) else {}
+            )
+            unresolved_indices = {
+                i for i, evidence in evidence_by_index.items()
+                if not any(key in records_by_stable_key for key in evidence.stable_job_keys)
+            }
+            unresolved_keys = [
+                key for i in unresolved_indices for key in evidence_by_index[i].stable_job_keys
+            ]
+            if unresolved_keys:
+                records_by_stable_key.update(
+                    repository.get_many(list(dict.fromkeys(unresolved_keys)))
+                )
         except Exception as exc:
             lookup_failed = True
             for i in evidence_by_index:
@@ -143,7 +158,13 @@ def ingest(
                 )
         if not lookup_failed:
             try:
-                records_by_apply_url = repository.get_by_apply_urls(list(dict.fromkeys(candidate_apply_urls)))
+                unresolved_urls = [
+                    url for i in evidence_by_index
+                    if not any(key in records_by_stable_key for key in evidence_by_index[i].stable_job_keys)
+                    for url in evidence_by_index[i].canonical_apply_urls
+                ]
+                if unresolved_urls:
+                    records_by_apply_url = repository.get_by_apply_urls(list(dict.fromkeys(unresolved_urls)))
             except Exception as exc:
                 for i in evidence_by_index:
                     candidate = candidates[i]

@@ -300,6 +300,10 @@ class NotionCareerRepository:
     def last_persistence_accounting(self) -> dict[str, int]:
         return dict(self._last_persistence_accounting)
 
+    def known(self, stable_job_keys: list[str]) -> dict[str, JobLedgerRecord]:
+        """Return authoritative rows already loaded in this run only."""
+        return {key: self._records[key] for key in stable_job_keys if key in self._records}
+
     def get_many(self, stable_job_keys: list[str]) -> dict[str, JobLedgerRecord]:
         if not stable_job_keys:
             return {}
