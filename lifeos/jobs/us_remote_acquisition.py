@@ -42,6 +42,14 @@ _US = re.compile(r"\b(united states|usa|u\.s\.|us|north america|americas)\b", re
 _JOB_PATH = re.compile(r"/(?:job|jobs|career|careers|position|positions|opening|openings|requisition)/", re.I)
 _JOB_QUERY_KEYS = frozenset({"id", "job", "jobid", "job_id", "position", "positionid", "requisition", "req"}); _CONTROL_TEXT = re.compile(r"\b(?:view all|see all|search|filter|category|categories|sign in|log in|subscribe|learn more|privacy|terms)\b", re.I)
 _GENERIC_CTA = frozenset({"apply", "apply now", "view job", "view details", "job details", "learn more", "read more"}); _CARD_MARKERS = re.compile(r"(?:job|vacancy|position|posting|card|result-item|search-result)", re.I)
+_SAFE_DIAGNOSTIC = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+){1,7}$")
+
+
+def _failure_detail(exc: Exception) -> str:
+    name = type(exc).__name__[:40]
+    status = getattr(exc, "status_code", None)
+    reason = f"http-{status}" if name == "HttpError" and isinstance(status, int) and 100 <= status <= 599 else str(exc).strip().casefold()
+    return f"{name}:{reason}" if len(reason) <= 64 and _SAFE_DIAGNOSTIC.fullmatch(reason) else name
 
 
 @dataclass(frozen=True)
@@ -259,7 +267,7 @@ class USRemoteAcquirer:
                             if recovered is None:
                                 rows = []
                                 state = "DEGRADED"
-                                detail = type(exc).__name__
+                                detail = _failure_detail(exc)
                             else:
                                 rows = recovered
                                 state = "COMPLETE"
