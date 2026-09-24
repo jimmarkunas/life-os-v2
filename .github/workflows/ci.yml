@@ -60,4 +60,4 @@ jobs:
         run: |
           python -m unittest lifeos.jobs.test_us_remote_reentry
           python -m unittest lifeos.jobs.test_canonical_persistence
-          python scripts/jobs_user_outcome_gate.py
+          PYTHONPATH=. python scripts/jobs_user_outcome_gate.py
