@@ -106,7 +106,12 @@ def _vacancy_url(url: str, anchor_text: str) -> bool:
         return False
     path = (parts.path or "").rstrip("/").casefold()
     if not path or _CONTROL_TEXT.search(anchor_text) or path in {"/jobs", "/careers", "/job-search", "/search"}: return False
-    return bool(_JOB_PATH.search(path) or any(key.casefold() in _JOB_QUERY_KEYS and value for key, values in parse_qs(parts.query).items() for value in values) or re.search(r"/(?:view|detail|posting|vacancy|opening|position|requisition)(?:/|$)", path, re.I))
+    return bool(
+        _JOB_PATH.search(path)
+        or any(key.casefold() in _JOB_QUERY_KEYS and value for key, values in parse_qs(parts.query).items() for value in values)
+        or re.search(r"/(?:view|detail|posting|vacancy|opening|position|requisition)(?:/|$)", path, re.I)
+        or re.search(r"/tech-jobs/[^/]+/(?:direct-hire|contract|contract-to-hire)/[^/]+/\d+$", path, re.I)
+    )
 
 
 def _role_from_anchor(anchor_text: str, anchor_attrs: dict[str, str], card_text: str) -> str | None:
