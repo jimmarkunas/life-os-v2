@@ -242,13 +242,11 @@ def execute_us_remote(
                 web_to_resolve.append(observation)
             else:
                 web_preexcluded.append(disposition)
-        newsletter_terminal_required_total = len(newsletter_to_resolve)
         selected_newsletter_message_ids = {
             message.message_ref.split(":", 1)[1]
             for message in newsletter_result.messages
             if ":" in message.message_ref and message.message_ref.split(":", 1)[0] == "gmail"
         }
-        web_terminal_required_total = len(web_to_resolve)
         web_deferred_observations = 0
         attempted_newsletter_observations = len(newsletter_result.observations)
         attempted_newsletter_messages = len(selected_newsletter_message_ids)
@@ -312,11 +310,15 @@ def execute_us_remote(
         newsletter_enrichment_observations = tuple(
             observation for observation in newsletter_to_resolve
             if observation.evidence_ref in persistence_verified
+            and not initial_by_ref[observation.evidence_ref].terminal_evidence_satisfied
         )
         web_enrichment_observations = tuple(
             observation for observation in web_to_resolve
             if observation.evidence_ref in persistence_verified
+            and not initial_by_ref[observation.evidence_ref].terminal_evidence_satisfied
         )
+        newsletter_terminal_required_total = len(newsletter_enrichment_observations)
+        web_terminal_required_total = len(web_enrichment_observations)
         timings["initial_persist"] = round(perf_counter() - stage_started, 3)
 
         stage_started = perf_counter()
@@ -368,6 +370,12 @@ def execute_us_remote(
 
         final_by_ref = dict(initial_by_ref)
         final_by_ref.update({candidate.evidence_ref: result for candidate, result in zip(newsletter_candidates + web_candidates, enrichment_ingest_results)})
+        enriched_refs = {candidate.evidence_ref for candidate in newsletter_candidates + web_candidates}
+        for observation in list(newsletter_to_resolve) + list(web_to_resolve):
+            ref = observation.evidence_ref
+            initial = initial_by_ref.get(ref)
+            if initial and initial.terminal_evidence_satisfied and ref not in enriched_refs:
+                final_by_ref[ref] = replace(initial, disposition=Disposition.UPDATED)
         newsletter_ingest_count = len(newsletter_to_resolve)
         newsletter_results = list(newsletter_preexcluded) + [final_by_ref[item.evidence_ref] for item in newsletter_to_resolve]
         web_results = list(web_preexcluded) + [final_by_ref[item.evidence_ref] for item in web_to_resolve]
