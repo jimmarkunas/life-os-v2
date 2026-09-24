@@ -29,7 +29,7 @@ FIXTURES = {
     "experis": '<article class="search-result" data-title="Senior Project Manager"><a href="/en/job/123456/senior-project-manager">View Details</a><span>United States</span></article>',
     "kforce": '<li class="job-card" data-job-id="kf-789"><h2>Program Manager</h2><a href="/careersection/ex/jobdetail.ftl?job=kf-789">Apply</a></li><a href="/careersection/ex/moresearch.ftl">Search jobs</a>',
     "linkedin-jobs": '<div class="base-card" data-job-title="Technical Program Manager"><a href="/jobs/view/987654">View Job</a><span>Remote</span></div><a href="/jobs/search/">Search</a>',
-    "motion-recruitment": '<div class="job-card"><h2>Product Manager</h2><a href="/jobs/product-manager-123">View Job</a><span>Remote</span></div><a href="/categories/product">Product categories</a>',
+    "motion-recruitment": '<div class="job-card"><h2>IT Project Manager / Duck Creek</h2><a href="/tech-jobs/boston/direct-hire/it-project-manager-duck-creek/888237">View Job</a><span>Open to Remote</span></div><a href="/tech-jobs/project-management">Project Management Jobs</a>',
     "teksystems": '<article data-requisition-id="ts-321"><h3>Technical Project Manager</h3><a href="/us/en/job/JP-006282425/technical-project-manager">View Job</a><span>United States</span></article><a href="/us/en/c/project-manager-jobs">Project Manager category</a>',
 }
 
@@ -91,6 +91,13 @@ class UsRemoteHtmlRecoveryProof(unittest.TestCase):
         duplicate = '<article class="job-card" data-job-title="Program Manager"><a href="/jobs/123">View Job</a><a href="/jobs/123">Apply</a></article>'
         duplicate_rows = USRemoteAcquirer._html_rows(source, duplicate, SOURCES[0][2], NOW)
         self.assertEqual(len(duplicate_rows), 1)
+
+        motion = {"id": "motion-recruitment", "company": "Motion Recruitment"}
+        motion_rows = USRemoteAcquirer._html_rows(motion, FIXTURES["motion-recruitment"], SOURCES[4][2], NOW)
+        self.assertEqual(len(motion_rows), 1)
+        self.assertEqual(motion_rows[0].role, "IT Project Manager / Duck Creek")
+        self.assertTrue(motion_rows[0].source_apply_url.endswith("/888237"))
+        self.assertNotIn("project-management", motion_rows[0].source_apply_url)
 
     def test_unprovable_html_stays_degraded_and_explicit_searched_zero_completes(self):
         source = {"id": "experis", "company": "Experis", "kind": "html", "url": SOURCES[1][2], "enabled": True}
