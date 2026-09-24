@@ -11,6 +11,7 @@ __test__ = False
 
 import unittest
 from contextlib import redirect_stdout
+from dataclasses import replace
 from datetime import datetime, timezone
 from io import StringIO
 from types import SimpleNamespace
@@ -41,14 +42,15 @@ PROFILE = FitProfile(
 )
 
 
-def _observation(source_id: str = "synthetic-source") -> SourceVacancyObservation:
+def _observation(source_id: str = "synthetic-source", index: int = 1) -> SourceVacancyObservation:
+    url = f"https://boards.greenhouse.io/synthetic/jobs/{index}"
     return SourceVacancyObservation(
-        evidence_ref=f"us-web:{source_id}:vacancy-1", source_provider=source_id,
+        evidence_ref=f"us-web:{source_id}:vacancy-{index}", source_provider=source_id,
         source_mailbox="public-web", source_message_id=source_id,
         source_subject="Program Manager", company="Synthetic Co",
         role="Program Manager", location_text="Remote, United States",
-        compensation_text=None, source_apply_url="https://boards.greenhouse.io/synthetic/jobs/1",
-        provider_job_id="synthetic-1", provider_score=99, source_received_at=NOW,
+        compensation_text=None, source_apply_url=url,
+        provider_job_id=f"synthetic-{index}", provider_score=99, source_received_at=NOW,
     )
 
 
@@ -98,6 +100,18 @@ class _FakeAcquirer:
         )
 
 
+class _VolumeAcquirer(_FakeAcquirer):
+    def acquire(self, registry, **kwargs):
+        observations = tuple(
+            replace(_observation(index=index), company=f"Synthetic Co {index}")
+            for index in range(1, 1024)
+        )
+        return AcquisitionResult(
+            observations=observations,
+            sources=(SourceHealth("synthetic-volume", "COMPLETE", len(observations)),),
+        )
+
+
 class _CountingAuthoritativeRepository(InMemoryCareerRepository):
     """Production-shaped lookup accounting.
 
@@ -110,6 +124,8 @@ class _CountingAuthoritativeRepository(InMemoryCareerRepository):
         super().__init__()
         self.stable_key_queries = 0
         self.apply_url_queries = 0
+        self.stable_key_query_sizes = []
+        self.upsert_calls = 0
 
     def known(self, stable_job_keys):
         return {
@@ -119,12 +135,21 @@ class _CountingAuthoritativeRepository(InMemoryCareerRepository):
         }
 
     def get_many(self, stable_job_keys):
-        self.stable_key_queries += 1
-        return super().get_many(stable_job_keys)
+        found = {}
+        for offset in range(0, len(stable_job_keys), 50):
+            chunk = stable_job_keys[offset:offset + 50]
+            self.stable_key_queries += 1
+            self.stable_key_query_sizes.append(len(chunk))
+            found.update(super().get_many(chunk))
+        return found
 
     def get_by_apply_urls(self, apply_urls):
         self.apply_url_queries += 1
         return super().get_by_apply_urls(apply_urls)
+
+    def upsert(self, record):
+        self.upsert_calls += 1
+        return super().upsert(record)
 
 
 class _BrokenSourceAcquirer(_FakeAcquirer):
@@ -247,6 +272,58 @@ class UsRemoteReentryProof(unittest.TestCase):
         # execution-local known() satisfies enrichment without either query.
         self.assertEqual(repository.stable_key_queries, 1)
         self.assertEqual(repository.apply_url_queries, 0)
+
+    def test_execute_us_remote_production_volume_two_pass_request_topology(self):
+        """1,023-observation recovery keeps the second identity phase empty."""
+        repository = _CountingAuthoritativeRepository()
+        terminal_html = (
+            "<h1>Program Manager</h1><p>Responsibilities</p>"
+            "<ul><li>Lead program delivery and cloud platform adoption.</li>"
+            "<li>Own strategy across complex initiatives.</li></ul>"
+            "<p>Required qualifications: 5 years experience in program management.</p>"
+        )
+        browser_evidence = {
+            "pages": [
+                {
+                    "url": f"https://boards.greenhouse.io/synthetic/jobs/{index}",
+                    "final_url": f"https://boards.greenhouse.io/synthetic/jobs/{index}",
+                    "html": terminal_html,
+                }
+                for index in range(1, 1024)
+            ]
+        }
+        common = dict(
+            context=RunContext.start(timeout_seconds=120), http=_FakeHttp(), notion=SimpleNamespace(),
+            gmail=_FakeGmail(), registry={"tier1_employers": [], "staffing_agencies": [], "discovery_helpers": []},
+            browser_evidence=browser_evidence, lane=LANE, lane_priority={"US Remote": 0},
+            fit_profile=PROFILE, market="US", newsletter_source_lane="US Remote",
+            notion_job_ledger_data_source_id="synthetic", inbox_start=NOW, inbox_mode="historical_recovery",
+            start=NOW, end=NOW, web_since=NOW, dry_run=False, full_web_sweep=True,
+        )
+
+        with patch("lifeos.jobs.us_remote_runtime.MailRouter", _FakeMailRouter), \
+             patch("lifeos.jobs.us_remote_runtime.NewsletterProcessor", _FakeNewsletterProcessor), \
+             patch("lifeos.jobs.us_remote_runtime.USRemoteAcquirer", _VolumeAcquirer), \
+             patch("lifeos.jobs.us_remote_runtime.NotionCareerRepository", lambda **kwargs: repository):
+            first = execute_us_remote(**common)
+            first_stable_queries = repository.stable_key_queries
+            first_apply_queries = repository.apply_url_queries
+            first_upserts = repository.upsert_calls
+            second = execute_us_remote(**{**common, "context": RunContext.start(timeout_seconds=120)})
+
+        self.assertEqual(first.exit_code, 0)
+        self.assertEqual(second.exit_code, 0)
+        self.assertEqual(first.body["status"], "PASS")
+        self.assertEqual(second.body["status"], "PASS")
+        self.assertEqual(len(repository._store), 1023)
+        self.assertEqual(first_stable_queries, 41)
+        self.assertEqual(first_apply_queries, 0)
+        self.assertEqual(repository.stable_key_queries - first_stable_queries, 0)
+        self.assertEqual(repository.apply_url_queries - first_apply_queries, 0)
+        self.assertEqual(first_upserts, 2046)
+        self.assertEqual(repository.upsert_calls - first_upserts, 2046)
+        self.assertEqual(max(repository.stable_key_query_sizes), 50)
+        self.assertEqual(len(repository.stable_key_query_sizes), 41)
 
     def test_production_script_is_the_composition_root_and_passes_full_sweep(self):
         from scripts import run_us_remote_production
