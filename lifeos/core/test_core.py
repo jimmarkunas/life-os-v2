@@ -25,7 +25,12 @@ class FakeClock:
 
 
 class RunContextTests(unittest.TestCase):
-    def test_default_http_concurrency_stays_eight_and_explicit_context_reaches_eighteen(self) -> None:
+    def test_bounded_timeout_never_exceeds_remaining_budget(self) -> None:
+        clock = FakeClock()
+        context = RunContext.start(timeout_seconds=10, monotonic_clock=clock)
+        clock.value += 7
+        self.assertAlmostEqual(context.bounded_timeout(8), 3.0)
+
         class BlockingBackend:
             def __init__(self):
                 self.active = 0
@@ -70,12 +75,6 @@ class RunContextTests(unittest.TestCase):
             context.require_time()
         with self.assertRaises(ValueError):
             RunContext.start(timeout_seconds=MAX_RUNTIME_SECONDS + 0.1)
-
-    def test_bounded_timeout_never_exceeds_remaining_budget(self) -> None:
-        clock = FakeClock()
-        context = RunContext.start(timeout_seconds=10, monotonic_clock=clock)
-        clock.value += 7
-        self.assertAlmostEqual(context.bounded_timeout(8), 3.0)
 
     def test_terminal_result_shape_is_small_and_structured(self) -> None:
         passed = ExecutionResult.passed(7, count=2)
