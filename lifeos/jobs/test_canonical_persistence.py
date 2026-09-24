@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import date
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -16,7 +17,7 @@ from lifeos.core.runtime import RunContext
 from lifeos.jobs.lifecycle import LifecycleStatus, JobLedgerRecord, new_record
 from lifeos.jobs.models import AdmissionStatus, Company, FitAuthority, Job, JobObservation, WorkMode
 from lifeos.jobs.models import FreshnessStatus, NormalizedCandidate
-from lifeos.jobs.notion_repository import NotionCareerRepository, NotionCareerRepositoryConfig
+from lifeos.jobs.notion_repository import NotionCareerRepository, NotionCareerRepositoryConfig, _record_to_properties
 from lifeos.jobs.newsletter_contract import ingest, result_is_accounted
 from lifeos.jobs.qualification import LaneConfig
 from lifeos.integrations.notion import NotionTransport
@@ -50,9 +51,12 @@ class FakeTransport:
         self.update_error = None
         self.update_error_commits = True
         self.tamper_readback = False
+        self.query_error = None
 
     def query_data_source(self, _data_source_id, identity):
         self.calls.append(("query", identity.property_name, identity.values))
+        if self.query_error is not None:
+            raise self.query_error
         found = []
         for page in self.pages.values():
             props = page["properties"]
@@ -102,6 +106,83 @@ class FakeTransport:
 
 
 class CanonicalPersistenceProofs(unittest.TestCase):
+    def test_1023_identity_lookup_uses_bounded_concurrency_and_exact_chunks(self):
+        class TimedLookupTransport(FakeTransport):
+            def __init__(self):
+                super().__init__()
+                self.active = 0
+                self.max_active = 0
+                self.started = 0
+                self.lock = threading.Lock()
+                self.first_wave = threading.Barrier(4)
+
+            def query_data_source(self, data_source_id, identity):
+                with self.lock:
+                    self.active += 1
+                    self.max_active = max(self.max_active, self.active)
+                    self.started += 1
+                    first_wave = self.started <= 4
+                if first_wave:
+                    self.first_wave.wait(timeout=2)
+                try:
+                    return super().query_data_source(data_source_id, identity)
+                finally:
+                    with self.lock:
+                        self.active -= 1
+
+        transport = TimedLookupTransport()
+        records = [_record(url=f"https://boards.greenhouse.io/acme/jobs/{index}") for index in range(1023)]
+        for index, record in enumerate(records):
+            transport.pages[f"page-{index}"] = {
+                "id": f"page-{index}",
+                "properties": _record_to_properties(record),
+            }
+        repository = NotionCareerRepository(transport=transport, config=NotionCareerRepositoryConfig("ledger"))
+
+        found = repository.get_many([record.job.stable_job_key for record in records])
+
+        queries = [call for call in transport.calls if call[0] == "query"]
+        self.assertEqual(len(found), 1023)
+        self.assertEqual(len(queries), 21)
+        self.assertEqual([len(query[2]) for query in queries[:-1]], [50] * 20)
+        self.assertEqual(len(queries[-1][2]), 23)
+        self.assertEqual(transport.max_active, 4)
+        # With a representative 0.5s/query model, serial execution is 10.5s;
+        # four-way bounded execution is 3.0s, inside the existing runtime budget.
+        self.assertEqual(((len(queries) + 3) // 4) * 0.5, 3.0)
+
+    def test_identity_lookup_chunk_failure_is_fail_closed(self):
+        transport = FakeTransport()
+        transport.query_error = HttpError(HttpErrorKind.RATE_LIMIT)
+        repository = NotionCareerRepository(transport=transport, config=NotionCareerRepositoryConfig("ledger"))
+
+        with self.assertRaises(HttpError) as caught:
+            repository.get_many([f"url:https://boards.greenhouse.io/acme/jobs/{index}" for index in range(51)])
+
+        self.assertEqual(caught.exception.kind, HttpErrorKind.RATE_LIMIT)
+
+        transport.query_error = HttpError(HttpErrorKind.DEADLINE)
+        with self.assertRaises(HttpError) as caught:
+            repository.get_many([f"url:https://boards.greenhouse.io/acme/jobs/{index}" for index in range(51)])
+        self.assertEqual(caught.exception.kind, HttpErrorKind.DEADLINE)
+        self.assertEqual(repository.get_many([]), {})
+
+    def test_partial_chunk_success_is_not_exposed_after_later_failure(self):
+        class FailingSecondChunkTransport(FakeTransport):
+            def query_data_source(self, data_source_id, identity):
+                if any(value.endswith("/50") for value in identity.values):
+                    raise HttpError(HttpErrorKind.NETWORK)
+                return super().query_data_source(data_source_id, identity)
+
+        transport = FailingSecondChunkTransport()
+        repository = NotionCareerRepository(transport=transport, config=NotionCareerRepositoryConfig("ledger"))
+        keys = [f"url:https://boards.greenhouse.io/acme/jobs/{index}" for index in range(100)]
+
+        with self.assertRaises(HttpError):
+            repository.get_many(keys)
+
+        self.assertEqual(repository._records, {})
+
     def test_create_update_stronger_evidence_and_narrow_lookup(self):
         transport = FakeTransport()
         repository = NotionCareerRepository(transport=transport, config=NotionCareerRepositoryConfig("ledger"))

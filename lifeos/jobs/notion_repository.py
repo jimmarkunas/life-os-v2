@@ -18,6 +18,7 @@ CareerRepository Protocol.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
@@ -31,6 +32,7 @@ from lifeos.jobs.repository import ReadBackMismatch
 
 STABLE_KEY_PROPERTY = "Stable Job Key"
 MAX_IDENTITY_VALUES_PER_QUERY = 50  # matches NotionIdentityQuery's own cap
+MAX_IDENTITY_QUERY_CONCURRENCY = 4
 _AMBIGUOUS_WRITE_KINDS = frozenset({HttpErrorKind.DEADLINE, HttpErrorKind.TIMEOUT})
 
 
@@ -304,14 +306,18 @@ class NotionCareerRepository:
         # NotionIdentityQuery caps a single filter at _MAX_IDENTITY_VALUES
         # (50). Chunk into bounded batches -- never a full-ledger scan, just
         # multiple narrow identity-filtered queries for the same requested set.
+        chunks = _chunk(stable_job_keys, MAX_IDENTITY_VALUES_PER_QUERY)
+        if len(chunks) == 1:
+            page_chunks = [self._query_identity_chunk(chunks[0])]
+        else:
+            with ThreadPoolExecutor(max_workers=min(MAX_IDENTITY_QUERY_CONCURRENCY, len(chunks))) as pool:
+                futures = [pool.submit(self._query_identity_chunk, chunk) for chunk in chunks]
+                # Resolve every future before exposing any result. A failed
+                # chunk therefore fails the complete lookup, never a partial map.
+                page_chunks = [future.result() for future in futures]
+
         found: dict[str, JobLedgerRecord] = {}
-        for chunk in _chunk(stable_job_keys, MAX_IDENTITY_VALUES_PER_QUERY):
-            query = NotionIdentityQuery(
-                property_name=STABLE_KEY_PROPERTY,
-                property_type="rich_text",
-                values=tuple(chunk),
-            )
-            pages = self._transport.query_data_source(self._config.data_source_id, query)
+        for pages in page_chunks:
             for page in pages:
                 record = _page_to_record(page)
                 key = record.job.stable_job_key
@@ -321,6 +327,14 @@ class NotionCareerRepository:
                     self._page_ids[key] = str(page_id)
                 self._records[key] = record
         return found
+
+    def _query_identity_chunk(self, chunk: list[str]) -> tuple[dict[str, Any], ...]:
+        query = NotionIdentityQuery(
+            property_name=STABLE_KEY_PROPERTY,
+            property_type="rich_text",
+            values=tuple(chunk),
+        )
+        return self._transport.query_data_source(self._config.data_source_id, query)
 
     def get_by_apply_urls(self, apply_urls: list[str]) -> dict[str, JobLedgerRecord]:
         canonical_urls = list(dict.fromkeys(url for url in (canonical_url(value) for value in apply_urls) if url))
