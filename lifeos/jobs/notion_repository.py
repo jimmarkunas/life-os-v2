@@ -453,6 +453,7 @@ class NotionCareerRepository:
             page_id = written.get("id")
             if not page_id: raise ReadBackMismatch(f"Notion create response for {key} did not return a page id")
             self._page_ids[key] = str(page_id)
+
         persisted = self.get_many(list(pending)) if pending else {}
         missing = [key for key in pending if key not in persisted]
         if missing: raise ReadBackMismatch(f"authoritative batch read-back missing {missing[0]}")

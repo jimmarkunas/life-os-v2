@@ -9,11 +9,12 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date
-from threading import Lock
+from threading import Event, Lock
 
 from lifeos.core.http import HttpClient, RetryPolicy
 from lifeos.core.runtime import DeadlineExceeded, RunContext
 from lifeos.jobs.fit_scoring import FitProfile
+from lifeos.jobs.identity import canonical_url
 from lifeos.jobs.fit_title_semantics import classify_title
 from lifeos.jobs.fit_requirement_extraction import extract_requirements
 from lifeos.jobs.fit_scoreability import compile_fit
@@ -107,7 +108,16 @@ class NewsletterAdapterConfig:
     fallback_fetcher: Fetcher | None = None
 
 
-MAX_ADAPT_WORKERS = 8
+MAX_ADAPT_WORKERS = 18
+
+
+class TerminalEvidenceCache:
+    """Execution-scoped single-flight terminal evidence cache."""
+
+    def __init__(self) -> None:
+        self.values: dict[str, TerminalVacancyEvidence | None] = {}
+        self.in_flight: dict[str, Event] = {}
+        self.lock = Lock()
 
 
 def _unresolved_candidate(
@@ -174,10 +184,12 @@ def _adapt_all(
 
 
 class NewsletterJobsAdapter:
-    def __init__(self, config: NewsletterAdapterConfig) -> None:
+    def __init__(self, config: NewsletterAdapterConfig, *, terminal_cache: TerminalEvidenceCache | None = None) -> None:
         self._config = config
-        self._terminal_evidence_cache: dict[str, TerminalVacancyEvidence | None] = {}
-        self._terminal_evidence_lock = Lock()
+        cache = terminal_cache or TerminalEvidenceCache()
+        self._terminal_evidence_cache = cache.values
+        self._terminal_evidence_in_flight = cache.in_flight
+        self._terminal_evidence_lock = cache.lock
 
     def to_identity_candidate(self, observation: SourceVacancyObservation) -> NormalizedCandidate:
         cfg = self._config
@@ -300,11 +312,24 @@ class NewsletterJobsAdapter:
         # Protect only cache access. Holding this lock across network/browser
         # resolution serialized every distinct job URL and defeated _adapt_all's
         # worker pool under large Newsletter batches.
-        cache_key = f"{company or ''}|{provider_job_id or ''}" if provider_job_id else source_apply_url
+        cache_key = canonical_url(source_apply_url) or source_apply_url
         with self._terminal_evidence_lock:
             if cache_key in self._terminal_evidence_cache:
                 return self._terminal_evidence_cache[cache_key]
+            waiter = self._terminal_evidence_in_flight.get(cache_key)
+            if waiter is None:
+                waiter = Event()
+                self._terminal_evidence_in_flight[cache_key] = waiter
+                owner = True
+            else:
+                owner = False
 
+        if not owner:
+            waiter.wait()
+            with self._terminal_evidence_lock:
+                return self._terminal_evidence_cache.get(cache_key)
+
+        evidence = None
         try:
             evidence = acquire_terminal_vacancy_evidence(
                 source_apply_url,
@@ -316,8 +341,9 @@ class NewsletterJobsAdapter:
             )
         except Exception:
             evidence = None
-
-        with self._terminal_evidence_lock:
-            # A concurrent duplicate URL may have completed first. Preserve the
-            # first cached result while allowing distinct URLs to resolve in parallel.
-            return self._terminal_evidence_cache.setdefault(cache_key, evidence)
+        finally:
+            with self._terminal_evidence_lock:
+                self._terminal_evidence_cache[cache_key] = evidence
+                waiter = self._terminal_evidence_in_flight.pop(cache_key)
+                waiter.set()
+        return evidence

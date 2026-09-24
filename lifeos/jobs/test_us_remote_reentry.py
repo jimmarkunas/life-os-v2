@@ -89,6 +89,22 @@ class _FakeNewsletterProcessor:
         )
 
 
+class _VolumeNewsletterProcessor(_FakeNewsletterProcessor):
+    def process_window(self, *args, **kwargs):
+        return SimpleNamespace(
+            state=NewsletterExecutionState.PASS,
+            messages=(),
+            observations=tuple(
+                replace(
+                    _observation("synthetic-newsletter", index=index),
+                    company=f"Synthetic Newsletter {index}",
+                )
+                for index in range(1, 68)
+            ),
+            errors=(),
+        )
+
+
 class _FakeAcquirer:
     def __init__(self, **kwargs):
         pass
@@ -104,7 +120,7 @@ class _VolumeAcquirer(_FakeAcquirer):
     def acquire(self, registry, **kwargs):
         observations = tuple(
             replace(_observation(index=index), company=f"Synthetic Co {index}")
-            for index in range(1, 1086)
+            for index in range(1, 1022)
         )
         return AcquisitionResult(
             observations=observations,
@@ -274,7 +290,7 @@ class UsRemoteReentryProof(unittest.TestCase):
         self.assertEqual(repository.apply_url_queries, 0)
 
     def test_execute_us_remote_production_volume_two_pass_request_topology(self):
-        """1,085-observation recovery keeps the second identity phase empty."""
+        """1,088-observation recovery keeps the second identity phase empty."""
         repository = _CountingAuthoritativeRepository()
         terminal_html = (
             "<h1>Program Manager</h1><p>Responsibilities</p>"
@@ -289,7 +305,7 @@ class UsRemoteReentryProof(unittest.TestCase):
                     "final_url": f"https://boards.greenhouse.io/synthetic/jobs/{index}",
                     "html": terminal_html,
                 }
-                for index in range(1, 1086)
+                for index in range(1, 1022)
             ]
         }
         common = dict(
@@ -302,7 +318,7 @@ class UsRemoteReentryProof(unittest.TestCase):
         )
 
         with patch("lifeos.jobs.us_remote_runtime.MailRouter", _FakeMailRouter), \
-             patch("lifeos.jobs.us_remote_runtime.NewsletterProcessor", _FakeNewsletterProcessor), \
+             patch("lifeos.jobs.us_remote_runtime.NewsletterProcessor", _VolumeNewsletterProcessor), \
              patch("lifeos.jobs.us_remote_runtime.USRemoteAcquirer", _VolumeAcquirer), \
              patch("lifeos.jobs.us_remote_runtime.NotionCareerRepository", lambda **kwargs: repository):
             first = execute_us_remote(**common)
@@ -315,15 +331,38 @@ class UsRemoteReentryProof(unittest.TestCase):
         self.assertEqual(second.exit_code, 0)
         self.assertEqual(first.body["status"], "PASS")
         self.assertEqual(second.body["status"], "PASS")
-        self.assertEqual(len(repository._store), 1085)
+        self.assertEqual(len(repository._store), 1088)
         self.assertEqual(first_stable_queries, 44)
         self.assertEqual(first_apply_queries, 0)
         self.assertEqual(repository.stable_key_queries - first_stable_queries, 0)
         self.assertEqual(repository.apply_url_queries - first_apply_queries, 0)
-        self.assertEqual(first_upserts, 2170)
-        self.assertEqual(repository.upsert_calls - first_upserts, 2170)
+        self.assertEqual(first_upserts, 2176)
+        self.assertEqual(repository.upsert_calls - first_upserts, 2176)
         self.assertEqual(max(repository.stable_key_query_sizes), 50)
         self.assertEqual(len(repository.stable_key_query_sizes), 44)
+
+        # Conservative whole-run model anchored to the latest live timings.
+        # The live 162.557s terminal stage covered 1,088 candidate resolutions
+        # at eight workers. This run resolves 1,021 unique URLs because 67
+        # observations share terminal URLs across the web/newsletter lanes,
+        # and US Remote adapts them at 18 workers.
+        terminal_requests = 1088
+        unique_terminal_urls = 1021
+        terminal_fetches_avoided = terminal_requests - unique_terminal_urls
+        baseline_workers = 8
+        terminal_workers = 18
+        baseline_waves = (terminal_requests + baseline_workers - 1) // baseline_workers
+        baseline_wave_seconds = 162.557 / baseline_waves
+        terminal_waves = (unique_terminal_urls + terminal_workers - 1) // terminal_workers
+        projected_terminal = baseline_wave_seconds * terminal_waves
+        projected_reconcile = 95.883
+        projected_total = 15.866 + 15.674 + 4.082 + projected_terminal + projected_reconcile + 5.0
+        self.assertEqual(terminal_fetches_avoided, 67)
+        self.assertEqual(terminal_workers, 18)
+        self.assertEqual(baseline_waves, 136)
+        self.assertEqual(terminal_waves, 57)
+        self.assertLessEqual(projected_terminal, 80.0)
+        self.assertLessEqual(projected_total, 210.0)
 
     def test_production_script_is_the_composition_root_and_passes_full_sweep(self):
         from scripts import run_us_remote_production

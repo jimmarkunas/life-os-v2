@@ -15,7 +15,7 @@ from lifeos.core.runtime import DeadlineExceeded, RunContext
 from lifeos.integrations.gmail import GmailInboxMetadataPort, GmailMailboxTransport
 from lifeos.integrations.notion import NotionTransport
 from lifeos.jobs.fit_scoring import FitProfile
-from lifeos.jobs.newsletter_adapter import HttpClientFetcher, NewsletterAdapterConfig, NewsletterJobsAdapter
+from lifeos.jobs.newsletter_adapter import HttpClientFetcher, NewsletterAdapterConfig, NewsletterJobsAdapter, TerminalEvidenceCache
 from lifeos.jobs.newsletter_contract import Disposition, IngestResult, derive_review_these_jobs, ingest, result_is_accounted
 from lifeos.jobs.newsletter_adapter import _adapt_all
 from lifeos.jobs.notion_repository import NotionCareerRepository, NotionCareerRepositoryConfig
@@ -30,7 +30,7 @@ from lifeos.newsletter.processor import NewsletterExecutionState, NewsletterProc
 NEWSLETTER_BOUNDARY = "J Newsletters"
 
 _SOURCE_REGISTRY = Path(__file__).resolve().parents[2] / "contracts" / "us_remote_sources.json"
-_TERMINAL_RESOLUTION_WORKERS = 8
+_TERMINAL_RESOLUTION_WORKERS = 18
 
 
 def load_registry() -> dict:
@@ -260,6 +260,7 @@ def execute_us_remote(
             config=NotionCareerRepositoryConfig(data_source_id=notion_job_ledger_data_source_id),
         )
         http_fetcher = HttpClientFetcher(http=http, context=context)
+        terminal_cache = TerminalEvidenceCache()
         newsletter_adapter = NewsletterJobsAdapter(
             NewsletterAdapterConfig(
                 fetcher=http_fetcher,
@@ -267,7 +268,8 @@ def execute_us_remote(
                 fit_profile=fit_profile,
                 market=market,
                 source_lane=newsletter_source_lane,
-            )
+            ),
+            terminal_cache=terminal_cache,
         )
         web_adapter = NewsletterJobsAdapter(
             NewsletterAdapterConfig(
@@ -276,7 +278,8 @@ def execute_us_remote(
                 fit_profile=fit_profile,
                 market=market,
                 source_lane="US Web",
-            )
+            ),
+            terminal_cache=terminal_cache,
         )
 
         initial_candidates = [
@@ -320,13 +323,13 @@ def execute_us_remote(
             newsletter_enrichment_observations,
             adapter=newsletter_adapter,
             context=context,
-            max_workers=8,
+            max_workers=_TERMINAL_RESOLUTION_WORKERS,
         )
         web_candidates = _adapt_all(
             web_enrichment_observations,
             adapter=web_adapter,
             context=context,
-            max_workers=8,
+            max_workers=_TERMINAL_RESOLUTION_WORKERS,
         )
         newsletter_candidates = [
             replace(

@@ -58,6 +58,7 @@ jobs:
 
       - name: PRE_MERGE_RUNTIME_GATE — Jobs vertical slice and request budget
         run: |
+          python -m unittest lifeos.jobs.test_terminal_evidence
           python -m unittest lifeos.jobs.test_us_remote_reentry
           python -m unittest lifeos.jobs.test_canonical_persistence
           PYTHONPATH=. python scripts/jobs_user_outcome_gate.py
