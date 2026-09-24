@@ -144,8 +144,7 @@ class CanonicalPersistenceProofs(unittest.TestCase):
         queries = [call for call in transport.calls if call[0] == "query"]
         self.assertEqual(len(found), 1023)
         self.assertEqual(len(queries), 21)
-        self.assertEqual([len(query[2]) for query in queries[:-1]], [50] * 20)
-        self.assertEqual(len(queries[-1][2]), 23)
+        self.assertEqual(sorted(len(query[2]) for query in queries), [23] + [50] * 20)
         self.assertEqual(transport.max_active, 4)
         # With a representative 0.5s/query model, serial execution is 10.5s;
         # four-way bounded execution is 3.0s, inside the existing runtime budget.
