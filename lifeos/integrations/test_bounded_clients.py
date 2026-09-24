@@ -144,6 +144,5 @@ class IntegrationBoundTests(unittest.TestCase):
         self.assertEqual(mailbox.scan_window(START, END), ())
         self.assertEqual(backend.calls, 2)
 
-
 if __name__ == "__main__":
     unittest.main()

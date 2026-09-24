@@ -207,6 +207,7 @@ def ingest(
 
     reconciled = reconcile(observations, lane_priority=lane_priority)
 
+    pending = []
     for reconciled_job in reconciled:
         key = reconciled_job.job.stable_job_key
         same_key_indices = [i for i, (_, observed_key) in live_by_index.items() if observed_key == key]
@@ -228,7 +229,6 @@ def ingest(
         try:
             if existing is None:
                 record = new_record(reconciled_job.job, run_date=run_date)
-                persisted = repository.upsert(record)
                 primary_disposition = Disposition.CREATED
             else:
                 record = apply_observation(
@@ -237,7 +237,6 @@ def ingest(
                     run_date=run_date,
                     lane_priority=lane_priority,
                 )
-                persisted = repository.upsert(record)
                 primary_disposition = Disposition.UPDATED
         except Exception as exc:
             label = "read-back mismatch" if isinstance(exc, ReadBackMismatch) else f"repository failure ({type(exc).__name__})"
@@ -246,6 +245,20 @@ def ingest(
                 results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, key, f"persistence {label}: {exc}", {"mismatches": getattr(exc, "mismatches", []), "error_type": type(exc).__name__, "operation": getattr(exc, "operation", None), "retry_limit": getattr(exc, "retry_limit", None), "attempts": getattr(exc, "attempts", None), "category": getattr(getattr(exc, "kind", None), "value", None), "retry_after_seconds": getattr(exc, "retry_after_seconds", None)})
             continue
 
+        pending.append((key, record, same_key_indices, primary_index, primary_candidate, primary_disposition))
+    persisted_items = []
+    if pending:
+        try:
+            batch_upsert = getattr(repository, "upsert_many", None)
+            persisted_by_key = batch_upsert([item[1] for item in pending]) if callable(batch_upsert) else {item[0]: repository.upsert(item[1]) for item in pending}
+            persisted_items = [(*item[:1], persisted_by_key[item[0]], *item[2:]) for item in pending]
+        except Exception as exc:
+            label = "read-back mismatch" if isinstance(exc, ReadBackMismatch) else f"repository failure ({type(exc).__name__})"
+            for key, _record, same_key_indices, _primary_index, _primary_candidate, _disposition in pending:
+                for i in same_key_indices:
+                    candidate = candidates[i]
+                    results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, key, f"persistence {label}: {exc}", {"mismatches": getattr(exc, "mismatches", []), "error_type": type(exc).__name__, "operation": getattr(exc, "operation", None), "retry_limit": getattr(exc, "retry_limit", None), "attempts": getattr(exc, "attempts", None), "category": getattr(getattr(exc, "kind", None), "value", None), "retry_after_seconds": getattr(exc, "retry_after_seconds", None)})
+    for key, persisted, same_key_indices, primary_index, primary_candidate, primary_disposition in persisted_items:
         for i in same_key_indices:
             candidate, _ = live_by_index[i]
             qualification = qualification_by_index[i]

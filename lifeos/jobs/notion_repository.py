@@ -374,3 +374,35 @@ class NotionCareerRepository:
             mismatches = [{"field": field, "expected": repr(left)[:180], "actual": repr(right)[:180]} for field, left, right in zip(fields, expected, actual) if left != right]
             raise ReadBackMismatch(f"read-back mismatch for {key}", mismatches=mismatches)
         return persisted
+
+    def upsert_many(self, records: list[JobLedgerRecord]) -> dict[str, JobLedgerRecord]:
+        expected = {record.job.stable_job_key: record for record in records}
+        if len(expected) != len(records): raise ReadBackMismatch("duplicate stable Job Key in persistence batch")
+        for key, record in expected.items():
+            properties, page_id = _record_to_properties(record), self._page_ids.get(key)
+            if page_id:
+                try:
+                    written = self._transport.update_page(page_id, properties)
+                except TimeoutError:
+                    observed = _page_to_record(self._transport.get_page(page_id))
+                    if _canonical_view(observed) == _canonical_view(record): continue
+                    written = self._transport.update_page(page_id, properties)
+                self._page_ids[key] = str(written.get("id") or page_id)
+                continue
+            try:
+                written = self._transport.create_page(self._config.data_source_id, properties)
+            except TimeoutError:
+                observed = self.get_many([key]).get(key)
+                if observed is not None:
+                    if _canonical_view(observed) != _canonical_view(record): raise ReadBackMismatch(f"ambiguous create resolved to mismatched row for {key}")
+                    continue
+                written = self._transport.create_page(self._config.data_source_id, properties)
+            page_id = written.get("id")
+            if not page_id: raise ReadBackMismatch(f"Notion create response for {key} did not return a page id")
+            self._page_ids[key] = str(page_id)
+        persisted = self.get_many(list(expected))
+        missing = [key for key in expected if key not in persisted]
+        if missing: raise ReadBackMismatch(f"authoritative batch read-back missing {missing[0]}")
+        for key, record in expected.items():
+            if _canonical_view(persisted[key]) != _canonical_view(record): raise ReadBackMismatch(f"read-back mismatch for {key}")
+        return persisted
