@@ -104,7 +104,7 @@ class _VolumeAcquirer(_FakeAcquirer):
     def acquire(self, registry, **kwargs):
         observations = tuple(
             replace(_observation(index=index), company=f"Synthetic Co {index}")
-            for index in range(1, 1024)
+            for index in range(1, 1086)
         )
         return AcquisitionResult(
             observations=observations,
@@ -274,7 +274,7 @@ class UsRemoteReentryProof(unittest.TestCase):
         self.assertEqual(repository.apply_url_queries, 0)
 
     def test_execute_us_remote_production_volume_two_pass_request_topology(self):
-        """1,023-observation recovery keeps the second identity phase empty."""
+        """1,085-observation recovery keeps the second identity phase empty."""
         repository = _CountingAuthoritativeRepository()
         terminal_html = (
             "<h1>Program Manager</h1><p>Responsibilities</p>"
@@ -289,7 +289,7 @@ class UsRemoteReentryProof(unittest.TestCase):
                     "final_url": f"https://boards.greenhouse.io/synthetic/jobs/{index}",
                     "html": terminal_html,
                 }
-                for index in range(1, 1024)
+                for index in range(1, 1086)
             ]
         }
         common = dict(
@@ -315,15 +315,15 @@ class UsRemoteReentryProof(unittest.TestCase):
         self.assertEqual(second.exit_code, 0)
         self.assertEqual(first.body["status"], "PASS")
         self.assertEqual(second.body["status"], "PASS")
-        self.assertEqual(len(repository._store), 1023)
-        self.assertEqual(first_stable_queries, 41)
+        self.assertEqual(len(repository._store), 1085)
+        self.assertEqual(first_stable_queries, 44)
         self.assertEqual(first_apply_queries, 0)
         self.assertEqual(repository.stable_key_queries - first_stable_queries, 0)
         self.assertEqual(repository.apply_url_queries - first_apply_queries, 0)
-        self.assertEqual(first_upserts, 2046)
-        self.assertEqual(repository.upsert_calls - first_upserts, 2046)
+        self.assertEqual(first_upserts, 2170)
+        self.assertEqual(repository.upsert_calls - first_upserts, 2170)
         self.assertEqual(max(repository.stable_key_query_sizes), 50)
-        self.assertEqual(len(repository.stable_key_query_sizes), 41)
+        self.assertEqual(len(repository.stable_key_query_sizes), 44)
 
     def test_production_script_is_the_composition_root_and_passes_full_sweep(self):
         from scripts import run_us_remote_production
