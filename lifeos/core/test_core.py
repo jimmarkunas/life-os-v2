@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import unittest
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from time import sleep
 from datetime import datetime, timezone
 
 from lifeos.core.runtime import (
@@ -10,6 +13,7 @@ from lifeos.core.runtime import (
     MAX_RUNTIME_SECONDS,
     RunContext,
 )
+from lifeos.core.http import HttpClient, HttpResponse
 
 
 class FakeClock:
@@ -21,6 +25,37 @@ class FakeClock:
 
 
 class RunContextTests(unittest.TestCase):
+    def test_bounded_timeout_never_exceeds_remaining_budget(self) -> None:
+        clock = FakeClock()
+        context = RunContext.start(timeout_seconds=10, monotonic_clock=clock)
+        clock.value += 7
+        self.assertAlmostEqual(context.bounded_timeout(8), 3.0)
+
+        class BlockingBackend:
+            def __init__(self):
+                self.active = 0
+                self.peak = 0
+                self.lock = threading.Lock()
+
+            def request(self, method, url, *, headers, body, timeout_seconds):
+                with self.lock:
+                    self.active += 1
+                    self.peak = max(self.peak, self.active)
+                sleep(0.03)
+                with self.lock:
+                    self.active -= 1
+                return HttpResponse(200, {}, b"ok")
+
+        def measure(context):
+            backend = BlockingBackend()
+            client = HttpClient(backend)
+            with ThreadPoolExecutor(max_workers=18) as pool:
+                list(pool.map(lambda _: client.request(context, "GET", "https://example.invalid"), range(18)))
+            return backend.peak
+
+        self.assertEqual(measure(RunContext.start(timeout_seconds=30)), 8)
+        self.assertEqual(measure(RunContext.start(timeout_seconds=30, http_concurrency=18)), 18)
+
     def test_deadline_budget_and_hard_max(self) -> None:
         clock = FakeClock()
         context = RunContext.start(
@@ -40,12 +75,6 @@ class RunContextTests(unittest.TestCase):
             context.require_time()
         with self.assertRaises(ValueError):
             RunContext.start(timeout_seconds=MAX_RUNTIME_SECONDS + 0.1)
-
-    def test_bounded_timeout_never_exceeds_remaining_budget(self) -> None:
-        clock = FakeClock()
-        context = RunContext.start(timeout_seconds=10, monotonic_clock=clock)
-        clock.value += 7
-        self.assertAlmostEqual(context.bounded_timeout(8), 3.0)
 
     def test_terminal_result_shape_is_small_and_structured(self) -> None:
         passed = ExecutionResult.passed(7, count=2)
