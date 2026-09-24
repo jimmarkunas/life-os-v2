@@ -24,7 +24,7 @@ from lifeos.jobs.fit_scoring import FitProfile
 from lifeos.jobs.newsletter_runtime import execute_newsletter
 from lifeos.jobs.qualification import LaneConfig, UNIVERSAL_FIT_FLOOR
 from lifeos.jobs.us_remote_acquisition import USRemoteAcquirer
-from lifeos.jobs.us_remote_runtime import browser_evidence, execute_us_remote, load_registry
+from lifeos.jobs.us_remote_runtime import US_REMOTE_HTTP_CONCURRENCY, browser_evidence, execute_us_remote, load_registry
 from lifeos.mail.models import MailMessage
 
 DEFAULT_TIMEOUT_SECONDS = 45.0
@@ -187,7 +187,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"BLOCKED: {exc}", file=sys.stderr)
         return 2
 
-    context = RunContext.start(timeout_seconds=args.timeout_seconds)
+    context = RunContext.start(
+        timeout_seconds=args.timeout_seconds,
+        http_concurrency=US_REMOTE_HTTP_CONCURRENCY,
+    )
     http = HttpClient()
     notion = NotionTransport(context=context, http=http, access_token=env["NOTION_API_TOKEN"])
     try:
