@@ -196,7 +196,7 @@ class NotionTransportTests(unittest.TestCase):
         reread = self.transport.get_page("updated-page")
         self.assertEqual(reread["id"], "updated-page")
 
-    def test_write_calls_are_not_retried_by_transport(self) -> None:
+    def test_write_calls_use_bounded_transport_retry(self) -> None:
         self.transport.create_page("synthetic-data-source", {})
         call = self.http.calls[-1]
-        self.assertEqual(call[2]["retry"].max_attempts, 1)
+        self.assertEqual(call[2]["retry"].max_attempts, 2)

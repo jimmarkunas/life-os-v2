@@ -12,7 +12,7 @@ from lifeos.core.runtime import RunContext
 _NOTION_API = "https://api.notion.com/v1"
 _DEFAULT_NOTION_VERSION = "2026-03-11"
 _READ_RETRY = RetryPolicy(max_attempts=2, backoff_seconds=0.1, max_backoff_seconds=1.0)
-_NO_RETRY = RetryPolicy(max_attempts=1)
+_WRITE_RETRY = RetryPolicy(max_attempts=2, backoff_seconds=0.1, max_backoff_seconds=1.0)
 _MAX_IDENTITY_VALUES = 50
 _ALLOWED_PROPERTY_TYPES = frozenset({"title", "rich_text", "url", "select", "email", "phone_number"})
 NOTION_ACCESS_TOKEN_FIELD = "NOTION_API_TOKEN"
@@ -137,7 +137,7 @@ class NotionTransport:
     def create_page(self, data_source_id: str, properties: Mapping[str, Any]) -> dict[str, Any]:
         if not data_source_id:
             raise ValueError("data_source_id is required")
-        payload = self._request_json("create_page", _NO_RETRY,
+        payload = self._request_json("create_page", _WRITE_RETRY,
             "POST",
             f"{_NOTION_API}/pages",
             headers=self._headers(),
@@ -149,7 +149,7 @@ class NotionTransport:
     def update_page(self, page_id: str, properties: Mapping[str, Any]) -> dict[str, Any]:
         if not page_id:
             raise ValueError("page_id is required")
-        payload = self._request_json("update_page", _NO_RETRY,
+        payload = self._request_json("update_page", _WRITE_RETRY,
             "PATCH",
             f"{_NOTION_API}/pages/{quote(page_id, safe='')}",
             headers=self._headers(),

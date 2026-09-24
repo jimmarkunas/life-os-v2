@@ -9,10 +9,17 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import date
 import unittest
+from unittest.mock import patch
 
+from lifeos.core.http import HttpClient, HttpError, HttpErrorKind, HttpResponse
+from lifeos.core.runtime import RunContext
 from lifeos.jobs.lifecycle import LifecycleStatus, JobLedgerRecord, new_record
 from lifeos.jobs.models import AdmissionStatus, Company, FitAuthority, Job, JobObservation, WorkMode
+from lifeos.jobs.models import FreshnessStatus, NormalizedCandidate
 from lifeos.jobs.notion_repository import NotionCareerRepository, NotionCareerRepositoryConfig
+from lifeos.jobs.newsletter_contract import ingest, result_is_accounted
+from lifeos.jobs.qualification import LaneConfig
+from lifeos.integrations.notion import NotionTransport
 from lifeos.jobs.repository import ReadBackMismatch
 
 __test__ = False
@@ -26,7 +33,7 @@ def _record(*, url: str = "https://boards.greenhouse.io/acme/jobs/1", fit: int |
         source_provider="Jobright", description_text="Required: program delivery.",
     )
     return new_record(Job(
-        stable_job_key="url:https://boards.greenhouse.io/acme/jobs/1", job=observation,
+        stable_job_key=f"url:{url}", job=observation,
         admission_status=AdmissionStatus.ADMITTED, fit=fit,
         fit_authority=FitAuthority.AUTHORITATIVE, source_providers=("Jobright",),
         source_types=("Jobright",), eligible_lanes=("US Remote",), primary_lane="US Remote",
@@ -130,6 +137,68 @@ class CanonicalPersistenceProofs(unittest.TestCase):
         self.assertEqual(persisted.job.stable_job_key, replay.job.stable_job_key)
         self.assertEqual(len(transport.pages), 1)
         self.assertEqual([call[0] for call in transport.calls].count("create"), 1)
+
+    def test_large_batch_reconciles_429_shape_with_bounded_authoritative_readback(self):
+        transport = FakeTransport()
+        transport.timeout_create = True
+        repository = NotionCareerRepository(transport=transport, config=NotionCareerRepositoryConfig("ledger"))
+        records = [_record(url=f"https://boards.greenhouse.io/acme/jobs/{index}") for index in range(101)]
+
+        persisted = repository.upsert_many(records)
+
+        self.assertEqual(len(persisted), 101)
+        self.assertEqual(len(transport.pages), 101)
+        self.assertEqual([call[0] for call in transport.calls].count("create"), 101)
+        self.assertEqual([call[0] for call in transport.calls].count("read_back"), 0)
+        queries = [call for call in transport.calls if call[0] == "query"]
+        self.assertEqual(len(queries), 4)  # ambiguous reconciliation + 50/50/1 authoritative chunks
+        self.assertEqual([len(query[2]) for query in queries[1:]], [50, 50, 1])
+
+    def test_ingest_uses_batch_owner_and_accounts_every_candidate(self):
+        transport = FakeTransport()
+        transport.timeout_create = True
+        repository = NotionCareerRepository(transport=transport, config=NotionCareerRepositoryConfig("ledger"))
+        candidates = [
+            NormalizedCandidate(
+                job=JobObservation(
+                    company=Company("Acme"), role="Program Manager", location="United States",
+                    work_mode=WorkMode.REMOTE, compensation_text=None, compensation_minimum=None,
+                    posting_date=None, apply_url=f"https://boards.greenhouse.io/acme/jobs/{index}",
+                    source_lane="US Remote", description_text="Required: program delivery.",
+                    source_provider="US Web",
+                ),
+                fit=80, market="US", freshness_status=FreshnessStatus.FRESH,
+                evidence_ref=f"evidence-{index}", fit_authority=FitAuthority.AUTHORITATIVE,
+                source_types=("US Web",),
+            )
+            for index in range(101)
+        ]
+        lane = LaneConfig("US Remote", "US", 72, None, "remote_only", None, False, None)
+
+        results = ingest(candidates, lane=lane, lane_priority={"US Remote": 0}, repository=repository, run_date=date(2026, 1, 15))
+
+        self.assertEqual(len(results), 101)
+        self.assertTrue(all(result_is_accounted(result) for result in results))
+        self.assertEqual(len(transport.pages), 101)
+        self.assertEqual([call[0] for call in transport.calls].count("read_back"), 0)
+
+    def test_notion_write_rate_limit_retry_and_permanent_failure(self):
+        class Backend:
+            def __init__(self, permanent=False): self.calls, self.permanent = 0, permanent
+            def request(self, method, url, *, headers, body, timeout_seconds):
+                self.calls += 1
+                if self.permanent or self.calls == 1: return HttpResponse(429, {"Retry-After": "0.25"}, b"{}")
+                return HttpResponse(200, {}, b'{"id":"synthetic-page"}')
+
+        backend = Backend()
+        notion = NotionTransport(context=RunContext.start(timeout_seconds=45), http=HttpClient(backend), access_token="synthetic-token")
+        with patch("lifeos.core.http.sleep") as sleep:
+            self.assertEqual(notion.create_page("synthetic-source", {})["id"], "synthetic-page")
+        self.assertEqual(backend.calls, 2)
+        sleep.assert_called_once_with(0.25)
+        with self.assertRaises(HttpError) as caught:
+            NotionTransport(context=RunContext.start(timeout_seconds=45), http=HttpClient(Backend(True)), access_token="synthetic-token").create_page("synthetic-source", {})
+        self.assertEqual(caught.exception.kind, HttpErrorKind.RATE_LIMIT)
 
 
 if __name__ == "__main__":
