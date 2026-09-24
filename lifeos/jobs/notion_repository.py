@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
 
+from lifeos.core.http import HttpError, HttpErrorKind
 from lifeos.integrations.notion import NotionIdentityQuery, NotionTransport
 from lifeos.jobs.identity import canonical_url
 from lifeos.jobs.lifecycle import JobLedgerRecord, LifecycleStatus
@@ -30,6 +31,13 @@ from lifeos.jobs.repository import ReadBackMismatch
 
 STABLE_KEY_PROPERTY = "Stable Job Key"
 MAX_IDENTITY_VALUES_PER_QUERY = 50  # matches NotionIdentityQuery's own cap
+_AMBIGUOUS_WRITE_KINDS = frozenset({HttpErrorKind.DEADLINE, HttpErrorKind.TIMEOUT})
+
+
+def _is_ambiguous_write_error(exc: BaseException) -> bool:
+    return isinstance(exc, TimeoutError) or (
+        isinstance(exc, HttpError) and exc.kind in _AMBIGUOUS_WRITE_KINDS
+    )
 
 # Canonical Notion option labels -- the live Job Ledger schema uses these
 # exact strings, never the internal lowercase enum wire values.
@@ -337,7 +345,9 @@ class NotionCareerRepository:
         if existing_page_id:
             try:
                 written = self._transport.update_page(existing_page_id, properties)
-            except TimeoutError:
+            except (TimeoutError, HttpError) as exc:
+                if not _is_ambiguous_write_error(exc):
+                    raise
                 # Bounded ambiguous-write reconciliation: confirm the exact
                 # target, then perform one idempotent retry only if needed.
                 observed = _page_to_record(self._transport.get_page(existing_page_id))
@@ -348,7 +358,9 @@ class NotionCareerRepository:
         else:
             try:
                 written = self._transport.create_page(self._config.data_source_id, properties)
-            except TimeoutError:
+            except (TimeoutError, HttpError) as exc:
+                if not _is_ambiguous_write_error(exc):
+                    raise
                 # A create timeout is ambiguous: Notion may have committed
                 # the page before the client observed the timeout. Reconcile
                 # through the bounded canonical identity query before any
@@ -383,7 +395,9 @@ class NotionCareerRepository:
             if page_id:
                 try:
                     written = self._transport.update_page(page_id, properties)
-                except TimeoutError:
+                except (TimeoutError, HttpError) as exc:
+                    if not _is_ambiguous_write_error(exc):
+                        raise
                     observed = _page_to_record(self._transport.get_page(page_id))
                     if _canonical_view(observed) == _canonical_view(record): continue
                     written = self._transport.update_page(page_id, properties)
@@ -391,7 +405,9 @@ class NotionCareerRepository:
                 continue
             try:
                 written = self._transport.create_page(self._config.data_source_id, properties)
-            except TimeoutError:
+            except (TimeoutError, HttpError) as exc:
+                if not _is_ambiguous_write_error(exc):
+                    raise
                 observed = self.get_many([key]).get(key)
                 if observed is not None:
                     if _canonical_view(observed) != _canonical_view(record): raise ReadBackMismatch(f"ambiguous create resolved to mismatched row for {key}")

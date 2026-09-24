@@ -45,6 +45,10 @@ class FakeTransport:
         self.pages: dict[str, dict] = {}
         self.calls: list[tuple] = []
         self.timeout_create = False
+        self.create_error = None
+        self.create_error_commits = True
+        self.update_error = None
+        self.update_error_commits = True
         self.tamper_readback = False
 
     def query_data_source(self, _data_source_id, identity):
@@ -62,9 +66,16 @@ class FakeTransport:
 
     def create_page(self, _data_source_id, properties):
         page_id = f"page-{len(self.pages) + 1}"
+        error = self.create_error
+        self.create_error = None
+        if error is not None and not self.create_error_commits:
+            self.calls.append(("create", page_id))
+            raise error
         page = {"id": page_id, "properties": deepcopy(properties)}
         self.pages[page_id] = page
         self.calls.append(("create", page_id))
+        if error is not None:
+            raise error
         if self.timeout_create:
             self.timeout_create = False
             raise TimeoutError("synthetic ambiguous create")
@@ -72,7 +83,13 @@ class FakeTransport:
 
     def update_page(self, page_id, properties):
         self.calls.append(("update", page_id))
+        error = self.update_error
+        self.update_error = None
+        if error is not None and not self.update_error_commits:
+            raise error
         self.pages[page_id]["properties"].update(deepcopy(properties))
+        if error is not None:
+            raise error
         return deepcopy(self.pages[page_id])
 
     def get_page(self, page_id):
@@ -127,6 +144,56 @@ class CanonicalPersistenceProofs(unittest.TestCase):
         transport.tamper_readback = True
         with self.assertRaises(ReadBackMismatch):
             repository.upsert(_record(fit=91))
+
+    def test_normalized_update_deadline_and_timeout_reconcile_committed_write(self):
+        for kind in (HttpErrorKind.DEADLINE, HttpErrorKind.TIMEOUT):
+            with self.subTest(kind=kind):
+                transport = FakeTransport()
+                repository = NotionCareerRepository(transport=transport, config=NotionCareerRepositoryConfig("ledger"))
+                repository.upsert(_record())
+                transport.update_error = HttpError(kind)
+                persisted = repository.upsert(_record(fit=91))
+                self.assertEqual(persisted.job.fit, 91)
+                self.assertEqual([call[0] for call in transport.calls].count("update"), 1)
+
+    def test_normalized_update_ambiguity_retries_once_when_not_committed(self):
+        transport = FakeTransport()
+        repository = NotionCareerRepository(transport=transport, config=NotionCareerRepositoryConfig("ledger"))
+        repository.upsert(_record())
+        transport.update_error = HttpError(HttpErrorKind.DEADLINE)
+        transport.update_error_commits = False
+        persisted = repository.upsert(_record(fit=91))
+        self.assertEqual(persisted.job.fit, 91)
+        self.assertEqual([call[0] for call in transport.calls].count("update"), 2)
+
+    def test_normalized_create_ambiguity_reconciles_or_retries_once(self):
+        for commits, creates in ((True, 1), (False, 2)):
+            with self.subTest(commits=commits):
+                transport = FakeTransport()
+                transport.create_error = HttpError(HttpErrorKind.DEADLINE)
+                transport.create_error_commits = commits
+                repository = NotionCareerRepository(transport=transport, config=NotionCareerRepositoryConfig("ledger"))
+                persisted = repository.upsert(_record())
+                self.assertEqual(persisted.job.stable_job_key, "url:https://boards.greenhouse.io/acme/jobs/1")
+                self.assertEqual([call[0] for call in transport.calls].count("create"), creates)
+
+    def test_non_ambiguous_http_error_fails_closed_without_reconciliation(self):
+        transport = FakeTransport()
+        repository = NotionCareerRepository(transport=transport, config=NotionCareerRepositoryConfig("ledger"))
+        repository.upsert(_record())
+        transport.update_error = HttpError(HttpErrorKind.RATE_LIMIT)
+        with self.assertRaises(HttpError):
+            repository.upsert(_record(fit=91))
+        self.assertEqual([call[0] for call in transport.calls].count("read_back"), 1)
+
+    def test_batch_normalized_deadline_reconciles_committed_update(self):
+        transport = FakeTransport()
+        repository = NotionCareerRepository(transport=transport, config=NotionCareerRepositoryConfig("ledger"))
+        repository.upsert(_record())
+        transport.update_error = HttpError(HttpErrorKind.DEADLINE)
+        persisted = repository.upsert_many([_record(fit=91)])
+        self.assertEqual(persisted["url:https://boards.greenhouse.io/acme/jobs/1"].job.fit, 91)
+        self.assertEqual([call[0] for call in transport.calls].count("update"), 1)
 
     def test_ambiguous_create_reconciles_without_duplicate(self):
         transport = FakeTransport()
