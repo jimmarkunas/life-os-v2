@@ -39,7 +39,7 @@ _ROLE = re.compile(
 )
 _REMOTE = re.compile(r"\b(remote|distributed|work from home|wfh)\b", re.I)
 _US = re.compile(r"\b(united states|usa|u\.s\.|us|north america|americas)\b", re.I)
-_JOB_PATH = re.compile(r"/(?:job|jobs|career|careers|position|positions|opening|openings|requisition)/", re.I)
+_JOB_PATH = re.compile(r"/(?:job|job-detail|jobs|career|careers|position|positions|opening|openings|requisition)/", re.I)
 _JOB_QUERY_KEYS = frozenset({"id", "job", "jobid", "job_id", "position", "positionid", "requisition", "req"}); _CONTROL_TEXT = re.compile(r"\b(?:view all|see all|search|filter|category|categories|sign in|log in|subscribe|learn more|privacy|terms)\b", re.I)
 _GENERIC_CTA = frozenset({"apply", "apply now", "view job", "view details", "job details", "learn more", "read more"}); _CARD_MARKERS = re.compile(r"(?:job|vacancy|position|posting|card|result-item|search-result)", re.I)
 _SAFE_DIAGNOSTIC = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+){1,7}$")

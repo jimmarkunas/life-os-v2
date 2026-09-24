@@ -156,6 +156,28 @@ class UsRemoteHtmlRecoveryProof(unittest.TestCase):
         self.assertEqual(postman["url"], "https://www.postman.com/company/careers/open-positions/")
         self.assertNotIn("greenhouse", postman["url"])
 
+    def test_remaining_live_shapes_accept_detail_urls_and_keep_github_recovery_fail_closed(self):
+        dice = {"id": "dice", "company": "Dice"}
+        dice_html = '<article class="job-card"><a aria-label="Technical Program Manager" href="/job-detail/763199e7-2628-4df7-9164-a3739f2aa86d">Technical Program Manager</a></article><a href="/jobs">Search jobs</a>'
+        dice_rows = USRemoteAcquirer._html_rows(dice, dice_html, "https://www.dice.com/jobs", NOW)
+        self.assertEqual(len(dice_rows), 1)
+        self.assertIn("/job-detail/", dice_rows[0].source_apply_url)
+        robert = {"id": "robert-half", "company": "Robert Half"}
+        robert_html = '<article class="job-card"><a href="/us/en/job/minneapolis-minnesota/assistant-project-manager/02340-0013423909-usen">Assistant Project Manager</a></article><a href="/us/en/jobs">All jobs</a>'
+        robert_rows = USRemoteAcquirer._html_rows(robert, robert_html, "https://www.roberthalf.com/us/en/jobs", NOW)
+        self.assertEqual(len(robert_rows), 1)
+        self.assertIn("/us/en/job/", robert_rows[0].source_apply_url)
+        github = {"id": "github", "company": "GitHub", "kind": "html", "url": "https://www.github.careers/careers-home/jobs", "enabled": True}
+        github_result = USRemoteAcquirer(context=RunContext.start(timeout_seconds=30), http=_Http({})).acquire(
+            {"tier1_employers": [github], "staffing_agencies": [], "discovery_helpers": []},
+            browser_evidence={"sources": [{"source_id": "github", "state": "SEARCHED_NO_TARGET_MATCHES"}]},
+            full_sweep=True,
+            now=NOW,
+        )
+        self.assertTrue(github_result.complete)
+        self.assertEqual(github_result.sources[0].state, "COMPLETE")
+        self.assertEqual(github_result.observations, ())
+
 
 if __name__ == "__main__":
     unittest.main()
