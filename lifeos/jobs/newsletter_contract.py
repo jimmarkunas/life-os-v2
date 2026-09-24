@@ -13,11 +13,24 @@ from enum import Enum
 from lifeos.core.runtime import RunContext
 from lifeos.jobs.dedupe import LaneObservation, reconcile
 from lifeos.jobs.identity import IdentityCollision, canonical_url, derive_identity_evidence, resolve_existing_identity, stable_job_key
-from lifeos.jobs.lifecycle import apply_observation, new_record
+from lifeos.jobs.lifecycle import JobLedgerRecord, apply_observation, new_record
 from lifeos.jobs.models import AdmissionStatus, FitAuthority, NormalizedCandidate
 from lifeos.newsletter.models import SourceVacancyObservation
 from lifeos.jobs.qualification import LaneConfig, QualificationResult, qualify
 from lifeos.jobs.repository import CareerRepository, ReadBackMismatch
+
+
+def _persisted_canonical_view(record: JobLedgerRecord) -> tuple:
+    """The canonically persisted fields that determine whether an UPDATE is a no-op.
+    Mirrors notion_repository._canonical_view — changes here must stay in sync."""
+    obs = record.job.job
+    return (
+        record.job.stable_job_key, obs.company.name, obs.role, obs.location,
+        obs.work_mode, obs.compensation_text, obs.apply_url, obs.posting_date,
+        record.job.fit, record.job.fit_authority, record.job.source_providers,
+        record.job.source_types, record.job.eligible_lanes, record.job.primary_lane,
+        obs.provider_score, record.job.admission_status, record.first_surfaced, record.last_seen,
+    )
 
 
 class Disposition(str, Enum):
@@ -38,6 +51,7 @@ class IngestResult:
     persistence_verified: bool = False
     terminal_evidence_satisfied: bool = False
     terminal_evidence_diagnostics: tuple[str, ...] = ()
+    canonical_no_op: bool = False
 
 
 def result_is_accounted(result: IngestResult | None) -> bool:
@@ -256,6 +270,7 @@ def ingest(
             if existing is None:
                 record = new_record(reconciled_job.job, run_date=run_date)
                 primary_disposition = Disposition.CREATED
+                is_canonical_no_op = False
             else:
                 record = apply_observation(
                     existing,
@@ -264,6 +279,7 @@ def ingest(
                     lane_priority=lane_priority,
                 )
                 primary_disposition = Disposition.UPDATED
+                is_canonical_no_op = _persisted_canonical_view(existing) == _persisted_canonical_view(record)
         except Exception as exc:
             label = "read-back mismatch" if isinstance(exc, ReadBackMismatch) else f"repository failure ({type(exc).__name__})"
             for i in same_key_indices:
@@ -271,7 +287,7 @@ def ingest(
                 results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, key, f"persistence {label}: {exc}", {"mismatches": getattr(exc, "mismatches", []), "error_type": type(exc).__name__, "operation": getattr(exc, "operation", None), "retry_limit": getattr(exc, "retry_limit", None), "attempts": getattr(exc, "attempts", None), "category": getattr(getattr(exc, "kind", None), "value", None), "retry_after_seconds": getattr(exc, "retry_after_seconds", None)})
             continue
 
-        pending.append((key, record, same_key_indices, primary_index, primary_candidate, primary_disposition))
+        pending.append((key, record, same_key_indices, primary_index, primary_candidate, primary_disposition, is_canonical_no_op))
     persisted_items = []
     if pending:
         try:
@@ -280,11 +296,11 @@ def ingest(
             persisted_items = [(*item[:1], persisted_by_key[item[0]], *item[2:]) for item in pending]
         except Exception as exc:
             label = "read-back mismatch" if isinstance(exc, ReadBackMismatch) else f"repository failure ({type(exc).__name__})"
-            for key, _record, same_key_indices, _primary_index, _primary_candidate, _disposition in pending:
+            for key, _record, same_key_indices, _primary_index, _primary_candidate, _disposition, _no_op in pending:
                 for i in same_key_indices:
                     candidate = candidates[i]
                     results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, key, f"persistence {label}: {exc}", {"mismatches": getattr(exc, "mismatches", []), "error_type": type(exc).__name__, "operation": getattr(exc, "operation", None), "retry_limit": getattr(exc, "retry_limit", None), "attempts": getattr(exc, "attempts", None), "category": getattr(getattr(exc, "kind", None), "value", None), "retry_after_seconds": getattr(exc, "retry_after_seconds", None)})
-    for key, persisted, same_key_indices, primary_index, primary_candidate, primary_disposition in persisted_items:
+    for key, persisted, same_key_indices, primary_index, primary_candidate, primary_disposition, is_canonical_no_op in persisted_items:
         for i in same_key_indices:
             candidate, _ = live_by_index[i]
             qualification = qualification_by_index[i]
@@ -309,15 +325,17 @@ def ingest(
                 results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, persisted.job.stable_job_key, evaluation_pending if isinstance(evaluation_pending, str) else "evaluation pending", {"company": candidate.job.company.name, "role": candidate.job.role, "source": candidate.job.source_provider, "fit_evidence": candidate.fit_evidence_kind.value}, True, _tes, _diagnostics)
                 continue
             if i == primary_index:
+                _is_excluded = qualification.admission_status is AdmissionStatus.EXCLUDED
                 results[i] = IngestResult(
                     candidate.evidence_ref,
-                    Disposition.EXCLUDED if qualification.admission_status is AdmissionStatus.EXCLUDED else primary_disposition,
+                    Disposition.EXCLUDED if _is_excluded else primary_disposition,
                     persisted.job.stable_job_key,
-                    qualification.review_reason if qualification.admission_status is AdmissionStatus.EXCLUDED else None,
+                    qualification.review_reason if _is_excluded else None,
                     None,
                     True,
                     _tes,
                     _diagnostics,
+                    canonical_no_op=False if _is_excluded else is_canonical_no_op,
                 )
             else:
                 results[i] = IngestResult(

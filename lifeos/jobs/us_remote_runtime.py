@@ -441,6 +441,17 @@ def execute_us_remote(
         )
         web_lane_pass = web_result.complete and web_fully_accounted and not web_unresolved
         pass_run = mail_lane_pass and web_lane_pass
+
+        def _mutation_counts(ingest_results: list[IngestResult]) -> dict:
+            created = sum(1 for r in ingest_results if r.disposition is Disposition.CREATED)
+            updated = sum(1 for r in ingest_results if r.disposition is Disposition.UPDATED)
+            no_op_updates = sum(1 for r in ingest_results if r.disposition is Disposition.UPDATED and r.canonical_no_op)
+            failures = sum(1 for r in ingest_results if r.disposition is Disposition.REVIEW_DEGRADED and r.persistence_verified)
+            return {"created": created, "updated": updated, "canonical_no_op_updates": no_op_updates, "read_back_failures": failures}
+
+        initial_pass_counts = _mutation_counts(initial_ingest_results)
+        reconcile_pass_counts = _mutation_counts(list(enrichment_ingest_results))
+
         body = {
             "status": "PASS" if pass_run else "DEGRADED",
             "review_these_jobs": derive_review_these_jobs(list(newsletter_result.observations) + list(web_result.observations), newsletter_candidates + web_candidates, newsletter_results + web_results),
@@ -512,6 +523,8 @@ def execute_us_remote(
                     disposition.value: sum(item.disposition == disposition for item in results)
                     for disposition in Disposition
                 },
+                "initial_pass": initial_pass_counts,
+                "reconcile_pass": reconcile_pass_counts,
             },
             "timings": timings,
             "browser_fallback_available": fallback is not None,
