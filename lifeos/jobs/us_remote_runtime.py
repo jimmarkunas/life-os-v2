@@ -323,8 +323,20 @@ def execute_us_remote(
             if observation.evidence_ref in persistence_verified
             and not initial_by_ref[observation.evidence_ref].terminal_evidence_satisfied
         )
+        newsletter_terminal_candidates = len(newsletter_to_resolve)
+        web_terminal_candidates = len(web_to_resolve)
+        newsletter_terminal_skipped = newsletter_terminal_candidates - len(newsletter_enrichment_observations)
+        web_terminal_skipped = web_terminal_candidates - len(web_enrichment_observations)
         newsletter_terminal_required_total = len(newsletter_enrichment_observations)
         web_terminal_required_total = len(web_enrichment_observations)
+        def replay_diagnostics(observations):
+            counts = {name: 0 for name in ("missing_fit", "non_authoritative_fit", "missing_apply_url", "qualification_error")}
+            for observation in observations:
+                for name in initial_by_ref[observation.evidence_ref].terminal_evidence_diagnostics:
+                    counts[name] += 1
+            return counts
+        newsletter_replay_diagnostics = replay_diagnostics(newsletter_to_resolve)
+        web_replay_diagnostics = replay_diagnostics(web_to_resolve)
         timings["initial_persist"] = round(perf_counter() - stage_started, 3)
 
         stage_started = perf_counter()
@@ -478,7 +490,10 @@ def execute_us_remote(
                 "deferred_observations": deferred_newsletter_observations,
                 "terminal_resolution_required": newsletter_terminal_required_total,
                 "terminal_resolution_budget": None,
-                "terminal_resolution_admitted": attempted_newsletter_observations,
+                "terminal_resolution_candidates": newsletter_terminal_candidates,
+                "terminal_resolution_skipped": newsletter_terminal_skipped,
+                "terminal_resolution_admitted": newsletter_terminal_required_total,
+                "terminal_resolution_replay_misses": newsletter_replay_diagnostics,
                 "state": newsletter_result.state.value,
                 "error_codes": [f"{item.operation}:{item.detail}" for item in newsletter_result.errors[:10]],
             },
@@ -487,7 +502,10 @@ def execute_us_remote(
                 "observations": len(web_result.observations),
                 "preexcluded": len(web_preexcluded),
                 "terminal_resolution_required": web_terminal_required_total,
-                "terminal_resolution_admitted": len(web_to_resolve),
+                "terminal_resolution_candidates": web_terminal_candidates,
+                "terminal_resolution_skipped": web_terminal_skipped,
+                "terminal_resolution_admitted": web_terminal_required_total,
+                "terminal_resolution_replay_misses": web_replay_diagnostics,
                 "deferred_observations": web_deferred_observations,
                 "complete_sources": sum(item.state == "COMPLETE" for item in web_result.sources),
                 "not_due_sources": sum(item.state == "NOT_DUE" for item in web_result.sources),

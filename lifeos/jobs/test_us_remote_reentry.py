@@ -300,6 +300,9 @@ class UsRemoteReentryProof(unittest.TestCase):
         # execution-local known() satisfies enrichment without either query.
         self.assertEqual(repository.stable_key_queries, 1)
         self.assertEqual(repository.apply_url_queries, 0)
+        self.assertEqual(result.body["web"]["terminal_resolution_candidates"], 1)
+        self.assertEqual(result.body["web"]["terminal_resolution_skipped"], 0)
+        self.assertEqual(result.body["web"]["terminal_resolution_admitted"], 1)
 
         with patch("lifeos.jobs.newsletter_contract.qualify", side_effect=RuntimeError("synthetic qualification failure")), \
              patch("lifeos.jobs.us_remote_runtime.MailRouter", _FakeMailRouter), \
@@ -366,6 +369,18 @@ class UsRemoteReentryProof(unittest.TestCase):
         self.assertEqual(repository.upsert_calls - first_upserts, 1088)
         self.assertEqual(first_resolver_calls, 1021)
         self.assertEqual(replay_resolver_calls, 0)
+        self.assertEqual(first.body["web"]["terminal_resolution_candidates"], 1021)
+        self.assertEqual(first.body["web"]["terminal_resolution_skipped"], 0)
+        self.assertEqual(first.body["web"]["terminal_resolution_admitted"], 1021)
+        self.assertEqual(second.body["web"]["terminal_resolution_candidates"], 1021)
+        self.assertEqual(second.body["web"]["terminal_resolution_skipped"], 1021)
+        self.assertEqual(second.body["web"]["terminal_resolution_admitted"], 0)
+        self.assertEqual(second.body["web"]["terminal_resolution_replay_misses"], {
+            "missing_fit": 0,
+            "non_authoritative_fit": 0,
+            "missing_apply_url": 0,
+            "qualification_error": 0,
+        })
         self.assertEqual(max(repository.stable_key_query_sizes), 50)
         self.assertEqual(len(repository.stable_key_query_sizes), 44)
 
