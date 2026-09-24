@@ -25,12 +25,12 @@ from lifeos.jobs.repository import ReadBackMismatch
 __test__ = False
 
 
-def _record(*, url: str = "https://boards.greenhouse.io/acme/jobs/1", fit: int | None = 80) -> JobLedgerRecord:
+def _record(*, url: str = "https://boards.greenhouse.io/acme/jobs/1", fit: int | None = 80, description: str = "Required: program delivery.") -> JobLedgerRecord:
     observation = JobObservation(
         company=Company("Acme"), role="Program Manager", location="United States",
         work_mode=WorkMode.REMOTE, compensation_text=None, compensation_minimum=None,
         posting_date=None, apply_url=url, source_lane="US Remote",
-        source_provider="Jobright", description_text="Required: program delivery.",
+        source_provider="Jobright", description_text=description,
     )
     return new_record(Job(
         stable_job_key=f"url:{url}", job=observation,
@@ -194,6 +194,41 @@ class CanonicalPersistenceProofs(unittest.TestCase):
         persisted = repository.upsert_many([_record(fit=91)])
         self.assertEqual(persisted["url:https://boards.greenhouse.io/acme/jobs/1"].job.fit, 91)
         self.assertEqual([call[0] for call in transport.calls].count("update"), 1)
+
+    def test_canonical_noop_ignores_intentionally_non_persisted_field(self):
+        transport = FakeTransport()
+        repository = NotionCareerRepository(transport=transport, config=NotionCareerRepositoryConfig("ledger"))
+        repository.upsert(_record())
+        repository.get_many(["url:https://boards.greenhouse.io/acme/jobs/1"])
+        transport.calls.clear()
+
+        persisted = repository.upsert(_record(description="A stronger terminal JD that V3 intentionally does not persist"))
+
+        self.assertEqual(persisted.job.stable_job_key, "url:https://boards.greenhouse.io/acme/jobs/1")
+        self.assertEqual(repository.last_persistence_accounting, {"input": 1, "unchanged": 1, "updated": 0, "created": 0, "authoritative_read_back_verified": 0})
+        self.assertEqual(transport.calls, [])
+
+    def test_thousand_record_batch_mutates_only_canonical_changes(self):
+        transport = FakeTransport()
+        repository = NotionCareerRepository(transport=transport, config=NotionCareerRepositoryConfig("ledger"))
+        existing = [_record(url=f"https://boards.greenhouse.io/acme/jobs/{index}") for index in range(980)]
+        repository.upsert_many(existing)
+        repository.get_many([record.job.stable_job_key for record in existing])
+        transport.calls.clear()
+        desired = (
+            [_record(url=f"https://boards.greenhouse.io/acme/jobs/{index}") for index in range(950)]
+            + [_record(url=f"https://boards.greenhouse.io/acme/jobs/{index}", fit=81) for index in range(950, 980)]
+            + [_record(url=f"https://boards.greenhouse.io/acme/jobs/{index}") for index in range(980, 1000)]
+        )
+
+        persisted = repository.upsert_many(desired)
+
+        self.assertEqual(len(persisted), 1000)
+        self.assertEqual(repository.last_persistence_accounting, {"input": 1000, "unchanged": 950, "updated": 30, "created": 20, "authoritative_read_back_verified": 50})
+        self.assertEqual([call[0] for call in transport.calls].count("create"), 20)
+        self.assertEqual([call[0] for call in transport.calls].count("update"), 30)
+        self.assertEqual([call[0] for call in transport.calls].count("read_back"), 0)
+        self.assertEqual(len([call for call in transport.calls if call[0] == "query"]), 1)
 
     def test_ambiguous_create_reconciles_without_duplicate(self):
         transport = FakeTransport()
