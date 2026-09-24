@@ -108,7 +108,7 @@ class NewsletterAdapterConfig:
     fallback_fetcher: Fetcher | None = None
 
 
-MAX_ADAPT_WORKERS = 8
+MAX_ADAPT_WORKERS = 18
 
 
 class TerminalEvidenceCache:

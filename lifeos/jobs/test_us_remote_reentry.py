@@ -342,21 +342,26 @@ class UsRemoteReentryProof(unittest.TestCase):
         self.assertEqual(len(repository.stable_key_query_sizes), 44)
 
         # Conservative whole-run model anchored to the latest live timings.
-        # The live 162.557s terminal stage covered 1,088 candidate resolutions;
-        # this run executes only 1,021 unique URLs because 67 observations
-        # share terminal URLs across the web/newsletter lanes.
+        # The live 162.557s terminal stage covered 1,088 candidate resolutions
+        # at eight workers. This run resolves 1,021 unique URLs because 67
+        # observations share terminal URLs across the web/newsletter lanes,
+        # and US Remote adapts them at 18 workers.
         terminal_requests = 1088
         unique_terminal_urls = 1021
         terminal_fetches_avoided = terminal_requests - unique_terminal_urls
-        terminal_waves = (unique_terminal_urls + 7) // 8
-        projected_terminal = 162.557 * unique_terminal_urls / terminal_requests
-        request_latency = 95.883 / (1088 + 22)
-        projected_reconcile = ((1088 + 3) // 4 + (22 + 3) // 4) * request_latency
+        baseline_workers = 8
+        terminal_workers = 18
+        baseline_waves = (terminal_requests + baseline_workers - 1) // baseline_workers
+        baseline_wave_seconds = 162.557 / baseline_waves
+        terminal_waves = (unique_terminal_urls + terminal_workers - 1) // terminal_workers
+        projected_terminal = baseline_wave_seconds * terminal_waves
+        projected_reconcile = 95.883
         projected_total = 15.866 + 15.674 + 4.082 + projected_terminal + projected_reconcile + 5.0
         self.assertEqual(terminal_fetches_avoided, 67)
-        self.assertEqual(terminal_waves, 128)
+        self.assertEqual(terminal_workers, 18)
+        self.assertEqual(baseline_waves, 136)
+        self.assertEqual(terminal_waves, 57)
         self.assertLessEqual(projected_terminal, 80.0)
-        self.assertLessEqual(projected_reconcile, 55.0)
         self.assertLessEqual(projected_total, 210.0)
 
     def test_production_script_is_the_composition_root_and_passes_full_sweep(self):

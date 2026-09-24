@@ -33,7 +33,6 @@ from lifeos.jobs.repository import ReadBackMismatch
 STABLE_KEY_PROPERTY = "Stable Job Key"
 MAX_IDENTITY_VALUES_PER_QUERY = 50  # matches NotionIdentityQuery's own cap
 MAX_IDENTITY_QUERY_CONCURRENCY = 4
-MAX_PERSISTENCE_CONCURRENCY = 4
 _AMBIGUOUS_WRITE_KINDS = frozenset({HttpErrorKind.DEADLINE, HttpErrorKind.TIMEOUT})
 
 
@@ -428,8 +427,7 @@ class NotionCareerRepository:
         unchanged = {key: self._records[key] for key, record in expected.items() if key in self._records and _canonical_view(self._records[key]) == _canonical_view(record)}
         pending = {key: record for key, record in expected.items() if key not in unchanged}
         self._last_persistence_accounting = {"input": len(records), "unchanged": len(unchanged), "updated": sum(key in self._page_ids for key in pending), "created": sum(key not in self._page_ids for key in pending), "authoritative_read_back_verified": 0}
-        def persist_one(item: tuple[str, JobLedgerRecord]) -> None:
-            key, record = item
+        for key, record in pending.items():
             properties, page_id = _record_to_properties(record), self._page_ids.get(key)
             if page_id:
                 try:
@@ -438,10 +436,10 @@ class NotionCareerRepository:
                     if not _is_ambiguous_write_error(exc):
                         raise
                     observed = _page_to_record(self._transport.get_page(page_id))
-                    if _canonical_view(observed) == _canonical_view(record): return
+                    if _canonical_view(observed) == _canonical_view(record): continue
                     written = self._transport.update_page(page_id, properties)
                 self._page_ids[key] = str(written.get("id") or page_id)
-                return
+                continue
             try:
                 written = self._transport.create_page(self._config.data_source_id, properties)
             except (TimeoutError, HttpError) as exc:
@@ -450,17 +448,12 @@ class NotionCareerRepository:
                 observed = self.get_many([key]).get(key)
                 if observed is not None:
                     if _canonical_view(observed) != _canonical_view(record): raise ReadBackMismatch(f"ambiguous create resolved to mismatched row for {key}")
-                    return
+                    continue
                 written = self._transport.create_page(self._config.data_source_id, properties)
             page_id = written.get("id")
             if not page_id: raise ReadBackMismatch(f"Notion create response for {key} did not return a page id")
             self._page_ids[key] = str(page_id)
 
-        if pending:
-            with ThreadPoolExecutor(max_workers=min(MAX_PERSISTENCE_CONCURRENCY, len(pending))) as pool:
-                futures = [pool.submit(persist_one, item) for item in pending.items()]
-                for future in futures:
-                    future.result()
         persisted = self.get_many(list(pending)) if pending else {}
         missing = [key for key in pending if key not in persisted]
         if missing: raise ReadBackMismatch(f"authoritative batch read-back missing {missing[0]}")

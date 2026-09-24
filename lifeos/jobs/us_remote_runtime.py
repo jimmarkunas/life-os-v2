@@ -30,7 +30,7 @@ from lifeos.newsletter.processor import NewsletterExecutionState, NewsletterProc
 NEWSLETTER_BOUNDARY = "J Newsletters"
 
 _SOURCE_REGISTRY = Path(__file__).resolve().parents[2] / "contracts" / "us_remote_sources.json"
-_TERMINAL_RESOLUTION_WORKERS = 8
+_TERMINAL_RESOLUTION_WORKERS = 18
 
 
 def load_registry() -> dict:
@@ -323,13 +323,13 @@ def execute_us_remote(
             newsletter_enrichment_observations,
             adapter=newsletter_adapter,
             context=context,
-            max_workers=8,
+            max_workers=_TERMINAL_RESOLUTION_WORKERS,
         )
         web_candidates = _adapt_all(
             web_enrichment_observations,
             adapter=web_adapter,
             context=context,
-            max_workers=8,
+            max_workers=_TERMINAL_RESOLUTION_WORKERS,
         )
         newsletter_candidates = [
             replace(
