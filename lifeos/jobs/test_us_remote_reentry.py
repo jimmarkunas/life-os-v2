@@ -289,6 +289,16 @@ class UsRemoteReentryProof(unittest.TestCase):
         self.assertEqual(repository.stable_key_queries, 1)
         self.assertEqual(repository.apply_url_queries, 0)
 
+        with patch("lifeos.jobs.newsletter_contract.qualify", side_effect=RuntimeError("synthetic qualification failure")), \
+             patch("lifeos.jobs.us_remote_runtime.MailRouter", _FakeMailRouter), \
+             patch("lifeos.jobs.us_remote_runtime.NewsletterProcessor", _FakeNewsletterProcessor), \
+             patch("lifeos.jobs.us_remote_runtime.USRemoteAcquirer", _FakeAcquirer), \
+             patch("lifeos.jobs.us_remote_runtime.NotionCareerRepository", lambda **kwargs: repository):
+            degraded = execute_us_remote(**{**common, "context": RunContext.start(timeout_seconds=30)})
+        self.assertEqual(degraded.exit_code, 1)
+        self.assertEqual(degraded.body["status"], "DEGRADED")
+        self.assertGreater(degraded.body["jobs"]["dispositions"]["review_degraded"], 0)
+
     def test_execute_us_remote_production_volume_two_pass_request_topology(self):
         """1,088-observation recovery keeps the second identity phase empty."""
         repository = _CountingAuthoritativeRepository()
@@ -317,7 +327,9 @@ class UsRemoteReentryProof(unittest.TestCase):
             start=NOW, end=NOW, web_since=NOW, dry_run=False, full_web_sweep=True,
         )
 
-        with patch("lifeos.jobs.us_remote_runtime.MailRouter", _FakeMailRouter), \
+        from lifeos.jobs.terminal_evidence import acquire_terminal_vacancy_evidence as resolve
+        with patch("lifeos.jobs.newsletter_adapter.acquire_terminal_vacancy_evidence", wraps=resolve) as resolver, \
+             patch("lifeos.jobs.us_remote_runtime.MailRouter", _FakeMailRouter), \
              patch("lifeos.jobs.us_remote_runtime.NewsletterProcessor", _VolumeNewsletterProcessor), \
              patch("lifeos.jobs.us_remote_runtime.USRemoteAcquirer", _VolumeAcquirer), \
              patch("lifeos.jobs.us_remote_runtime.NotionCareerRepository", lambda **kwargs: repository):
@@ -325,7 +337,9 @@ class UsRemoteReentryProof(unittest.TestCase):
             first_stable_queries = repository.stable_key_queries
             first_apply_queries = repository.apply_url_queries
             first_upserts = repository.upsert_calls
+            first_resolver_calls = resolver.call_count
             second = execute_us_remote(**{**common, "context": RunContext.start(timeout_seconds=120)})
+            replay_resolver_calls = resolver.call_count - first_resolver_calls
 
         self.assertEqual(first.exit_code, 0)
         self.assertEqual(second.exit_code, 0)
@@ -337,7 +351,9 @@ class UsRemoteReentryProof(unittest.TestCase):
         self.assertEqual(repository.stable_key_queries - first_stable_queries, 0)
         self.assertEqual(repository.apply_url_queries - first_apply_queries, 0)
         self.assertEqual(first_upserts, 2176)
-        self.assertEqual(repository.upsert_calls - first_upserts, 2176)
+        self.assertEqual(repository.upsert_calls - first_upserts, 1088)
+        self.assertEqual(first_resolver_calls, 1021)
+        self.assertEqual(replay_resolver_calls, 0)
         self.assertEqual(max(repository.stable_key_query_sizes), 50)
         self.assertEqual(len(repository.stable_key_query_sizes), 44)
 

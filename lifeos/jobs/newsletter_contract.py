@@ -14,7 +14,7 @@ from lifeos.core.runtime import RunContext
 from lifeos.jobs.dedupe import LaneObservation, reconcile
 from lifeos.jobs.identity import IdentityCollision, canonical_url, derive_identity_evidence, resolve_existing_identity, stable_job_key
 from lifeos.jobs.lifecycle import apply_observation, new_record
-from lifeos.jobs.models import AdmissionStatus, NormalizedCandidate
+from lifeos.jobs.models import AdmissionStatus, FitAuthority, NormalizedCandidate
 from lifeos.newsletter.models import SourceVacancyObservation
 from lifeos.jobs.qualification import LaneConfig, QualificationResult, qualify
 from lifeos.jobs.repository import CareerRepository, ReadBackMismatch
@@ -36,6 +36,7 @@ class IngestResult:
     detail: str | None = None
     diagnostic: dict | None = None
     persistence_verified: bool = False
+    terminal_evidence_satisfied: bool = False
 
 
 def result_is_accounted(result: IngestResult | None) -> bool:
@@ -289,8 +290,14 @@ def ingest(
             evaluation_pending = qualification_errors.get(i) or (
                 f"evaluation pending: {candidate.fit_reason or qualification.review_reason}" if candidate.fit is None else None
             )
+            _tes = bool(
+                persisted.job.fit is not None
+                and persisted.job.fit_authority == FitAuthority.AUTHORITATIVE
+                and persisted.job.job.apply_url is not None
+                and i not in qualification_errors
+            )
             if evaluation_pending:
-                results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, persisted.job.stable_job_key, evaluation_pending if isinstance(evaluation_pending, str) else "evaluation pending", {"company": candidate.job.company.name, "role": candidate.job.role, "source": candidate.job.source_provider, "fit_evidence": candidate.fit_evidence_kind.value}, True)
+                results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, persisted.job.stable_job_key, evaluation_pending if isinstance(evaluation_pending, str) else "evaluation pending", {"company": candidate.job.company.name, "role": candidate.job.role, "source": candidate.job.source_provider, "fit_evidence": candidate.fit_evidence_kind.value}, True, _tes)
                 continue
             if i == primary_index:
                 results[i] = IngestResult(
@@ -300,6 +307,7 @@ def ingest(
                     qualification.review_reason if qualification.admission_status is AdmissionStatus.EXCLUDED else None,
                     None,
                     True,
+                    _tes,
                 )
             else:
                 results[i] = IngestResult(
@@ -309,6 +317,7 @@ def ingest(
                     f"duplicate of evidence {primary_candidate.evidence_ref}; provenance merged into the canonical reconciliation",
                     None,
                     True,
+                    _tes,
                 )
 
     assert all(result is not None for result in results), "every input candidate must receive exactly one result"
