@@ -304,6 +304,10 @@ class NotionCareerRepository:
         """Return authoritative rows already loaded in this run only."""
         return {key: self._records[key] for key in stable_job_keys if key in self._records}
 
+    def cache(self, record: JobLedgerRecord) -> None:
+        """Seed the execution-local cache without writing to Notion."""
+        self._records[record.job.stable_job_key] = record
+
     def get_many(self, stable_job_keys: list[str]) -> dict[str, JobLedgerRecord]:
         if not stable_job_keys:
             return {}
