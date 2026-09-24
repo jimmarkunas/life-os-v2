@@ -96,7 +96,7 @@ class _VolumeNewsletterProcessor(_FakeNewsletterProcessor):
             messages=(),
             observations=tuple(
                 replace(
-                    _observation("synthetic-newsletter", index=2000 + index),
+                    _observation("synthetic-newsletter", index=index),
                     company=f"Synthetic Newsletter {index}",
                 )
                 for index in range(1, 68)
@@ -305,7 +305,7 @@ class UsRemoteReentryProof(unittest.TestCase):
                     "final_url": f"https://boards.greenhouse.io/synthetic/jobs/{index}",
                     "html": terminal_html,
                 }
-                for index in list(range(1, 1022)) + list(range(2001, 2068))
+                for index in range(1, 1022)
             ]
         }
         common = dict(
@@ -341,14 +341,20 @@ class UsRemoteReentryProof(unittest.TestCase):
         self.assertEqual(max(repository.stable_key_query_sizes), 50)
         self.assertEqual(len(repository.stable_key_query_sizes), 44)
 
-        # Conservative whole-run model anchored to the latest live timings:
-        # terminal 162.557s/1,021 requests, reconcile 95.883s/1,088 rows.
+        # Conservative whole-run model anchored to the latest live timings.
+        # The live 162.557s terminal stage covered 1,088 candidate resolutions;
+        # this run executes only 1,021 unique URLs because 67 observations
+        # share terminal URLs across the web/newsletter lanes.
         terminal_requests = 1088
-        terminal_waves = (terminal_requests + 7) // 8
-        projected_terminal = terminal_requests * (162.557 / 1021) / 8
-        projected_reconcile = 1088 * (95.883 / 1088) / 4
+        unique_terminal_urls = 1021
+        terminal_fetches_avoided = terminal_requests - unique_terminal_urls
+        terminal_waves = (unique_terminal_urls + 7) // 8
+        projected_terminal = 162.557 * unique_terminal_urls / terminal_requests
+        request_latency = 95.883 / (1088 + 22)
+        projected_reconcile = ((1088 + 3) // 4 + (22 + 3) // 4) * request_latency
         projected_total = 15.866 + 15.674 + 4.082 + projected_terminal + projected_reconcile + 5.0
-        self.assertEqual(terminal_waves, 136)
+        self.assertEqual(terminal_fetches_avoided, 67)
+        self.assertEqual(terminal_waves, 128)
         self.assertLessEqual(projected_terminal, 80.0)
         self.assertLessEqual(projected_reconcile, 55.0)
         self.assertLessEqual(projected_total, 210.0)

@@ -329,6 +329,7 @@ class NewsletterJobsAdapter:
             with self._terminal_evidence_lock:
                 return self._terminal_evidence_cache.get(cache_key)
 
+        evidence = None
         try:
             evidence = acquire_terminal_vacancy_evidence(
                 source_apply_url,
@@ -340,9 +341,9 @@ class NewsletterJobsAdapter:
             )
         except Exception:
             evidence = None
-
-        with self._terminal_evidence_lock:
-            self._terminal_evidence_cache[cache_key] = evidence
-            waiter = self._terminal_evidence_in_flight.pop(cache_key)
-            waiter.set()
-            return evidence
+        finally:
+            with self._terminal_evidence_lock:
+                self._terminal_evidence_cache[cache_key] = evidence
+                waiter = self._terminal_evidence_in_flight.pop(cache_key)
+                waiter.set()
+        return evidence
