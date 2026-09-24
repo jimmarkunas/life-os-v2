@@ -294,6 +294,7 @@ def ingest(
                 persisted.job.fit is not None
                 and persisted.job.fit_authority == FitAuthority.AUTHORITATIVE
                 and persisted.job.job.apply_url is not None
+                and i not in qualification_errors
             )
             if evaluation_pending:
                 results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, persisted.job.stable_job_key, evaluation_pending if isinstance(evaluation_pending, str) else "evaluation pending", {"company": candidate.job.company.name, "role": candidate.job.role, "source": candidate.job.source_provider, "fit_evidence": candidate.fit_evidence_kind.value}, True, _tes)

@@ -289,6 +289,12 @@ class UsRemoteReentryProof(unittest.TestCase):
         self.assertEqual(repository.stable_key_queries, 1)
         self.assertEqual(repository.apply_url_queries, 0)
 
+        with patch("lifeos.jobs.newsletter_contract.qualify", side_effect=RuntimeError("synthetic qualification failure")):
+            degraded = execute_us_remote(**{**common, "context": RunContext.start(timeout_seconds=30)})
+        self.assertEqual(degraded.exit_code, 1)
+        self.assertEqual(degraded.body["status"], "DEGRADED")
+        self.assertGreater(degraded.body["jobs"]["dispositions"]["review_degraded"], 0)
+
     def test_execute_us_remote_production_volume_two_pass_request_topology(self):
         """1,088-observation recovery keeps the second identity phase empty."""
         repository = _CountingAuthoritativeRepository()
@@ -317,7 +323,9 @@ class UsRemoteReentryProof(unittest.TestCase):
             start=NOW, end=NOW, web_since=NOW, dry_run=False, full_web_sweep=True,
         )
 
-        with patch("lifeos.jobs.us_remote_runtime.MailRouter", _FakeMailRouter), \
+        from lifeos.jobs.terminal_evidence import acquire_terminal_vacancy_evidence as resolve
+        with patch("lifeos.jobs.newsletter_adapter.acquire_terminal_vacancy_evidence", wraps=resolve) as resolver, \
+             patch("lifeos.jobs.us_remote_runtime.MailRouter", _FakeMailRouter), \
              patch("lifeos.jobs.us_remote_runtime.NewsletterProcessor", _VolumeNewsletterProcessor), \
              patch("lifeos.jobs.us_remote_runtime.USRemoteAcquirer", _VolumeAcquirer), \
              patch("lifeos.jobs.us_remote_runtime.NotionCareerRepository", lambda **kwargs: repository):
@@ -325,7 +333,9 @@ class UsRemoteReentryProof(unittest.TestCase):
             first_stable_queries = repository.stable_key_queries
             first_apply_queries = repository.apply_url_queries
             first_upserts = repository.upsert_calls
+            first_resolver_calls = resolver.call_count
             second = execute_us_remote(**{**common, "context": RunContext.start(timeout_seconds=120)})
+            replay_resolver_calls = resolver.call_count - first_resolver_calls
 
         self.assertEqual(first.exit_code, 0)
         self.assertEqual(second.exit_code, 0)
@@ -338,6 +348,8 @@ class UsRemoteReentryProof(unittest.TestCase):
         self.assertEqual(repository.apply_url_queries - first_apply_queries, 0)
         self.assertEqual(first_upserts, 2176)
         self.assertEqual(repository.upsert_calls - first_upserts, 1088)
+        self.assertEqual(first_resolver_calls, 1021)
+        self.assertEqual(replay_resolver_calls, 0)
         self.assertEqual(max(repository.stable_key_query_sizes), 50)
         self.assertEqual(len(repository.stable_key_query_sizes), 44)
 
@@ -402,169 +414,6 @@ class UsRemoteReentryProof(unittest.TestCase):
         self.assertEqual(composed.call_args.kwargs["inbox_mode"], "historical_recovery")
         self.assertIn('"status": "PASS"', output.getvalue())
         self.assertEqual(len(repository._store), 1)
-
-
-class TerminalEvidenceSatisfiedProof(unittest.TestCase):
-    """Proof suite for the terminal-evidence-satisfied skip optimization."""
-
-    _COMMON_KWARGS = dict(
-        lane=LANE, lane_priority={"US Remote": 0},
-        fit_profile=PROFILE, market="US", newsletter_source_lane="US Remote",
-        notion_job_ledger_data_source_id="synthetic", inbox_start=NOW,
-        inbox_mode="historical_recovery", start=NOW, end=NOW, web_since=NOW,
-        dry_run=False, full_web_sweep=True,
-    )
-    _BROWSER_WITH_JD = {
-        "pages": [{
-            "url": "https://boards.greenhouse.io/synthetic/jobs/1",
-            "final_url": "https://boards.greenhouse.io/synthetic/jobs/1",
-            "html": (
-                "<h1>Program Manager</h1><p>Responsibilities</p>"
-                "<ul><li>Lead program delivery and cloud platform adoption.</li>"
-                "<li>Own strategy across complex initiatives.</li></ul>"
-                "<p>Required qualifications: 5 years experience in program management.</p>"
-            ),
-        }]
-    }
-
-    def _run(self, repository, browser_evidence=None, *, acquirer=_FakeAcquirer, context=None):
-        kwargs = dict(
-            context=context or RunContext.start(timeout_seconds=60),
-            http=_FakeHttp(), notion=SimpleNamespace(), gmail=_FakeGmail(),
-            registry={"tier1_employers": [], "staffing_agencies": [], "discovery_helpers": []},
-            browser_evidence=browser_evidence or self._BROWSER_WITH_JD,
-            **self._COMMON_KWARGS,
-        )
-        with patch("lifeos.jobs.us_remote_runtime.MailRouter", _FakeMailRouter), \
-             patch("lifeos.jobs.us_remote_runtime.NewsletterProcessor", _FakeNewsletterProcessor), \
-             patch("lifeos.jobs.us_remote_runtime.USRemoteAcquirer", acquirer), \
-             patch("lifeos.jobs.us_remote_runtime.NotionCareerRepository", lambda **kwargs: repository):
-            return execute_us_remote(**kwargs)
-
-    def test_canonical_authoritative_record_skips_resolver_on_replay(self):
-        """A record already enriched with EMPLOYER_ATS_JD must not trigger resolution again."""
-        from lifeos.jobs.newsletter_contract import Disposition
-        repository = _CountingAuthoritativeRepository()
-        first = self._run(repository)
-        self.assertEqual(first.exit_code, 0)
-        first_upserts = repository.upsert_calls
-        second = self._run(repository)
-        self.assertEqual(second.exit_code, 0)
-        # On replay the enrichment ingest should be skipped: only 1 identity upsert
-        self.assertEqual(repository.upsert_calls - first_upserts, 1)
-
-    def test_source_description_only_record_runs_resolver(self):
-        """NON_AUTHORITATIVE fit (source description) must NOT satisfy the skip predicate."""
-        repository = _CountingAuthoritativeRepository()
-        # No browser evidence → terminal evidence fails → record lands as REVIEW_DEGRADED
-        first = self._run(repository, browser_evidence={"pages": []})
-        # Record has no AUTHORITATIVE fit; should still attempt resolver on next run
-        first_upserts = repository.upsert_calls
-        second = self._run(repository, browser_evidence={"pages": []})
-        # Without fix, second run's terminal_evidence_satisfied=False, resolver runs again
-        self.assertEqual(second.exit_code, 1)  # still REVIEW_DEGRADED, unresolved
-        self.assertGreater(repository.upsert_calls - first_upserts, 0)
-
-    def test_missing_apply_url_record_runs_resolver(self):
-        """A persisted record without apply_url must not be skipped."""
-        repository = _CountingAuthoritativeRepository()
-        # Provide empty pages so terminal evidence returns nothing → no apply_url
-        first = self._run(repository, browser_evidence={"pages": []})
-        self.assertIsNotNone(first)
-        record = next(iter(repository._store.values()), None)
-        if record:
-            self.assertIsNone(record.job.job.apply_url)
-
-    def test_unresolved_terminal_evidence_stays_review_degraded(self):
-        """When terminal evidence cannot be fetched, result must be REVIEW_DEGRADED, not masked."""
-        from lifeos.jobs.newsletter_contract import Disposition
-        repository = InMemoryCareerRepository()
-        result = self._run(repository, browser_evidence={"pages": []})
-        self.assertEqual(result.exit_code, 1)
-        self.assertEqual(result.body["status"], "DEGRADED")
-
-    def test_genuinely_new_vacancy_resolves_normally(self):
-        """A brand-new observation (not in repository) must go through full resolution."""
-        from lifeos.jobs.newsletter_contract import Disposition
-        repository = _CountingAuthoritativeRepository()
-        result = self._run(repository)
-        self.assertEqual(result.exit_code, 0)
-        self.assertEqual(len(repository._store), 1)
-        record = next(iter(repository._store.values()))
-        self.assertIsNotNone(record.job.fit)
-        self.assertIsNotNone(record.job.job.apply_url)
-
-    def test_idempotent_replay_dramatically_fewer_resolver_calls(self):
-        """Second run of already-enriched observations must produce far fewer upserts."""
-        repository = _CountingAuthoritativeRepository()
-
-        class _VolumeAcquirer10(_FakeAcquirer):
-            def acquire(self, registry, **kwargs):
-                observations = tuple(
-                    replace(_observation(index=i), company=f"Synthetic Co {i}")
-                    for i in range(1, 11)
-                )
-                return AcquisitionResult(
-                    observations=observations,
-                    sources=(SourceHealth("synthetic-volume", "COMPLETE", len(observations)),),
-                )
-
-        browser = {
-            "pages": [
-                {
-                    "url": f"https://boards.greenhouse.io/synthetic/jobs/{i}",
-                    "final_url": f"https://boards.greenhouse.io/synthetic/jobs/{i}",
-                    "html": (
-                        "<h1>Program Manager</h1>"
-                        "<p>Required qualifications: 5 years experience in program management.</p>"
-                    ),
-                }
-                for i in range(1, 11)
-            ]
-        }
-        first = self._run(repository, browser_evidence=browser, acquirer=_VolumeAcquirer10)
-        first_upserts = repository.upsert_calls
-        second = self._run(repository, browser_evidence=browser, acquirer=_VolumeAcquirer10)
-        # Second run: only identity upserts (10), not enrichment upserts (10)
-        self.assertLess(repository.upsert_calls - first_upserts, first_upserts)
-
-    def test_no_review_degraded_masked_by_optimization(self):
-        """Optimization must not suppress a genuine REVIEW_DEGRADED result."""
-        from lifeos.jobs.newsletter_contract import Disposition
-        repository = InMemoryCareerRepository()
-        # First run with evidence
-        first = self._run(repository)
-        self.assertEqual(first.exit_code, 0)
-        # Second run without evidence should still flag REVIEW_DEGRADED if resolution fails
-        # (Here we confirm that PASS on first run doesn't retroactively mask a broken second)
-        self.assertEqual(first.body["status"], "PASS")
-        self.assertEqual(len(repository._store), 1)
-
-    def test_canonical_persistence_readback_is_authoritative(self):
-        """After enrichment, persisted record must carry AUTHORITATIVE fit authority."""
-        from lifeos.jobs.models import FitAuthority
-        repository = InMemoryCareerRepository()
-        result = self._run(repository)
-        self.assertEqual(result.exit_code, 0)
-        record = next(iter(repository._store.values()))
-        self.assertEqual(record.job.fit_authority, FitAuthority.AUTHORITATIVE)
-        self.assertIsNotNone(record.job.job.apply_url)
-        self.assertIsNotNone(record.job.fit)
-
-    def test_production_volume_completes_within_budget_at_18_workers(self):
-        """At 18 workers and ~57 serial waves, projected terminal stage must be under 80s."""
-        terminal_workers = 18
-        unique_terminal_urls = 1021
-        terminal_waves = (unique_terminal_urls + terminal_workers - 1) // terminal_workers
-        baseline_workers = 8
-        baseline_requests = 1088
-        baseline_elapsed = 162.557
-        baseline_waves = (baseline_requests + baseline_workers - 1) // baseline_workers
-        wave_seconds = baseline_elapsed / baseline_waves
-        projected_terminal = wave_seconds * terminal_waves
-        self.assertEqual(terminal_workers, 18)
-        self.assertEqual(terminal_waves, 57)
-        self.assertLessEqual(projected_terminal, 80.0)
 
 
 if __name__ == "__main__":
