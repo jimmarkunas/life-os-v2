@@ -52,6 +52,7 @@ class FakeTransport:
         self.update_error_commits = True
         self.tamper_readback = False
         self.query_error = None
+        self._page_lock = threading.Lock()
 
     def query_data_source(self, _data_source_id, identity):
         self.calls.append(("query", identity.property_name, identity.values))
@@ -69,15 +70,16 @@ class FakeTransport:
         return tuple(found)
 
     def create_page(self, _data_source_id, properties):
-        page_id = f"page-{len(self.pages) + 1}"
-        error = self.create_error
-        self.create_error = None
-        if error is not None and not self.create_error_commits:
+        with self._page_lock:
+            page_id = f"page-{len(self.pages) + 1}"
+            error = self.create_error
+            self.create_error = None
+            if error is not None and not self.create_error_commits:
+                self.calls.append(("create", page_id))
+                raise error
+            page = {"id": page_id, "properties": deepcopy(properties)}
+            self.pages[page_id] = page
             self.calls.append(("create", page_id))
-            raise error
-        page = {"id": page_id, "properties": deepcopy(properties)}
-        self.pages[page_id] = page
-        self.calls.append(("create", page_id))
         if error is not None:
             raise error
         if self.timeout_create:
