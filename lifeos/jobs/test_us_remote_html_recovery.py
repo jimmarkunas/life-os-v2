@@ -5,7 +5,9 @@ __test__ = False
 
 import unittest
 from datetime import datetime, timezone
+from unittest.mock import patch
 
+from lifeos.core.http import HttpError, HttpErrorKind
 from lifeos.core.runtime import RunContext
 from lifeos.jobs.us_remote_acquisition import USRemoteAcquirer
 from lifeos.newsletter.models import SourceVacancyObservation
@@ -112,6 +114,22 @@ class UsRemoteHtmlRecoveryProof(unittest.TestCase):
         self.assertEqual(searched_zero.observations, ())
         self.assertEqual(searched_zero.sources[0].state, "COMPLETE")
         self.assertEqual(searched_zero.sources[0].candidate_count, 0)
+
+    def test_failure_details_preserve_safe_reasons_and_fail_closed(self):
+        source = {"id": "experis", "company": "Experis", "kind": "html", "url": SOURCES[1][2], "enabled": True}
+        registry = {"tier1_employers": [], "staffing_agencies": [source], "discovery_helpers": []}
+        cases = ((RuntimeError("no-deterministic-vacancy-links"), "RuntimeError:no-deterministic-vacancy-links"),
+                 (HttpError(HttpErrorKind.HTTP_STATUS, status_code=404), "HttpError:http-404"),
+                 (ValueError("token=secret&cookie=private"), "ValueError"))
+        for error, detail in cases:
+            with self.subTest(error=type(error).__name__), patch.object(USRemoteAcquirer, "_enumerate_source", side_effect=error):
+                result = USRemoteAcquirer(context=RunContext.start(timeout_seconds=30), http=_Http({})).acquire(
+                    registry, full_sweep=True, now=NOW
+                )
+            self.assertEqual(result.sources[0].state, "DEGRADED")
+            self.assertEqual(result.sources[0].detail, detail)
+            self.assertEqual(result.observations, ())
+            self.assertLessEqual(len(result.sources[0].detail or ""), 105)
 
 
 if __name__ == "__main__":
