@@ -223,6 +223,29 @@ class UsRemoteReentryProof(unittest.TestCase):
         self.assertFalse(result.complete)
         self.assertEqual(result.sources[0].state, "DEGRADED")
 
+    def test_ashby_board_preserves_authoritative_description(self):
+        class AshbyHttp:
+            def request_json(self, _context, _method, _url, **_kwargs):
+                return {"jobs": [{
+                    "id": "vanta-1", "title": "Technical Program Manager",
+                    "location": "Remote - United States",
+                    "jobUrl": "https://jobs.ashbyhq.com/vanta/vanta-1",
+                    "applyUrl": "https://jobs.ashbyhq.com/vanta/vanta-1/application",
+                    "descriptionPlain": "Lead complex program delivery across cloud platforms. Required: 5 years experience.",
+                    "compensation": {"min": 120000}, "publishedAt": "2026-01-15T00:00:00Z",
+                }]}
+
+        result = USRemoteAcquirer(context=RunContext.start(timeout_seconds=30), http=AshbyHttp()).acquire(
+            {"tier1_employers": [{"id": "vanta", "company": "Vanta", "kind": "ashby", "slug": "vanta"}], "staffing_agencies": [], "discovery_helpers": []},
+            full_sweep=True, now=NOW,
+        )
+        self.assertTrue(result.complete)
+        self.assertEqual(len(result.observations), 1)
+        observation = result.observations[0]
+        self.assertEqual(observation.provider_job_id, "vanta-1")
+        self.assertEqual(observation.source_apply_url, "https://jobs.ashbyhq.com/vanta/vanta-1")
+        self.assertIn("Lead complex program delivery", observation.source_description_text)
+
     def test_actual_runtime_composition_persists_before_enrichment_and_fails_closed_on_incomplete_source(self):
         repository = InMemoryCareerRepository()
         browser_evidence = {
