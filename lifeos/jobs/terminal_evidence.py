@@ -29,7 +29,8 @@ _RAW_HTTP_URL = re.compile(r"https?://[^\s\"'<>]+", re.I)
 _JSONLD_SCRIPT = re.compile(r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', re.I | re.S)
 _META_DESCRIPTION = re.compile(r'<meta[^>]+(?:name|property)=["\'](?:description|og:description)["\'][^>]+content=["\']([^"\']+)["\']', re.I | re.S)
 _NEXT_DATA_SCRIPT = re.compile(r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>', re.I | re.S)
-_ASHBY_POSTING_URL = re.compile(r'https://jobs\.ashbyhq\.com/([^/?#]+)/posting/([a-zA-Z0-9\-]+)', re.I)
+_ASHBY_POSTING_URL = re.compile(r'https://jobs\.ashbyhq\.com/([^/?#]+)/([a-zA-Z0-9][a-zA-Z0-9\-]{6,})', re.I)
+_SHOPIFY_CAREERS_URL = re.compile(r'https://(?:www\.)?shopify\.com/careers/[^/?#]+_([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})', re.I)
 
 MAX_INTERMEDIARY_HOPS = 4
 
@@ -340,7 +341,7 @@ def _extract_next_data_description(json_text: str) -> str | None:
         node = stack.pop()
         if isinstance(node, dict):
             for k, v in node.items():
-                if k.lower() in ("description", "jobdescription", "descriptionhtml", "fulldescription", "jobdescriptionhtml"):
+                if k.lower() in ("description", "jobdescription", "job_description", "descriptionhtml", "fulldescription", "jobdescriptionhtml", "body", "jobdetails", "jobcontent"):
                     if isinstance(v, str) and len(v) > len(best): best = v
                 else: stack.append(v)
         elif isinstance(node, list): stack.extend(node)
@@ -515,6 +516,22 @@ def _acquire_ashby_api(source_url: str, fetcher: Fetcher) -> TerminalVacancyEvid
     )
 
 
+def _acquire_shopify_ashby_api(source_url: str, fetcher: Fetcher) -> TerminalVacancyEvidence | None:
+    m = _SHOPIFY_CAREERS_URL.search(source_url)
+    if not m: return None
+    api_url = f"https://api.ashbyhq.com/posting-api/job-board/shopify/job-postings/{m.group(1)}"
+    try: data = json.loads(fetcher.get(api_url).body)
+    except Exception: return None
+    if not isinstance(data, dict): return None
+    desc = _html_to_text(str(data.get("descriptionHtml") or "").strip())
+    if not desc or len(desc) < 80: return None
+    return TerminalVacancyEvidence(
+        canonical_url=source_url, description_text=desc,
+        posting_date_raw=str(data.get("publishedAt") or data.get("updatedAt") or "").strip(),
+        evidence_source="ashby_api", resolution_chain=(source_url, api_url),
+    )
+
+
 def _acquire_linkedin_source_description(source_url: str, fetcher: Fetcher) -> TerminalVacancyEvidence | None:
     guest_url = _linkedin_guest_url(source_url)
     if not guest_url: return None
@@ -538,7 +555,7 @@ def acquire_terminal_vacancy_evidence(
     """Acquire authoritative terminal evidence, then one bounded fallback."""
     if not source_url or is_source_message_url(source_url):
         return None
-    ashby = _acquire_ashby_api(source_url, fetcher)
+    ashby = _acquire_ashby_api(source_url, fetcher) or _acquire_shopify_ashby_api(source_url, fetcher)
     if ashby is not None:
         return ashby
     evidence = _acquire_once(source_url, fetcher)
