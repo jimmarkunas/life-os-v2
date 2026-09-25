@@ -254,6 +254,7 @@ class ScaleUpAcquisitionTests(unittest.TestCase):
         # Phase B proof: Scale-Up two-pass persist-before-enrich
         from lifeos.jobs.scale_up_runtime import execute_scale_up as _b_run
         from lifeos.jobs.newsletter_contract import Disposition as _Dsp
+        from lifeos.jobs.models import AdmissionStatus as _AS
         from lifeos.jobs.repository import InMemoryCareerRepository as _PhBRepo, ReadBackMismatch as _RBM
         from lifeos.jobs.qualification import LaneConfig as _LC
         from lifeos.jobs.fit_scoring import FitProfile as _FP
@@ -278,7 +279,15 @@ class ScaleUpAcquisitionTests(unittest.TestCase):
             self.assertEqual(len(_b_results), 1)
             self.assertNotEqual(_b_results[0].disposition, _Dsp.REVIEW_DEGRADED)
             self.assertEqual(len(_b_repo._store), 1)
-            self.assertIsNotNone(next(iter(_b_repo._store.values())).job.fit)
+            _stored = next(iter(_b_repo._store.values()))
+            self.assertEqual(_b_results[0].disposition, _Dsp.ADMITTED)
+            self.assertEqual(_stored.job.admission_status, _AS.ADMITTED)
+            self.assertIn("Scale-Up", _stored.job.eligible_lanes)
+            self.assertEqual(_stored.job.primary_lane, "Scale-Up")
+            self.assertTrue(_stored.job.job.apply_url)
+            self.assertIsNotNone(_stored.job.fit)
+            self.assertEqual(_stored.job.fit_authority.value, "authoritative")
+            self.assertEqual(_b_results[0].stable_job_key, _stored.job.stable_job_key)
         with self.subTest("phase_b persistence failure skips terminal evidence"):
             class _BFailRepo(_PhBRepo):
                 def upsert(self, record): raise _RBM("synthetic ph-b fail")
@@ -327,7 +336,7 @@ class ScaleUpAcquisitionTests(unittest.TestCase):
                     candidate = replace(_positive, route_evidence_status=status)
                     expected = _AS.PASSED_REVIEW if status is _ES.UNRESOLVED else _AS.EXCLUDED
                     self.assertEqual(_b_qualify(candidate, lane=_gated_lane, run_date=_d(2026, 1, 15)).admission_status, expected)
-            for location, expected in (("London", _ES.POSITIVE), ("Greater London", _ES.POSITIVE), ("Manchester", _ES.NEGATIVE), ("Paris", _ES.NEGATIVE), (None, _ES.UNRESOLVED), ("UK", _ES.UNRESOLVED), ("UK Remote", _ES.UNRESOLVED), ("Manchester / London", _ES.POSITIVE)):
+            for location, expected in (("London", _ES.POSITIVE), ("Greater London", _ES.POSITIVE), ("London, Ontario, Canada", _ES.NEGATIVE), ("Manchester", _ES.NEGATIVE), ("Paris", _ES.NEGATIVE), (None, _ES.UNRESOLVED), ("UK", _ES.UNRESOLVED), ("UK Remote", _ES.UNRESOLVED), ("Manchester / London", _ES.POSITIVE)):
                 with self.subTest(location=location):
                     self.assertIs(_geo(location), expected)
 

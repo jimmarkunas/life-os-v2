@@ -133,13 +133,13 @@ def qualify(candidate: NormalizedCandidate, *, lane: LaneConfig, run_date: date)
         status = AdmissionStatus.PASSED_REVIEW if freshness == FreshnessStatus.UNRESOLVED else AdmissionStatus.EXCLUDED
         return QualificationResult(status, freshness_reason, freshness)
 
-    if lane.visa_route_gate:
+    if getattr(lane, "visa_route_gate", False):
         if candidate.route_evidence_status is EvidenceStatus.NEGATIVE:
-            return QualificationResult(AdmissionStatus.EXCLUDED, "Scale-Up route evidence is negative", freshness)
+            return QualificationResult(AdmissionStatus.EXCLUDED, f"{lane.visa_route or lane.name} route evidence is negative", freshness)
         if candidate.route_evidence_status is not EvidenceStatus.POSITIVE:
-            return QualificationResult(AdmissionStatus.PASSED_REVIEW, "Scale-Up route evidence unresolved", freshness)
+            return QualificationResult(AdmissionStatus.PASSED_REVIEW, f"{lane.visa_route or lane.name} route evidence unresolved", freshness)
 
-    if lane.geography_gate:
+    if getattr(lane, "geography_gate", False):
         if candidate.geography_evidence_status is EvidenceStatus.NEGATIVE:
             return QualificationResult(AdmissionStatus.EXCLUDED, "Scale-Up geography is non-qualifying", freshness)
         if candidate.geography_evidence_status is not EvidenceStatus.POSITIVE:
