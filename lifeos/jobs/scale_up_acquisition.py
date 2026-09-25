@@ -385,7 +385,7 @@ class ScaleUpAcquirer:
 
     def _fallback_jobs(self, source):
         kind, text = source["source_type"], self._render(source.get("careers_url") or source["canonical_endpoint"])
-        if kind == "workable_public": return _generic_html(text, source, self.now)
+        if kind == "workable_public": return _workable_html(text, source, self.now)
         if kind == "ashby": return _path_jobs(text, source, self.now, r"/[^/]+/job/[^/]+")
         if kind == "pinpoint_json": return _path_jobs(text, source, self.now, r"/jobs/[^/]+")
         if kind == "static_complete_html": return _generic_html(text, source, self.now)

@@ -4,10 +4,10 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from datetime import datetime, timezone
 from pathlib import Path
-from lifeos.core.http import HttpResponse
+from lifeos.core.http import HttpError, HttpErrorKind, HttpResponse
 
 from lifeos.core.runtime import RunContext
-from lifeos.jobs.scale_up_acquisition import ScaleUpAcquirer, _recovery, _revolut, _veramed
+from lifeos.jobs.scale_up_acquisition import ScaleUpAcquirer, _recovery, _revolut, _sixflow, _veramed
 from lifeos.newsletter.models import SourceVacancyObservation
 
 ROOT = Path(__file__).parents[2]
@@ -85,6 +85,7 @@ class ScaleUpAcquisitionTests(unittest.TestCase):
         result = ScaleUpAcquirer(context=RunContext.start(now=acquired_at), http=FakeHttp()).acquire(REGISTRY, now=acquired_at)
         self.assertFalse(result.complete)
         self.assertEqual(len(result.sources), 48)
+        self.assertEqual(len({s.company for s in result.sources}), 48)
         self.assertTrue(all(s.state == "COMPLETE" for s in result.sources[:36]))
         self.assertTrue(all(s.state == "DEGRADED" for s in result.sources[36:]))
         self.assertTrue(all(isinstance(o, SourceVacancyObservation) and o.source_mailbox == "public-web" for o in result.observations))
@@ -160,6 +161,11 @@ class ScaleUpAcquisitionTests(unittest.TestCase):
             self.assertEqual([(row.role, row.provider_job_id) for row in rows], [("Role One", "1"), ("Role Two", "2")])
             with self.assertRaises(ValueError):
                 _veramed('<section class="panel" data-role="ops"><h2>Role One</h2><a href="/about">ABOUT</a></section>', source, acquired_at, lambda _url: "")
+        with self.subTest("Six and Flow deterministic zero is COMPLETE with no observations"):
+            source = next(item for item in REGISTRY["sources"] if item["company"] == "Six & Flow Ltd")
+            self.assertEqual(_sixflow("We don't have any live vacancies right now", source, acquired_at), [])
+            with self.assertRaises(ValueError):
+                _sixflow("", source, acquired_at)
 
     def test_shared_ats_api_failure_is_not_complete(self):
         broken = REGISTRY["sources"][0]["canonical_endpoint"]
@@ -169,6 +175,17 @@ class ScaleUpAcquisitionTests(unittest.TestCase):
         self.assertEqual(result.sources[0].state, "BLOCKED")
         with self.subTest("truncated registry"):
             result = ScaleUpAcquirer(context=RunContext.start(), http=FakeHttp()).acquire({"sources": REGISTRY["sources"][:-1]})
+            self.assertFalse(result.complete)
+        with self.subTest("403 on source not in fallback allowlist is BLOCKED not DEGRADED"):
+            lever_endpoint = next(s["canonical_endpoint"] for s in REGISTRY["sources"] if s["source_type"] == "lever_public")
+            class Http403(FakeHttp):
+                def request_json(self, context, method, url, **kwargs):
+                    if lever_endpoint in url:
+                        raise HttpError(HttpErrorKind.HTTP_STATUS, status_code=403)
+                    return super().request_json(context, method, url, **kwargs)
+            result = ScaleUpAcquirer(context=RunContext.start(), http=Http403()).acquire(REGISTRY)
+            lever_health = next(s for s in result.sources if s.company == "Vivacity Labs Limited")
+            self.assertEqual(lever_health.state, "BLOCKED")
             self.assertFalse(result.complete)
 
     def test_scale_up_production_main_composes_complete_runtime(self):
