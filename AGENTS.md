@@ -26,6 +26,8 @@ If stale context targets V1, stop with:
 
 The canonical policy owns generic development method and governance. This file owns only V2 repository routing and role-entry mechanics.
 
+For Jobs recovery/decomposition/simplification work, also read `docs/ARCHITECTURE.md` → **Jobs codebase simplification roadmap**. That section is implementation guidance subordinate to the current Jobs OS product canon and must not activate before its stated gate/R0 preconditions.
+
 V2-specific enforcement may stop with: `LINE_BUDGET_STOP`, `TOKEN_BUDGET_STOP`, or `TEST_BUDGET_STOP`.
 
 ## Optional role triggers
