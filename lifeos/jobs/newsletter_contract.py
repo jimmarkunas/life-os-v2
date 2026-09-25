@@ -81,6 +81,7 @@ def ingest(
     repository: CareerRepository,
     run_date: date,
     context: RunContext | None = None,
+    dry_run: bool = False,
 ) -> list[IngestResult]:
     """Resolve identity, qualify, converge duplicates, and persist serially.
 
@@ -274,16 +275,23 @@ def ingest(
         pending.append((key, record, same_key_indices, primary_index, primary_candidate, primary_disposition))
     persisted_items = []
     if pending:
-        try:
-            batch_upsert = getattr(repository, "upsert_many", None)
-            persisted_by_key = batch_upsert([item[1] for item in pending]) if callable(batch_upsert) else {item[0]: repository.upsert(item[1]) for item in pending}
-            persisted_items = [(*item[:1], persisted_by_key[item[0]], *item[2:]) for item in pending]
-        except Exception as exc:
-            label = "read-back mismatch" if isinstance(exc, ReadBackMismatch) else f"repository failure ({type(exc).__name__})"
-            for key, _record, same_key_indices, _primary_index, _primary_candidate, _disposition in pending:
-                for i in same_key_indices:
-                    candidate = candidates[i]
-                    results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, key, f"persistence {label}: {exc}", {"mismatches": getattr(exc, "mismatches", []), "error_type": type(exc).__name__, "operation": getattr(exc, "operation", None), "retry_limit": getattr(exc, "retry_limit", None), "attempts": getattr(exc, "attempts", None), "category": getattr(getattr(exc, "kind", None), "value", None), "retry_after_seconds": getattr(exc, "retry_after_seconds", None)})
+        if dry_run:
+            cache = getattr(repository, "cache", None)
+            if callable(cache):
+                for item in pending:
+                    cache(item[1])
+            persisted_items = [(item[0], item[1], *item[2:]) for item in pending]
+        else:
+            try:
+                batch_upsert = getattr(repository, "upsert_many", None)
+                persisted_by_key = batch_upsert([item[1] for item in pending]) if callable(batch_upsert) else {item[0]: repository.upsert(item[1]) for item in pending}
+                persisted_items = [(*item[:1], persisted_by_key[item[0]], *item[2:]) for item in pending]
+            except Exception as exc:
+                label = "read-back mismatch" if isinstance(exc, ReadBackMismatch) else f"repository failure ({type(exc).__name__})"
+                for key, _record, same_key_indices, _primary_index, _primary_candidate, _disposition in pending:
+                    for i in same_key_indices:
+                        candidate = candidates[i]
+                        results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, key, f"persistence {label}: {exc}", {"mismatches": getattr(exc, "mismatches", []), "error_type": type(exc).__name__, "operation": getattr(exc, "operation", None), "retry_limit": getattr(exc, "retry_limit", None), "attempts": getattr(exc, "attempts", None), "category": getattr(getattr(exc, "kind", None), "value", None), "retry_after_seconds": getattr(exc, "retry_after_seconds", None)})
     for key, persisted, same_key_indices, primary_index, primary_candidate, primary_disposition in persisted_items:
         for i in same_key_indices:
             candidate, _ = live_by_index[i]
@@ -305,8 +313,9 @@ def ingest(
                     ("qualification_error", i in qualification_errors),
                 ) if missing
             )
+            _pv = not dry_run
             if evaluation_pending:
-                results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, persisted.job.stable_job_key, evaluation_pending if isinstance(evaluation_pending, str) else "evaluation pending", {"company": candidate.job.company.name, "role": candidate.job.role, "source": candidate.job.source_provider, "fit_evidence": candidate.fit_evidence_kind.value}, True, _tes, _diagnostics)
+                results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, persisted.job.stable_job_key, evaluation_pending if isinstance(evaluation_pending, str) else "evaluation pending", {"company": candidate.job.company.name, "role": candidate.job.role, "source": candidate.job.source_provider, "fit_evidence": candidate.fit_evidence_kind.value}, _pv, _tes, _diagnostics)
                 continue
             if i == primary_index:
                 results[i] = IngestResult(
@@ -315,7 +324,7 @@ def ingest(
                     persisted.job.stable_job_key,
                     qualification.review_reason if qualification.admission_status is AdmissionStatus.EXCLUDED else None,
                     None,
-                    True,
+                    _pv,
                     _tes,
                     _diagnostics,
                 )
@@ -326,7 +335,7 @@ def ingest(
                     persisted.job.stable_job_key,
                     f"duplicate of evidence {primary_candidate.evidence_ref}; provenance merged into the canonical reconciliation",
                     None,
-                    True,
+                    _pv,
                     _tes,
                     _diagnostics,
                 )
