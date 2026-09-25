@@ -64,6 +64,11 @@ class InMemoryCareerRepository:
 
     def __init__(self) -> None:
         self._store: dict[str, JobLedgerRecord] = {}
+        self._last_persistence_accounting: dict[str, int] = {"input": 0, "unchanged": 0, "updated": 0, "created": 0, "authoritative_read_back_verified": 0}
+
+    @property
+    def last_persistence_accounting(self) -> dict[str, int]:
+        return dict(self._last_persistence_accounting)
 
     def get_many(self, stable_job_keys: list[str]) -> dict[str, JobLedgerRecord]:
         return {key: self._store[key] for key in stable_job_keys if key in self._store}
@@ -82,8 +87,29 @@ class InMemoryCareerRepository:
 
     def upsert(self, record: JobLedgerRecord) -> JobLedgerRecord:
         key = record.job.stable_job_key
+        existed = key in self._store
         self._store[key] = record
         persisted = self._store.get(key)
         if persisted is None or persisted != record:
             raise ReadBackMismatch(f"read-back mismatch for {key}")
+        self._last_persistence_accounting = {"input": 1, "unchanged": 0, "updated": int(existed), "created": int(not existed), "authoritative_read_back_verified": 1}
         return replace(persisted)
+
+    def upsert_many(self, records: list[JobLedgerRecord]) -> dict[str, JobLedgerRecord]:
+        unchanged = created = updated = 0
+        result: dict[str, JobLedgerRecord] = {}
+        for record in records:
+            key = record.job.stable_job_key
+            existed = key in self._store
+            if existed and self._store[key] == record:
+                unchanged += 1
+                result[key] = replace(self._store[key])
+                continue
+            persisted = self.upsert(record)
+            result[key] = persisted
+            if existed:
+                updated += 1
+            else:
+                created += 1
+        self._last_persistence_accounting = {"input": len(records), "unchanged": unchanged, "updated": updated, "created": created, "authoritative_read_back_verified": updated + created}
+        return result

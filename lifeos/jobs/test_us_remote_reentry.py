@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 from lifeos.core.runtime import RunContext
 from lifeos.jobs.fit_scoring import FitProfile
-from lifeos.jobs.repository import InMemoryCareerRepository
+from lifeos.jobs.repository import InMemoryCareerRepository, ReadBackMismatch
 from lifeos.jobs.us_remote_acquisition import AcquisitionResult, SourceHealth, USRemoteAcquirer
 from lifeos.jobs.us_remote_runtime import execute_us_remote, load_registry
 from lifeos.newsletter.models import SourceVacancyObservation
@@ -167,6 +167,9 @@ class _CountingAuthoritativeRepository(InMemoryCareerRepository):
         self.upsert_calls += 1
         return super().upsert(record)
 
+    def upsert_many(self, records):
+        return super().upsert_many(records)
+
 
 class _BrokenSourceAcquirer(_FakeAcquirer):
     def acquire(self, registry, **kwargs):
@@ -174,6 +177,15 @@ class _BrokenSourceAcquirer(_FakeAcquirer):
             observations=(),
             sources=(SourceHealth("synthetic-source", "DEGRADED", 0, "synthetic-source-failure"),),
         )
+
+
+class _FailingUpsertRepository(_CountingAuthoritativeRepository):
+    def upsert(self, record):
+        raise ReadBackMismatch(f"synthetic failure for {record.job.stable_job_key}")
+
+    def upsert_many(self, records):
+        self.upsert_calls += len(records)
+        raise ReadBackMismatch(f"synthetic batch failure ({len(records)} records)")
 
 
 class UsRemoteReentryProof(unittest.TestCase):
@@ -299,6 +311,16 @@ class UsRemoteReentryProof(unittest.TestCase):
         self.assertEqual(degraded.body["status"], "DEGRADED")
         self.assertGreater(degraded.body["jobs"]["dispositions"]["review_degraded"], 0)
 
+        # Failure dedupe: one failed canonical key counts once even if multiple observations share it.
+        failing_repo = _FailingUpsertRepository()
+        with patch("lifeos.jobs.us_remote_runtime.MailRouter", _FakeMailRouter), \
+             patch("lifeos.jobs.us_remote_runtime.NewsletterProcessor", _FakeNewsletterProcessor), \
+             patch("lifeos.jobs.us_remote_runtime.USRemoteAcquirer", _FakeAcquirer), \
+             patch("lifeos.jobs.us_remote_runtime.NotionCareerRepository", lambda **kwargs: failing_repo):
+            failed_result = execute_us_remote(**{**common, "context": RunContext.start(timeout_seconds=30)})
+        self.assertEqual(failed_result.body["jobs"]["initial_pass"]["persistence_failures"], 1)
+        self.assertEqual(failed_result.body["jobs"]["reconcile_pass"]["persistence_failures"], 0)
+
     def test_execute_us_remote_production_volume_two_pass_request_topology(self):
         """1,088-observation recovery keeps the second identity phase empty."""
         repository = _CountingAuthoritativeRepository()
@@ -352,6 +374,17 @@ class UsRemoteReentryProof(unittest.TestCase):
         self.assertEqual(repository.apply_url_queries - first_apply_queries, 0)
         self.assertEqual(first_upserts, 2176)
         self.assertEqual(repository.upsert_calls - first_upserts, 1088)
+        self.assertEqual(first.body["jobs"]["initial_pass"]["created"], 1088)
+        self.assertEqual(first.body["jobs"]["initial_pass"]["updated"], 0)
+        self.assertEqual(first.body["jobs"]["initial_pass"]["unchanged"], 0)
+        self.assertEqual(first.body["jobs"]["initial_pass"]["persistence_failures"], 0)
+        self.assertEqual(first.body["jobs"]["reconcile_pass"]["created"], 0)
+        self.assertEqual(first.body["jobs"]["reconcile_pass"]["updated"], 1088)
+        self.assertEqual(first.body["jobs"]["reconcile_pass"]["unchanged"], 0)
+        self.assertEqual(first.body["jobs"]["reconcile_pass"]["persistence_failures"], 0)
+        self.assertEqual(second.body["jobs"]["initial_pass"]["persistence_failures"], 0)
+        self.assertEqual(second.body["jobs"]["reconcile_pass"]["created"], 0)
+        self.assertEqual(second.body["jobs"]["reconcile_pass"]["persistence_failures"], 0)
         self.assertEqual(first_resolver_calls, 1021)
         self.assertEqual(replay_resolver_calls, 0)
         self.assertEqual(max(repository.stable_key_query_sizes), 50)

@@ -297,6 +297,12 @@ def execute_us_remote(
             run_date=end.date(),
             context=context,
         )
+        _initial_pass_accounting = getattr(repository, "last_persistence_accounting", {})
+        _initial_pass_failures = len({
+            r.stable_job_key for r in initial_ingest_results
+            if r.stable_job_key and not r.persistence_verified
+            and r.detail and r.detail.startswith("persistence")
+        })
         initial_by_ref = {
             candidate.evidence_ref: result
             for candidate, result in zip(initial_candidates, initial_ingest_results)
@@ -366,6 +372,12 @@ def execute_us_remote(
             run_date=end.date(),
             context=context,
         )
+        _reconcile_pass_accounting = getattr(repository, "last_persistence_accounting", {})
+        _reconcile_pass_failures = len({
+            r.stable_job_key for r in enrichment_ingest_results
+            if r.stable_job_key and not r.persistence_verified
+            and r.detail and r.detail.startswith("persistence")
+        })
         timings["reconcile_persist"] = round(perf_counter() - stage_started, 3)
 
         final_by_ref = dict(initial_by_ref)
@@ -494,6 +506,8 @@ def execute_us_remote(
                     disposition.value: sum(item.disposition == disposition for item in results)
                     for disposition in Disposition
                 },
+                "initial_pass": {**_initial_pass_accounting, "persistence_failures": _initial_pass_failures},
+                "reconcile_pass": {**_reconcile_pass_accounting, "persistence_failures": _reconcile_pass_failures},
             },
             "timings": timings,
             "browser_fallback_available": fallback is not None,
