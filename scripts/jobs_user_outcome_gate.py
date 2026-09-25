@@ -80,22 +80,13 @@ def main() -> int:
     resolver_calls: list[str] = []
     events: list[tuple[str, str]] = []
     original_upsert = repo.upsert
-    original_upsert_many = getattr(repo, "upsert_many", None)
 
     def tracked_upsert(record):
         persisted = original_upsert(record)
         events.append(("read_back", record.job.stable_job_key))
         return persisted
 
-    def tracked_upsert_many(records):
-        result = original_upsert_many(records)
-        for key in result:
-            events.append(("read_back", key))
-        return result
-
     repo.upsert = tracked_upsert
-    if original_upsert_many is not None:
-        repo.upsert_many = tracked_upsert_many
 
     def resolve(url, **_kwargs):
         events.append(("terminal", url))

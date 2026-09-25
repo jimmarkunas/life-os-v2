@@ -105,11 +105,8 @@ class InMemoryCareerRepository:
                 unchanged += 1
                 result[key] = replace(self._store[key])
                 continue
-            self._store[key] = record
-            persisted = self._store.get(key)
-            if persisted is None or persisted != record:
-                raise ReadBackMismatch(f"read-back mismatch for {key}")
-            result[key] = replace(persisted)
+            persisted = self.upsert(record)
+            result[key] = persisted
             if existed:
                 updated += 1
             else:
