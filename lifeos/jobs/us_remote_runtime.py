@@ -296,6 +296,7 @@ def execute_us_remote(
             repository=repository,
             run_date=end.date(),
             context=context,
+            dry_run=True,
         )
         _initial_pass_accounting = getattr(repository, "last_persistence_accounting", {})
         _initial_pass_failures = len({
@@ -311,7 +312,7 @@ def execute_us_remote(
             observation.evidence_ref
             for observation in newsletter_to_resolve + web_to_resolve
             if initial_by_ref.get(observation.evidence_ref)
-            and initial_by_ref[observation.evidence_ref].persistence_verified
+            and initial_by_ref[observation.evidence_ref].stable_job_key is not None
         }
         newsletter_enrichment_observations = tuple(
             observation for observation in newsletter_to_resolve
