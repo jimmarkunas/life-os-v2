@@ -168,7 +168,6 @@ class _CountingAuthoritativeRepository(InMemoryCareerRepository):
         return super().upsert(record)
 
     def upsert_many(self, records):
-        self.upsert_calls += len(records)
         return super().upsert_many(records)
 
 
