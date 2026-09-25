@@ -13,7 +13,7 @@ from enum import Enum
 from lifeos.core.runtime import RunContext
 from lifeos.jobs.dedupe import LaneObservation, reconcile
 from lifeos.jobs.identity import IdentityCollision, canonical_url, derive_identity_evidence, resolve_existing_identity, stable_job_key
-from lifeos.jobs.lifecycle import apply_observation, new_record
+from lifeos.jobs.lifecycle import JobLedgerRecord, apply_observation, new_record
 from lifeos.jobs.models import AdmissionStatus, FitAuthority, NormalizedCandidate
 from lifeos.newsletter.models import SourceVacancyObservation
 from lifeos.jobs.qualification import LaneConfig, QualificationResult, qualify
@@ -38,6 +38,12 @@ class IngestResult:
     persistence_verified: bool = False
     terminal_evidence_satisfied: bool = False
     terminal_evidence_diagnostics: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class IngestBatch:
+    results: list[IngestResult]
+    existing_records: dict[str, JobLedgerRecord]
 
 
 def result_is_accounted(result: IngestResult | None) -> bool:
@@ -73,7 +79,7 @@ def derive_review_these_jobs(observations: list[SourceVacancyObservation], candi
     return [rows[key] for key in sorted(rows)]
 
 
-def ingest(
+def _ingest_batch(
     candidates: list[NormalizedCandidate],
     *,
     lane: LaneConfig,
@@ -82,7 +88,7 @@ def ingest(
     run_date: date,
     context: RunContext | None = None,
     dry_run: bool = False,
-) -> list[IngestResult]:
+) -> IngestBatch:
     """Resolve identity, qualify, converge duplicates, and persist serially.
 
     Returns exactly one result per input candidate in input order. When a
@@ -230,7 +236,7 @@ def ingest(
         primary_index_for_key.setdefault(key, i)
 
     if not observations:
-        return results  # type: ignore[return-value]
+        return IngestBatch(results, existing_records)
 
     reconciled = reconcile(observations, lane_priority=lane_priority)
 
@@ -341,4 +347,18 @@ def ingest(
                 )
 
     assert all(result is not None for result in results), "every input candidate must receive exactly one result"
-    return results  # type: ignore[return-value]
+    return IngestBatch(results, existing_records)
+
+
+def ingest_batch(
+    candidates: list[NormalizedCandidate], **kwargs: object
+) -> IngestBatch:
+    """Run ingest once and expose its authoritative pre-merge snapshot."""
+    return _ingest_batch(candidates, **kwargs)  # type: ignore[arg-type]
+
+
+def ingest(
+    candidates: list[NormalizedCandidate], **kwargs: object
+) -> list[IngestResult]:
+    """Compatibility API returning only terminal ingest results."""
+    return ingest_batch(candidates, **kwargs).results  # type: ignore[arg-type]

@@ -7,6 +7,7 @@ ratchet is already above its allowed baseline. Run it explicitly with
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 from datetime import date
 import threading
 import unittest
@@ -18,7 +19,7 @@ from lifeos.jobs.lifecycle import LifecycleStatus, JobLedgerRecord, new_record
 from lifeos.jobs.models import AdmissionStatus, Company, FitAuthority, Job, JobObservation, WorkMode
 from lifeos.jobs.models import FreshnessStatus, NormalizedCandidate
 from lifeos.jobs.notion_repository import NotionCareerRepository, NotionCareerRepositoryConfig, _record_to_properties
-from lifeos.jobs.newsletter_contract import ingest, result_is_accounted
+from lifeos.jobs.newsletter_contract import ingest, ingest_batch, result_is_accounted
 from lifeos.jobs.qualification import LaneConfig
 from lifeos.integrations.notion import NotionTransport
 from lifeos.jobs.repository import ReadBackMismatch
@@ -109,6 +110,27 @@ class FakeTransport:
 
 
 class CanonicalPersistenceProofs(unittest.TestCase):
+    def test_ingest_batch_exposes_true_pre_merge_snapshot_without_second_lookup(self):
+        transport = FakeTransport()
+        repository = NotionCareerRepository(transport=transport, config=NotionCareerRepositoryConfig("ledger"))
+        existing = repository.upsert(_record())
+        incoming_job = replace(existing.job.job, role="Senior Program Manager", location="Remote", compensation_text="$130000")
+        incoming = NormalizedCandidate(
+            job=incoming_job, fit=91, market="US", freshness_status=FreshnessStatus.FRESH,
+            evidence_ref="pre-merge-snapshot", fit_authority=FitAuthority.AUTHORITATIVE,
+            source_types=("US Web",),
+        )
+        transport.calls.clear()
+        repository._records.clear()
+        repository._page_ids.clear()
+
+        batch = ingest_batch([incoming], lane=LaneConfig("US Remote", "US", 72, None, "remote_only", None, False, None), lane_priority={"US Remote": 0}, repository=repository, run_date=date(2026, 1, 15), dry_run=True)
+
+        self.assertEqual(len([call for call in transport.calls if call[0] == "query"]), 1)
+        self.assertEqual(batch.existing_records[existing.job.stable_job_key].job.job.role, "Program Manager")
+        self.assertEqual(batch.results[0].stable_job_key, existing.job.stable_job_key)
+        self.assertEqual(batch.existing_records[existing.job.stable_job_key].job.job.role, "Program Manager")
+
     def test_1023_identity_lookup_uses_bounded_concurrency_and_exact_chunks(self):
         class TimedLookupTransport(FakeTransport):
             def __init__(self):
