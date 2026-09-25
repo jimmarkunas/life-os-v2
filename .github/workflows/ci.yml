@@ -40,6 +40,10 @@ jobs:
       - name: Install test runner
         run: python -m pip install --disable-pip-version-check pytest
 
+      - name: One-off live Greenhouse API proof
+        if: github.event_name == 'pull_request' && github.head_ref == 'poc/greenhouse-live-api'
+        run: python tests/poc/greenhouse_authoritative_jd/prove_live_greenhouse_api.py
+
       - name: Development efficiency guard
         if: github.event_name == 'pull_request'
         env:
