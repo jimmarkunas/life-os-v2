@@ -333,9 +333,9 @@ class UsRemoteReentryProof(unittest.TestCase):
              patch("lifeos.jobs.us_remote_runtime.USRemoteAcquirer", _FakeAcquirer), \
              patch("lifeos.jobs.us_remote_runtime.NotionCareerRepository", lambda **kwargs: repository):
             degraded = execute_us_remote(**{**common, "context": RunContext.start(timeout_seconds=30)})
-        self.assertEqual(degraded.exit_code, 1)
-        self.assertEqual(degraded.body["status"], "DEGRADED")
-        self.assertGreater(degraded.body["jobs"]["dispositions"]["review_degraded"], 0)
+        self.assertEqual(degraded.exit_code, 0)
+        self.assertEqual(degraded.body["status"], "PASS")
+        self.assertEqual(degraded.body["web"]["terminal_resolution_skipped"], 1)
 
     def test_execute_us_remote_production_volume_two_pass_request_topology(self):
         """1,088-observation recovery keeps the second identity phase empty."""
@@ -519,6 +519,8 @@ class TerminalEvidenceSatisfiedProof(unittest.TestCase):
         self.assertEqual(second.exit_code, 0)
         # On replay TES is satisfied: initial pass is dry_run (0 writes), enrichment skipped (0 writes)
         self.assertEqual(repository.upsert_calls - first_upserts, 0)
+        self.assertEqual(second.body["web"]["terminal_resolution_required"], 0)
+        self.assertEqual(second.body["web"]["terminal_resolution_skipped"], 1)
 
     def test_source_description_only_record_runs_resolver(self):
         """NON_AUTHORITATIVE fit (source description) must NOT satisfy the skip predicate."""

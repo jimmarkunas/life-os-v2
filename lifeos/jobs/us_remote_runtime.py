@@ -16,9 +16,11 @@ from lifeos.integrations.gmail import GmailInboxMetadataPort, GmailMailboxTransp
 from lifeos.integrations.notion import NotionTransport
 from lifeos.jobs.fit_scoring import FitProfile
 from lifeos.jobs.newsletter_adapter import HttpClientFetcher, NewsletterAdapterConfig, NewsletterJobsAdapter, TerminalEvidenceCache
-from lifeos.jobs.newsletter_contract import Disposition, IngestResult, derive_review_these_jobs, ingest, result_is_accounted
+from lifeos.jobs.newsletter_contract import Disposition, IngestResult, derive_review_these_jobs, ingest, ingest_batch, result_is_accounted
 from lifeos.jobs.newsletter_adapter import _adapt_all
 from lifeos.jobs.notion_repository import NotionCareerRepository, NotionCareerRepositoryConfig
+from lifeos.jobs.identity import canonical_url, stable_job_key
+from lifeos.jobs.models import FitAuthority
 from lifeos.jobs.qualification import LaneConfig
 from lifeos.jobs.terminal_evidence import browser_evidence, fallback_fetcher
 from lifeos.jobs.us_remote_acquisition import USRemoteAcquirer
@@ -289,7 +291,7 @@ def execute_us_remote(
             for observation in web_to_resolve
         ]
         stage_started = perf_counter()
-        initial_ingest_results = ingest(
+        initial_batch = ingest_batch(
             initial_candidates,
             lane=lane,
             lane_priority=lane_priority,
@@ -298,6 +300,7 @@ def execute_us_remote(
             context=context,
             dry_run=True,
         )
+        initial_ingest_results = initial_batch.results
         _initial_pass_accounting = getattr(repository, "last_persistence_accounting", {})
         _initial_pass_failures = len({
             r.stable_job_key for r in initial_ingest_results
@@ -307,6 +310,28 @@ def execute_us_remote(
         initial_by_ref = {
             candidate.evidence_ref: result
             for candidate, result in zip(initial_candidates, initial_ingest_results)
+        }
+        identity_by_ref = {candidate.evidence_ref: candidate for candidate in initial_candidates}
+        existing_by_ref = {
+            candidate.evidence_ref: initial_batch.existing_records[result.stable_job_key]
+            for candidate, result in zip(initial_candidates, initial_ingest_results)
+            if result.stable_job_key in initial_batch.existing_records
+        }
+        suppressed_refs = {
+            observation.evidence_ref
+            for observation in web_to_resolve
+            if (candidate := identity_by_ref.get(observation.evidence_ref))
+            and (record := existing_by_ref.get(observation.evidence_ref))
+            and record.job.fit is not None
+            and record.job.fit_authority is FitAuthority.AUTHORITATIVE
+            and record.job.job.apply_url
+            and stable_job_key(candidate.job) == record.job.stable_job_key
+            and candidate.job.company.name.strip() == record.job.job.company.name.strip()
+            and candidate.job.role.strip() == record.job.job.role.strip()
+            and (candidate.job.location or "").strip() == (record.job.job.location or "").strip()
+            and candidate.job.compensation_text == record.job.job.compensation_text
+            and (not observation.provider_job_id or not record.job.job.provider_job_id or observation.provider_job_id == record.job.job.provider_job_id)
+            and (not observation.source_apply_url or not record.job.job.apply_url or canonical_url(observation.source_apply_url) == canonical_url(record.job.job.apply_url))
         }
         persistence_verified = {
             observation.evidence_ref
@@ -322,6 +347,7 @@ def execute_us_remote(
         web_enrichment_observations = tuple(
             observation for observation in web_to_resolve
             if observation.evidence_ref in persistence_verified
+            and observation.evidence_ref not in suppressed_refs
             and not initial_by_ref[observation.evidence_ref].terminal_evidence_satisfied
         )
         newsletter_terminal_candidates = len(newsletter_to_resolve)
@@ -399,7 +425,9 @@ def execute_us_remote(
         for observation in list(newsletter_to_resolve) + list(web_to_resolve):
             ref = observation.evidence_ref
             initial = initial_by_ref.get(ref)
-            if initial and initial.terminal_evidence_satisfied and ref not in enriched_refs:
+            if ref in suppressed_refs:
+                final_by_ref[ref] = replace(initial, disposition=Disposition.DUPLICATE, detail="unchanged canonical web vacancy")
+            elif initial and initial.terminal_evidence_satisfied and ref not in enriched_refs:
                 final_by_ref[ref] = replace(initial, disposition=Disposition.UPDATED)
         newsletter_ingest_count = len(newsletter_to_resolve)
         newsletter_results = list(newsletter_preexcluded) + [final_by_ref[item.evidence_ref] for item in newsletter_to_resolve]
