@@ -39,6 +39,7 @@ _ROLE = re.compile(
 )
 _REMOTE = re.compile(r"\b(remote|distributed|work from home|wfh)\b", re.I)
 _US = re.compile(r"\b(united states|usa|u\.s\.|us|north america|americas)\b", re.I)
+_NON_US = re.compile(r"\b(united kingdom|u\.k\.|canada|toronto|ontario|british columbia|australia|germany|france|india|netherlands|ireland|singapore)\b", re.I)
 _JOB_PATH = re.compile(r"/(?:job|job-detail|jobs|career|careers|position|positions|opening|openings|requisition)/", re.I)
 _JOB_QUERY_KEYS = frozenset({"id", "job", "jobid", "job_id", "position", "positionid", "requisition", "req"}); _CONTROL_TEXT = re.compile(r"\b(?:view all|see all|search|filter|category|categories|sign in|log in|subscribe|learn more|privacy|terms)\b", re.I)
 _GENERIC_CTA = frozenset({"apply", "apply now", "view job", "view details", "job details", "learn more", "read more"}); _CARD_MARKERS = re.compile(r"(?:job|vacancy|position|posting|card|result-item|search-result)", re.I)
@@ -161,6 +162,8 @@ def _plausible(role: str, location: str | None) -> bool:
         return False
     if not location:
         return True
+    if _NON_US.search(location):
+        return False
     return bool(_REMOTE.search(location) or _US.search(location))
 
 

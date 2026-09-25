@@ -206,5 +206,134 @@ class TerminalEvidenceProofs(unittest.TestCase):
         acquire.assert_called_once()
 
 
+class ProductionRegressionProofs(unittest.TestCase):
+    """Production-shaped regression proofs for run-36097365815 failures."""
+
+    # ------------------------------------------------------------------
+    # Vanta: jobs.ashbyhq.com/{org}/{uuid} — no /posting/ segment
+    # ------------------------------------------------------------------
+    def test_vanta_ashby_url_reaches_employer_ats_jd(self):
+        vanta_url = "https://jobs.ashbyhq.com/vanta/021cca9c-f937-4d97-8be7-bc83af8307be"
+        api_url = "https://api.ashbyhq.com/posting-api/job-board/vanta/job-postings/021cca9c-f937-4d97-8be7-bc83af8307be"
+        api_body = '{"descriptionHtml":"<p>Lead complex security-compliance programs and own cross-functional delivery of multi-quarter security initiatives across engineering and go-to-market.</p>","publishedAt":"2026-01-10"}'
+        evidence = acquire_terminal_vacancy_evidence(
+            vanta_url,
+            fetcher=MappingFetcher({"pages": [
+                {"url": vanta_url, "final_url": vanta_url, "html": "<html><p>card only</p></html>"},
+                {"url": api_url, "final_url": api_url, "html": api_body},
+            ]}),
+            company="Vanta",
+            role="Technical Program Manager",
+            provider_job_id="021cca9c-f937-4d97-8be7-bc83af8307be",
+        )
+        self.assertIsNotNone(evidence)
+        self.assertEqual(evidence.canonical_url, vanta_url)
+        self.assertEqual(evidence.evidence_source, "ashby_api")
+        self.assertIn("compliance programs", evidence.description_text)
+        self.assertEqual(evidence.posting_date_raw, "2026-01-10")
+
+    def test_vanta_ashby_evidence_produces_terminal_disposition_via_adapter(self):
+        from datetime import date
+        from dataclasses import replace
+        from lifeos.jobs.models import FitAuthority
+        from lifeos.jobs.newsletter_contract import Disposition, ingest
+        from lifeos.jobs.repository import InMemoryCareerRepository
+
+        vanta_url = "https://jobs.ashbyhq.com/vanta/021cca9c-f937-4d97-8be7-bc83af8307be"
+        desc = "Lead complex security-compliance programs and own cross-functional delivery of multi-quarter security initiatives across engineering and go-to-market."
+        evidence = TerminalVacancyEvidence(vanta_url, desc, "2026-01-10", "ashby_api", (vanta_url,))
+        with patch("lifeos.jobs.newsletter_adapter.acquire_terminal_vacancy_evidence", return_value=evidence):
+            candidate = _adapter(None).to_jobs_candidate(
+                _observation(source_url=vanta_url, provider="Vanta", provider_id="021cca9c")
+            )
+        self.assertEqual(candidate.job.apply_url, vanta_url)
+        self.assertIn("compliance programs", candidate.job.description_text or "")
+        enriched = replace(candidate, unresolved_reason=None, fit=85, fit_authority=FitAuthority.AUTHORITATIVE)
+        result = ingest([enriched], lane=LANE, lane_priority={"US Remote": 0},
+                        repository=InMemoryCareerRepository(), run_date=date(2026, 1, 15))
+        self.assertEqual(result[0].disposition, Disposition.CREATED)
+
+    # ------------------------------------------------------------------
+    # Shopify: shopify.com/careers/{title}_{uuid} → Ashby board "shopify"
+    # ------------------------------------------------------------------
+    def test_shopify_careers_url_reaches_employer_ats_jd(self):
+        shopify_url = "https://www.shopify.com/careers/senior-deal-strategy-manager-payments-platform-pricing_9f1a97d8-5862-4ee4-b2b1-0dc02e20c11c"
+        api_url = "https://api.ashbyhq.com/posting-api/job-board/shopify/job-postings/9f1a97d8-5862-4ee4-b2b1-0dc02e20c11c"
+        api_body = '{"descriptionHtml":"<p>Drive deal strategy and pricing programs across payments platform products, owning cross-functional delivery for major commercial initiatives.</p>","publishedAt":"2026-01-08"}'
+        evidence = acquire_terminal_vacancy_evidence(
+            shopify_url,
+            fetcher=MappingFetcher({"pages": [
+                {"url": shopify_url, "final_url": shopify_url, "html": "<html><p>card only</p></html>"},
+                {"url": api_url, "final_url": api_url, "html": api_body},
+            ]}),
+            company="Shopify",
+            role="Senior Deal Strategy Manager",
+            provider_job_id="9f1a97d8",
+        )
+        self.assertIsNotNone(evidence)
+        self.assertEqual(evidence.canonical_url, shopify_url)
+        self.assertEqual(evidence.evidence_source, "ashby_api")
+        self.assertIn("deal strategy", evidence.description_text)
+        self.assertEqual(evidence.posting_date_raw, "2026-01-08")
+
+    def test_shopify_careers_evidence_produces_terminal_disposition_via_adapter(self):
+        from datetime import date
+        from dataclasses import replace
+        from lifeos.jobs.models import FitAuthority
+        from lifeos.jobs.newsletter_contract import Disposition, ingest
+        from lifeos.jobs.repository import InMemoryCareerRepository
+
+        shopify_url = "https://www.shopify.com/careers/senior-deal-strategy-manager-payments-platform-pricing_9f1a97d8-5862-4ee4-b2b1-0dc02e20c11c"
+        desc = "Drive deal strategy and pricing programs across payments platform products, owning cross-functional delivery for major commercial initiatives."
+        evidence = TerminalVacancyEvidence(shopify_url, desc, "2026-01-08", "ashby_api", (shopify_url,))
+        with patch("lifeos.jobs.newsletter_adapter.acquire_terminal_vacancy_evidence", return_value=evidence):
+            candidate = _adapter(None).to_jobs_candidate(
+                _observation(source_url=shopify_url, provider="Shopify", provider_id="9f1a97d8")
+            )
+        self.assertEqual(candidate.job.apply_url, shopify_url)
+        self.assertIn("deal strategy", candidate.job.description_text or "")
+        enriched = replace(candidate, unresolved_reason=None, fit=80, fit_authority=FitAuthority.AUTHORITATIVE)
+        result = ingest([enriched], lane=LANE, lane_priority={"US Remote": 0},
+                        repository=InMemoryCareerRepository(), run_date=date(2026, 1, 15))
+        self.assertEqual(result[0].disposition, Disposition.CREATED)
+
+    # ------------------------------------------------------------------
+    # Robert Half identity regression: ML-engineer URL cannot store Enterprise Architect
+    # ------------------------------------------------------------------
+    def test_robert_half_machine_learning_engineer_url_cannot_become_enterprise_architect(self):
+        rh_url = "https://www.roberthalf.com/us/en/job/reston-virginia/machine-learning-engineer/04838-0013428083-usen"
+        next_data_body = (
+            '<script id="__NEXT_DATA__" type="application/json">{"props":{"pageProps":{"job":{"job_description":'
+            '"<p>Lead ML-platform delivery and own machine-learning engineer programs.</p>",'
+            '"title":"Machine Learning Engineer","location":"Reston, VA"}}}}</script>'
+        )
+        evidence = acquire_terminal_vacancy_evidence(
+            rh_url,
+            fetcher=MappingFetcher({"pages": [
+                {"url": rh_url, "final_url": rh_url, "html": next_data_body},
+            ]}),
+        )
+        self.assertIsNotNone(evidence)
+        self.assertEqual(evidence.canonical_url, rh_url)
+        self.assertIn("machine-learning", evidence.description_text.casefold())
+        self.assertNotIn("enterprise architect", evidence.description_text.casefold())
+
+    # ------------------------------------------------------------------
+    # Negative acquisition: explicit non-US geography must be rejected
+    # ------------------------------------------------------------------
+    def test_plausible_rejects_explicit_uk_toronto_canada(self):
+        from lifeos.jobs.us_remote_acquisition import _plausible
+        self.assertFalse(_plausible("Program Manager", "Remote - United Kingdom"))
+        self.assertFalse(_plausible("Technical Program Manager", "Toronto, ON, Canada"))
+        self.assertFalse(_plausible("Project Manager", "Canada"))
+        self.assertFalse(_plausible("Product Manager", "Ontario, Canada"))
+
+    def test_plausible_rejects_software_engineer_false_positives_from_platform_terms(self):
+        from lifeos.jobs.us_remote_acquisition import _plausible
+        self.assertFalse(_plausible("Software Engineer", "Remote, US"))
+        self.assertFalse(_plausible("Staff Engineer", None))
+        self.assertFalse(_plausible("Senior Software Engineer", "United States"))
+
+
 if __name__ == "__main__":
     unittest.main()
