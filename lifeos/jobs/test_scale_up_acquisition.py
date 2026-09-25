@@ -261,10 +261,10 @@ class ScaleUpAcquisitionTests(unittest.TestCase):
         from lifeos.newsletter.models import SourceVacancyObservation as _SVO
         from lifeos.core.runtime import RunContext as _RC
         _b_lane = _LC(name="Scale-Up", market="UK", fit_floor=72, target_review_floor=None, work_mode_policy="any", compensation_floor=None, freshness_gate=False, freshness_max_days=None, is_target_bucket=True, visa_route="Scale-up", visa_route_gate=True, geography_gate=True)
-        _b_profile = _FP("V3-su-phaseb", {"DIRECT": ("program", "technical program", "product"), "ADJACENT": ("architect",), "METHOD_EQUIVALENT": ("delivery",), "UNSUPPORTED": ("software engineer",)}, ("automation", "AI"), {"role_seniority": ("years? experience", "senior", "lead"), "functional": ("program", "delivery", "management"), "technical_platform": ("cloud", "platform", "data"), "delivery_complexity": ("complex", "cross-functional"), "competitive_advantage": ("strategy", "automation", "AI")}, {"DIRECT": ("required", "must", "experience"), "ADJACENT": ("preferred",), "METHOD_EQUIVALENT": ("plus",), "UNSUPPORTED": ("software engineer",)}, ("required", "must", "experience", "lead", "manage", "preferred", "plus"), (), ("hands-on coding", "software development"))
-        _b_html = "<h1>Program Manager</h1><p>Responsibilities</p><ul><li>Lead program delivery and cloud platform adoption.</li><li>Own strategy across complex initiatives.</li></ul><p>Required qualifications: 5 years experience in program management.</p>"
+        _b_profile = _FP("V3-su-phaseb", {"DIRECT": ("program", "technical program", "product"), "ADJACENT": ("architect",), "METHOD_EQUIVALENT": ("delivery",), "UNSUPPORTED": ("software engineer",)}, ("automation", "AI", "program", "technical", "product", "delivery", "management", "cloud", "data"), {"role_seniority": ("years? experience", "senior", "lead"), "functional": ("program", "delivery", "management"), "technical_platform": ("cloud", "platform", "data"), "delivery_complexity": ("complex", "cross-functional"), "competitive_advantage": ("strategy", "automation", "AI")}, {"DIRECT": ("required", "must", "experience"), "ADJACENT": ("preferred",), "METHOD_EQUIVALENT": ("plus",), "UNSUPPORTED": ("software engineer",)}, ("required", "must", "experience", "lead", "manage", "preferred", "plus"), (), ("hands-on coding", "software development"))
+        _b_html = "<h1>Senior Technical Program Manager</h1><p>Required: lead program delivery and cloud strategy. Must manage complex cross-functional programs with 8 years experience. Preferred technical platform, data, automation, and AI experience. Plus senior stakeholder management, product strategy, and delivery leadership.</p>"
         _b_url = "https://boards.greenhouse.io/scaleupco/jobs/1"
-        _b_obs = _SVO(evidence_ref="scale-up:scaleupco:1", source_provider="scaleupco", source_mailbox="public-web", source_message_id="su-1", source_subject="Program Manager", company="Scale-Up Co Ltd", role="Program Manager", location_text="London, UK", compensation_text=None, source_apply_url=_b_url, provider_job_id="1", provider_score=99, source_received_at=datetime(2026, 1, 15, tzinfo=timezone.utc), route_evidence_status="POSITIVE")
+        _b_obs = _SVO(evidence_ref="scale-up:scaleupco:1", source_provider="scaleupco", source_mailbox="public-web", source_message_id="su-1", source_subject="Senior Technical Product Program Manager", company="Scale-Up Co Ltd", role="Senior Technical Product Program Manager", location_text="London, UK", compensation_text=None, source_apply_url=_b_url, provider_job_id="1", provider_score=99, source_received_at=datetime(2026, 1, 15, tzinfo=timezone.utc), route_evidence_status="POSITIVE")
         class _BFakeHttp:
             def request(self, *a, **kw): raise RuntimeError("phase_b network boundary")
         class _BFakeAcquirer:
@@ -327,14 +327,13 @@ class ScaleUpAcquisitionTests(unittest.TestCase):
             self.assertEqual(_b_qualify(_NC(job=_qjob, fit=80, market="US", freshness_status=_FS.FRESH, evidence_ref="scale-up:qual:3"), lane=_b_lane, run_date=_d(2026, 1, 15)).admission_status, _AS.EXCLUDED)
             from lifeos.jobs.models import EvidenceStatus as _ES
             from lifeos.jobs.scale_up_runtime import _geography_status as _geo
-            _gated_lane = _LC(name="Scale-Up", market="UK", fit_floor=72, target_review_floor=None, work_mode_policy="any", compensation_floor=None, freshness_gate=False, freshness_max_days=None, is_target_bucket=True, visa_route="Scale-up", visa_route_gate=True, geography_gate=True)
             _positive = _NC(job=_qjob, fit=72, market="UK", freshness_status=_FS.FRESH, evidence_ref="scale-up:gate:positive", route_evidence_status=_ES.POSITIVE, geography_evidence_status=_ES.POSITIVE)
-            self.assertEqual(_b_qualify(_positive, lane=_gated_lane, run_date=_d(2026, 1, 15)).admission_status, _AS.ADMITTED)
+            self.assertEqual(_b_qualify(_positive, lane=_b_lane, run_date=_d(2026, 1, 15)).admission_status, _AS.ADMITTED)
             for status in (_ES.UNRESOLVED, _ES.NEGATIVE):
                 with self.subTest(route_status=status):
                     candidate = replace(_positive, route_evidence_status=status)
                     expected = _AS.PASSED_REVIEW if status is _ES.UNRESOLVED else _AS.EXCLUDED
-                    self.assertEqual(_b_qualify(candidate, lane=_gated_lane, run_date=_d(2026, 1, 15)).admission_status, expected)
+                    self.assertEqual(_b_qualify(candidate, lane=_b_lane, run_date=_d(2026, 1, 15)).admission_status, expected)
             for location, expected in (("London", _ES.POSITIVE), ("Greater London", _ES.POSITIVE), ("London, Ontario, Canada", _ES.NEGATIVE), ("Manchester", _ES.NEGATIVE), ("Paris", _ES.NEGATIVE), (None, _ES.UNRESOLVED), ("UK", _ES.UNRESOLVED), ("UK Remote", _ES.UNRESOLVED), ("Manchester / London", _ES.POSITIVE)):
                 with self.subTest(location=location):
                     self.assertIs(_geo(location), expected)
