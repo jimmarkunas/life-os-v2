@@ -141,6 +141,8 @@ def _observation(
     provider_job_id: str | None = None,
     description: str | None = None,
     received_at: datetime,
+    ats_description_html: str | None = None,
+    ats_posting_date_raw: str | None = None,
 ) -> SourceVacancyObservation:
     return SourceVacancyObservation(
         evidence_ref=_opaque_ref(source_id, provider_job_id, url),
@@ -156,6 +158,8 @@ def _observation(
         provider_job_id=provider_job_id,
         source_description_text=description,
         source_received_at=received_at,
+        ats_description_html=ats_description_html,
+        ats_posting_date_raw=ats_posting_date_raw,
     )
 
 
@@ -346,6 +350,8 @@ class USRemoteAcquirer:
                         location=location,
                         provider_job_id=str(job.get("id") or "") or None,
                         received_at=now,
+                        ats_description_html=str(job.get("content") or "") or None,
+                        ats_posting_date_raw=str(job.get("first_published") or job.get("updated_at") or "") or None,
                     )
                 )
         return out

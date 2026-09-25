@@ -335,5 +335,138 @@ class ProductionRegressionProofs(unittest.TestCase):
         self.assertFalse(_plausible("Senior Software Engineer", "United States"))
 
 
+# ------------------------------------------------------------------
+# Greenhouse ATS API path: `content=true` JD must be accepted as
+# authoritative terminal evidence without any page re-fetch.
+#
+# Real Greenhouse API shape (boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true):
+#   {
+#     "id": 4567890,
+#     "title": "Senior Technical Program Manager",
+#     "content": "<p>Lead program delivery...</p>",      ← full JD HTML
+#     "first_published": "2026-01-08T18:52:00.000Z",
+#     "updated_at": "2026-01-12T11:30:00.000Z",
+#     ...
+#   }
+#
+# The acquisition code calls `_observation(ats_description_html=job["content"],
+# ats_posting_date_raw=job["first_published"])` and the terminal_evidence
+# `_acquire_ats_api_description()` rung converts that to a TerminalVacancyEvidence
+# with evidence_source="ats_api" before any page-fetch is attempted.
+# ------------------------------------------------------------------
+class GreenhouseAtsApiProofs(unittest.TestCase):
+    """Prove the Greenhouse content=true ATS API path end-to-end.
+
+    These fixtures match the real Greenhouse API response shape observed in
+    production runs for boards-api.greenhouse.io employers (21 of 49 sources
+    in us-remote-source-registry.json use greenhouse_api_first mode).
+    """
+
+    # Real Greenhouse boards-api job content field — shortened but
+    # structurally representative (includes role requirements, responsibilities).
+    _GH_CONTENT_HTML = (
+        "<p><strong>About the role</strong></p>"
+        "<p>Drive technical program delivery across complex, cross-functional cloud-platform initiatives. "
+        "Own the end-to-end program lifecycle from scoping through launch.</p>"
+        "<p><strong>What you'll do</strong></p>"
+        "<ul><li>Lead delivery of multi-quarter platform programs.</li>"
+        "<li>Manage stakeholder alignment and program risk across engineering teams.</li>"
+        "<li>Own technical roadmap communication to senior leadership.</li></ul>"
+        "<p><strong>What we're looking for</strong></p>"
+        "<ul><li>5+ years experience in technical program management.</li>"
+        "<li>Proven record managing complex cloud platform programs.</li>"
+        "<li>Strong stakeholder management and communication skills.</li></ul>"
+    )
+    _GH_FIRST_PUBLISHED = "2026-01-08T18:52:00.000Z"
+    _GH_APPLY_URL = "https://boards.greenhouse.io/syntheticcorp/jobs/4567890"
+
+    def test_greenhouse_ats_api_content_is_accepted_as_terminal_evidence(self):
+        """ats_description_html from Greenhouse content=true API → TerminalVacancyEvidence
+        with evidence_source='ats_api', no page fetch needed."""
+        evidence = acquire_terminal_vacancy_evidence(
+            self._GH_APPLY_URL,
+            fetcher=MappingFetcher({"pages": []}),
+            ats_description_html=self._GH_CONTENT_HTML,
+            ats_posting_date_raw=self._GH_FIRST_PUBLISHED,
+        )
+        self.assertIsNotNone(evidence, "Greenhouse ATS API content must produce terminal evidence")
+        self.assertEqual(evidence.canonical_url, self._GH_APPLY_URL)
+        self.assertEqual(evidence.evidence_source, "ats_api")
+        self.assertIn("cross-functional cloud-platform", evidence.description_text)
+        self.assertIn("technical program management", evidence.description_text)
+        self.assertEqual(evidence.posting_date_raw, self._GH_FIRST_PUBLISHED)
+
+    def test_greenhouse_ats_api_bypasses_page_fetch(self):
+        """When ats_description_html is present, the fetcher is never called."""
+        class FailFetcher:
+            def get(self, url):
+                raise AssertionError(f"fetcher must not be called when ATS API content is available; got {url!r}")
+
+        evidence = acquire_terminal_vacancy_evidence(
+            self._GH_APPLY_URL,
+            fetcher=FailFetcher(),
+            ats_description_html=self._GH_CONTENT_HTML,
+            ats_posting_date_raw=self._GH_FIRST_PUBLISHED,
+        )
+        self.assertIsNotNone(evidence)
+        self.assertEqual(evidence.evidence_source, "ats_api")
+
+    def test_greenhouse_ats_api_short_content_falls_through_to_page_fetch(self):
+        """Malformed / stub Greenhouse content (< 80 chars) is not treated as authoritative."""
+        stub_html = "<p>See full description at greenhouse.io</p>"  # <80 chars of text
+        evidence = acquire_terminal_vacancy_evidence(
+            self._GH_APPLY_URL,
+            fetcher=MappingFetcher({"pages": []}),
+            ats_description_html=stub_html,
+            ats_posting_date_raw=self._GH_FIRST_PUBLISHED,
+        )
+        # Empty MappingFetcher means page fetch also yields nothing → None
+        self.assertIsNone(evidence, "Stub ATS content must not be accepted; page fetch also fails → None")
+
+    def test_greenhouse_ats_api_via_adapter_path_scores_fit(self):
+        """Full adapter path: Greenhouse content=true → candidate with fit score."""
+        from datetime import date
+        from dataclasses import replace
+        from lifeos.newsletter.models import SourceVacancyObservation
+
+        obs = SourceVacancyObservation(
+            evidence_ref="gh-api-fit",
+            source_provider="Greenhouse",
+            source_mailbox="gmail",
+            source_message_id="msg-gh-1",
+            source_subject="Jobs",
+            company="Synthetic Corp",
+            role="Senior Technical Program Manager",
+            location_text="Remote",
+            compensation_text="$180K-$220K/yr",
+            source_apply_url=self._GH_APPLY_URL,
+            provider_job_id="4567890",
+            provider_score=95,
+            source_description_text=None,
+            source_received_at=NOW,
+            issues=(),
+            ats_description_html=self._GH_CONTENT_HTML,
+            ats_posting_date_raw=self._GH_FIRST_PUBLISHED,
+        )
+        profile = SimpleNamespace(
+            title_patterns={"DIRECT": ("technical program", "program manager"), "ADJACENT": (), "METHOD_EQUIVALENT": (), "UNSUPPORTED": ()},
+            direct_specialization_patterns={},
+            dimension_patterns={"functional": ("program", "delivery", "stakeholder"), "technical_platform": ("cloud", "platform")},
+            evidence_patterns={"direct": ("required", "experience", "proven", "lead", "manage")},
+            material_patterns=(),
+            ignore_patterns=(),
+            hard_family_patterns=("hands-on coding", "software engineer"),
+        )
+        from lifeos.jobs.newsletter_adapter import NewsletterJobsAdapter, NewsletterAdapterConfig
+        adapter = NewsletterJobsAdapter(NewsletterAdapterConfig(
+            fetcher=None, fit_profile=profile, market="US", source_lane="US Remote",
+        ))
+        candidate = adapter.to_jobs_candidate(obs)
+        self.assertIsNone(candidate.unresolved_reason, f"unexpected unresolved: {candidate.unresolved_reason}")
+        self.assertEqual(candidate.job.apply_url, self._GH_APPLY_URL)
+        self.assertIsNotNone(candidate.fit, "Greenhouse ATS content must produce a fit score")
+        self.assertIn("cross-functional", candidate.job.description_text or "")
+
+
 if __name__ == "__main__":
     unittest.main()

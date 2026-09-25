@@ -532,6 +532,15 @@ def _acquire_shopify_ashby_api(source_url: str, fetcher: Fetcher) -> TerminalVac
     )
 
 
+def _acquire_ats_api_description(source_url: str, description_html: str | None, posting_date_raw: str | None) -> TerminalVacancyEvidence | None:
+    """Employer ATS API JD already in hand (e.g. Greenhouse content=true): no page re-fetch."""
+    url = canonical_url(source_url)
+    if not description_html or not url or is_provider_intermediary_source(url): return None
+    desc = _html_to_text(html.unescape(description_html))
+    if len(desc) < 80: return None
+    return TerminalVacancyEvidence(url, desc, posting_date_raw or "", "ats_api", (source_url,))
+
+
 def _acquire_linkedin_source_description(source_url: str, fetcher: Fetcher) -> TerminalVacancyEvidence | None:
     guest_url = _linkedin_guest_url(source_url)
     if not guest_url: return None
@@ -551,10 +560,15 @@ def acquire_terminal_vacancy_evidence(
     company: str | None = None,
     role: str | None = None,
     provider_job_id: str | None = None,
+    ats_description_html: str | None = None,
+    ats_posting_date_raw: str | None = None,
 ) -> TerminalVacancyEvidence | None:
     """Acquire authoritative terminal evidence, then one bounded fallback."""
     if not source_url or is_source_message_url(source_url):
         return None
+    ats = _acquire_ats_api_description(source_url, ats_description_html, ats_posting_date_raw)
+    if ats is not None:
+        return ats
     ashby = _acquire_ashby_api(source_url, fetcher) or _acquire_shopify_ashby_api(source_url, fetcher)
     if ashby is not None:
         return ashby

@@ -50,6 +50,9 @@ class SourceVacancyObservation:
     source_received_at: datetime | None = None
     route_evidence_status: str | None = None
     route_evidence_ref: str | None = None
+    ats_description_html: str | None = None
+    """JD for source_apply_url from the employer's own ATS API; employer/ATS JD evidence."""
+    ats_posting_date_raw: str | None = None
 
 @dataclass(frozen=True, slots=True)
 class ParseIssue:

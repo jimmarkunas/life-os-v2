@@ -248,6 +248,8 @@ class NewsletterJobsAdapter:
                 company=observation.company,
                 role=observation.role,
                 provider_job_id=observation.provider_job_id,
+                ats_description_html=getattr(observation, "ats_description_html", None),
+                ats_posting_date_raw=getattr(observation, "ats_posting_date_raw", None),
             )
             if evidence is not None and evidence.canonical_url and (evidence.description_text or evidence.provider_source_description):
                 apply_url = evidence.canonical_url
@@ -308,6 +310,8 @@ class NewsletterJobsAdapter:
         company: str | None,
         role: str | None,
         provider_job_id: str | None,
+        ats_description_html: str | None = None,
+        ats_posting_date_raw: str | None = None,
     ) -> TerminalVacancyEvidence | None:
         # Protect only cache access. Holding this lock across network/browser
         # resolution serialized every distinct job URL and defeated _adapt_all's
@@ -338,6 +342,8 @@ class NewsletterJobsAdapter:
                 company=company,
                 role=role,
                 provider_job_id=provider_job_id,
+                ats_description_html=ats_description_html,
+                ats_posting_date_raw=ats_posting_date_raw,
             )
         except Exception:
             evidence = None
