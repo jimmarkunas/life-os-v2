@@ -16,7 +16,7 @@ from lifeos.integrations.gmail import GmailInboxMetadataPort, GmailMailboxTransp
 from lifeos.integrations.notion import NotionTransport
 from lifeos.jobs.fit_scoring import FitProfile
 from lifeos.jobs.newsletter_adapter import HttpClientFetcher, NewsletterAdapterConfig, NewsletterJobsAdapter, TerminalEvidenceCache
-from lifeos.jobs.newsletter_contract import Disposition, IngestResult, derive_review_these_jobs, ingest, result_is_accounted
+from lifeos.jobs.newsletter_contract import Disposition, IngestResult, PersistenceAction, derive_review_these_jobs, ingest, result_is_accounted
 from lifeos.jobs.newsletter_adapter import _adapt_all
 from lifeos.jobs.notion_repository import NotionCareerRepository, NotionCareerRepositoryConfig
 from lifeos.jobs.qualification import LaneConfig
@@ -443,11 +443,16 @@ def execute_us_remote(
         pass_run = mail_lane_pass and web_lane_pass
 
         def _mutation_counts(ingest_results: list[IngestResult]) -> dict:
-            created = sum(1 for r in ingest_results if r.disposition is Disposition.CREATED)
-            updated = sum(1 for r in ingest_results if r.disposition is Disposition.UPDATED)
-            no_op_updates = sum(1 for r in ingest_results if r.disposition is Disposition.UPDATED and r.canonical_no_op)
-            failures = sum(1 for r in ingest_results if r.disposition is Disposition.REVIEW_DEGRADED and r.persistence_verified)
-            return {"created": created, "updated": updated, "canonical_no_op_updates": no_op_updates, "read_back_failures": failures}
+            created = sum(1 for r in ingest_results if r.persistence_action is PersistenceAction.CREATED)
+            updated = sum(1 for r in ingest_results if r.persistence_action is PersistenceAction.UPDATED)
+            no_op_updates = sum(1 for r in ingest_results if r.persistence_action is PersistenceAction.UPDATED and r.canonical_no_op)
+            persistence_failures = sum(
+                1 for r in ingest_results
+                if r.persistence_action is PersistenceAction.NONE
+                and r.detail is not None
+                and r.detail.startswith("persistence")
+            )
+            return {"created": created, "updated": updated, "canonical_no_op_updates": no_op_updates, "persistence_failures": persistence_failures}
 
         initial_pass_counts = _mutation_counts(initial_ingest_results)
         reconcile_pass_counts = _mutation_counts(list(enrichment_ingest_results))

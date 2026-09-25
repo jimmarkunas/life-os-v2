@@ -176,6 +176,13 @@ class _BrokenSourceAcquirer(_FakeAcquirer):
         )
 
 
+class _FailingUpsertRepository(_CountingAuthoritativeRepository):
+    """Forces every upsert to raise so persistence_failures telemetry can be proven."""
+    def upsert(self, record):
+        self.upsert_calls += 1
+        raise RuntimeError("synthetic upsert failure")
+
+
 class UsRemoteReentryProof(unittest.TestCase):
     def test_full_sweep_covers_every_enabled_registry_source_and_accounts_health(self):
         registry = load_registry()
@@ -301,6 +308,22 @@ class UsRemoteReentryProof(unittest.TestCase):
         self.assertEqual(degraded.exit_code, 1)
         self.assertEqual(degraded.body["status"], "DEGRADED")
         self.assertGreater(degraded.body["jobs"]["dispositions"]["review_degraded"], 0)
+        # Negative control: evaluation-pending rows are REVIEW_DEGRADED with
+        # persistence_verified=True but are NOT persistence failures.
+        self.assertEqual(degraded.body["jobs"]["initial_pass"]["persistence_failures"], 0)
+        self.assertGreater(degraded.body["jobs"]["initial_pass"]["updated"], 0)
+
+        # Positive control: a repository that fails every upsert must increment
+        # persistence_failures and must NOT be counted as created/updated.
+        failing_repository = _FailingUpsertRepository()
+        with patch("lifeos.jobs.us_remote_runtime.MailRouter", _FakeMailRouter), \
+             patch("lifeos.jobs.us_remote_runtime.NewsletterProcessor", _FakeNewsletterProcessor), \
+             patch("lifeos.jobs.us_remote_runtime.USRemoteAcquirer", _FakeAcquirer), \
+             patch("lifeos.jobs.us_remote_runtime.NotionCareerRepository", lambda **kwargs: failing_repository):
+            repo_failed = execute_us_remote(**{**common, "context": RunContext.start(timeout_seconds=30)})
+        self.assertGreater(repo_failed.body["jobs"]["initial_pass"]["persistence_failures"], 0)
+        self.assertEqual(repo_failed.body["jobs"]["initial_pass"]["created"], 0)
+        self.assertEqual(repo_failed.body["jobs"]["initial_pass"]["updated"], 0)
 
     def test_execute_us_remote_production_volume_two_pass_request_topology(self):
         """1,088-observation recovery keeps the second identity phase empty."""
@@ -371,6 +394,49 @@ class UsRemoteReentryProof(unittest.TestCase):
         })
         self.assertEqual(max(repository.stable_key_query_sizes), 50)
         self.assertEqual(len(repository.stable_key_query_sizes), 44)
+
+        # Mutation telemetry: persistence_action separates actual writes from
+        # evaluation-pending (REVIEW_DEGRADED but successfully persisted) rows.
+        # First run initial pass: 1,088 net-new creates; all evaluation-pending
+        # because fit=None until terminal JD is fetched.
+        self.assertEqual(first.body["jobs"]["initial_pass"]["created"], 1088)
+        self.assertEqual(first.body["jobs"]["initial_pass"]["updated"], 0)
+        self.assertEqual(first.body["jobs"]["initial_pass"]["canonical_no_op_updates"], 0)
+        self.assertEqual(first.body["jobs"]["initial_pass"]["persistence_failures"], 0)
+        # First run reconcile pass: 1,088 updates after terminal enrichment;
+        # none are no-ops because fit (and admission_status) changed.
+        self.assertEqual(first.body["jobs"]["reconcile_pass"]["created"], 0)
+        self.assertEqual(first.body["jobs"]["reconcile_pass"]["updated"], 1088)
+        self.assertEqual(first.body["jobs"]["reconcile_pass"]["canonical_no_op_updates"], 0)
+        self.assertEqual(first.body["jobs"]["reconcile_pass"]["persistence_failures"], 0)
+        # Second run initial pass: all 1,088 exist with authoritative fit; all
+        # TES=True so none enter reconcile pass. Updates are not canonical no-ops
+        # because admission_status transitions on replay (EXCLUDED→PASSED_REVIEW
+        # while incoming fit is None, then EXCLUDED is re-confirmed in Notion).
+        self.assertEqual(second.body["jobs"]["initial_pass"]["created"], 0)
+        self.assertEqual(second.body["jobs"]["initial_pass"]["updated"], 1088)
+        self.assertEqual(second.body["jobs"]["initial_pass"]["persistence_failures"], 0)
+        # Second run reconcile pass: nothing to enrich (all TES-skipped).
+        self.assertEqual(second.body["jobs"]["reconcile_pass"]["created"], 0)
+        self.assertEqual(second.body["jobs"]["reconcile_pass"]["updated"], 0)
+        self.assertEqual(second.body["jobs"]["reconcile_pass"]["canonical_no_op_updates"], 0)
+        self.assertEqual(second.body["jobs"]["reconcile_pass"]["persistence_failures"], 0)
+        # Reconcile with upsert_calls: total successful writes (created + updated,
+        # both passes) must equal the repository's observed upsert call count.
+        first_pass_writes = (
+            first.body["jobs"]["initial_pass"]["created"]
+            + first.body["jobs"]["initial_pass"]["updated"]
+            + first.body["jobs"]["reconcile_pass"]["created"]
+            + first.body["jobs"]["reconcile_pass"]["updated"]
+        )
+        self.assertEqual(first_upserts, first_pass_writes)
+        second_pass_writes = (
+            second.body["jobs"]["initial_pass"]["created"]
+            + second.body["jobs"]["initial_pass"]["updated"]
+            + second.body["jobs"]["reconcile_pass"]["created"]
+            + second.body["jobs"]["reconcile_pass"]["updated"]
+        )
+        self.assertEqual(repository.upsert_calls - first_upserts, second_pass_writes)
 
         # Conservative whole-run model anchored to the latest live timings.
         # The live 162.557s terminal stage covered 1,088 candidate resolutions
