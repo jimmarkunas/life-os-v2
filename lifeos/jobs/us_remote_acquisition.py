@@ -139,6 +139,7 @@ def _observation(
     location: str | None = None,
     compensation: str | None = None,
     provider_job_id: str | None = None,
+    description: str | None = None,
     received_at: datetime,
 ) -> SourceVacancyObservation:
     return SourceVacancyObservation(
@@ -153,6 +154,7 @@ def _observation(
         compensation_text=compensation,
         source_apply_url=url,
         provider_job_id=provider_job_id,
+        source_description_text=description,
         source_received_at=received_at,
     )
 
@@ -378,6 +380,7 @@ class USRemoteAcquirer:
                         location=location,
                         compensation=compensation,
                         provider_job_id=str(job.get("id") or job.get("jobId") or "") or None,
+                        description=str(job.get("descriptionPlain") or job.get("descriptionText") or job.get("descriptionHtml") or "") or None,
                         received_at=now,
                     )
                 )
