@@ -1,0 +1,22 @@
+{
+  "_fixture_provenance": {
+    "source": "https://job-boards.greenhouse.io/figma/jobs/6020719004?gh_jid=6020719004",
+    "captured_at": "2026-09-25",
+    "note": "Real current Figma Greenhouse posting transcribed into the documented jobs?content=true response shape because direct boards-api transport is unavailable in this execution environment."
+  },
+  "jobs": [
+    {
+      "id": 6020719004,
+      "title": "Technical Program Manager - Infrastructure",
+      "company_name": "Figma",
+      "location": {
+        "name": "San Francisco, CA • New York, NY • United States"
+      },
+      "absolute_url": "https://job-boards.greenhouse.io/figma/jobs/6020719004?gh_jid=6020719004",
+      "content": "&amp;lt;p&amp;gt;The mission of the Engineering TPM team is to drive Figma's most important cross-company engineering efforts, and we are looking for a Technical Program Manager to partner with our Infrastructure team. The TPM provides oversight of efforts that require coordinated technical execution across the organization.&amp;lt;/p&amp;gt;&amp;lt;h3&amp;gt;What you'll do at Figma&amp;lt;/h3&amp;gt;&amp;lt;ul&amp;gt;&amp;lt;li&amp;gt;Lead the execution, coordination, and risk management of Figma's infrastructure projects, ensuring seamless integration with minimal performance impact.&amp;lt;/li&amp;gt;&amp;lt;li&amp;gt;Drive key infrastructure initiatives, including reliability, storage, distributed systems, cloud-native performance improvements, and compliance programs including FedRAMP and SOC 2.&amp;lt;/li&amp;gt;&amp;lt;li&amp;gt;Partner closely with engineering, security, compliance, and legal teams to ensure alignment and on-time delivery.&amp;lt;/li&amp;gt;&amp;lt;li&amp;gt;Track program milestones and delivery across multiple infrastructure teams, including data, caching, observability, and security engineering.&amp;lt;/li&amp;gt;&amp;lt;li&amp;gt;Provide regular updates to executive leadership on risks, blockers, and dependencies.&amp;lt;/li&amp;gt;&amp;lt;/ul&amp;gt;&amp;lt;h3&amp;gt;We'd love to hear from you if you have&amp;lt;/h3&amp;gt;&amp;lt;ul&amp;gt;&amp;lt;li&amp;gt;8+ years in Infrastructure TPM or related roles with hands-on experience in cloud-native architectures and distributed systems such as AWS or GCP.&amp;lt;/li&amp;gt;&amp;lt;li&amp;gt;Deep technical expertise across infrastructure components including storage, caching, search, and event-driven systems such as Kafka.&amp;lt;/li&amp;gt;&amp;lt;li&amp;gt;Track record driving large-scale infrastructure programs such as migrations, cost optimization, encryption key management, and reliability initiatives for high-availability services.&amp;lt;/li&amp;gt;&amp;lt;li&amp;gt;Strong cross-functional program management skills coordinating multi-team engineering organizations and establishing program management best practices in ambiguous environments.&amp;lt;/li&amp;gt;&amp;lt;li&amp;gt;Proven stakeholder management translating complex technical challenges into clear executive-level communications.&amp;lt;/li&amp;gt;&amp;lt;/ul&amp;gt;"
+    }
+  ],
+  "meta": {
+    "total": 1
+  }
+}
