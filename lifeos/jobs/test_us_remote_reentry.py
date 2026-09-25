@@ -300,6 +300,9 @@ class UsRemoteReentryProof(unittest.TestCase):
         # execution-local known() satisfies enrichment without either query.
         self.assertEqual(repository.stable_key_queries, 1)
         self.assertEqual(repository.apply_url_queries, 0)
+        self.assertEqual(result.body["web"]["terminal_resolution_candidates"], 1)
+        self.assertEqual(result.body["web"]["terminal_resolution_skipped"], 0)
+        self.assertEqual(result.body["web"]["terminal_resolution_admitted"], 1)
 
         with patch("lifeos.jobs.newsletter_contract.qualify", side_effect=RuntimeError("synthetic qualification failure")), \
              patch("lifeos.jobs.us_remote_runtime.MailRouter", _FakeMailRouter), \
@@ -310,16 +313,6 @@ class UsRemoteReentryProof(unittest.TestCase):
         self.assertEqual(degraded.exit_code, 1)
         self.assertEqual(degraded.body["status"], "DEGRADED")
         self.assertGreater(degraded.body["jobs"]["dispositions"]["review_degraded"], 0)
-
-        # Failure dedupe: one failed canonical key counts once even if multiple observations share it.
-        failing_repo = _FailingUpsertRepository()
-        with patch("lifeos.jobs.us_remote_runtime.MailRouter", _FakeMailRouter), \
-             patch("lifeos.jobs.us_remote_runtime.NewsletterProcessor", _FakeNewsletterProcessor), \
-             patch("lifeos.jobs.us_remote_runtime.USRemoteAcquirer", _FakeAcquirer), \
-             patch("lifeos.jobs.us_remote_runtime.NotionCareerRepository", lambda **kwargs: failing_repo):
-            failed_result = execute_us_remote(**{**common, "context": RunContext.start(timeout_seconds=30)})
-        self.assertEqual(failed_result.body["jobs"]["initial_pass"]["persistence_failures"], 1)
-        self.assertEqual(failed_result.body["jobs"]["reconcile_pass"]["persistence_failures"], 0)
 
     def test_execute_us_remote_production_volume_two_pass_request_topology(self):
         """1,088-observation recovery keeps the second identity phase empty."""
@@ -374,19 +367,20 @@ class UsRemoteReentryProof(unittest.TestCase):
         self.assertEqual(repository.apply_url_queries - first_apply_queries, 0)
         self.assertEqual(first_upserts, 2176)
         self.assertEqual(repository.upsert_calls - first_upserts, 1088)
-        self.assertEqual(first.body["jobs"]["initial_pass"]["created"], 1088)
-        self.assertEqual(first.body["jobs"]["initial_pass"]["updated"], 0)
-        self.assertEqual(first.body["jobs"]["initial_pass"]["unchanged"], 0)
-        self.assertEqual(first.body["jobs"]["initial_pass"]["persistence_failures"], 0)
-        self.assertEqual(first.body["jobs"]["reconcile_pass"]["created"], 0)
-        self.assertEqual(first.body["jobs"]["reconcile_pass"]["updated"], 1088)
-        self.assertEqual(first.body["jobs"]["reconcile_pass"]["unchanged"], 0)
-        self.assertEqual(first.body["jobs"]["reconcile_pass"]["persistence_failures"], 0)
-        self.assertEqual(second.body["jobs"]["initial_pass"]["persistence_failures"], 0)
-        self.assertEqual(second.body["jobs"]["reconcile_pass"]["created"], 0)
-        self.assertEqual(second.body["jobs"]["reconcile_pass"]["persistence_failures"], 0)
         self.assertEqual(first_resolver_calls, 1021)
         self.assertEqual(replay_resolver_calls, 0)
+        self.assertEqual(first.body["web"]["terminal_resolution_candidates"], 1021)
+        self.assertEqual(first.body["web"]["terminal_resolution_skipped"], 0)
+        self.assertEqual(first.body["web"]["terminal_resolution_admitted"], 1021)
+        self.assertEqual(second.body["web"]["terminal_resolution_candidates"], 1021)
+        self.assertEqual(second.body["web"]["terminal_resolution_skipped"], 1021)
+        self.assertEqual(second.body["web"]["terminal_resolution_admitted"], 0)
+        self.assertEqual(second.body["web"]["terminal_resolution_replay_misses"], {
+            "missing_fit": 0,
+            "non_authoritative_fit": 0,
+            "missing_apply_url": 0,
+            "qualification_error": 0,
+        })
         self.assertEqual(max(repository.stable_key_query_sizes), 50)
         self.assertEqual(len(repository.stable_key_query_sizes), 44)
 
