@@ -28,6 +28,8 @@ _YESTERDAY = re.compile(r"\byesterday\b", re.I)
 _RAW_HTTP_URL = re.compile(r"https?://[^\s\"'<>]+", re.I)
 _JSONLD_SCRIPT = re.compile(r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', re.I | re.S)
 _META_DESCRIPTION = re.compile(r'<meta[^>]+(?:name|property)=["\'](?:description|og:description)["\'][^>]+content=["\']([^"\']+)["\']', re.I | re.S)
+_NEXT_DATA_SCRIPT = re.compile(r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>', re.I | re.S)
+_ASHBY_POSTING_URL = re.compile(r'https://jobs\.ashbyhq\.com/([^/?#]+)/posting/([a-zA-Z0-9\-]+)', re.I)
 
 MAX_INTERMEDIARY_HOPS = 4
 
@@ -330,15 +332,34 @@ def _html_to_text(html_text: str) -> str:
     return re.sub(r"[ \t\r\f\v]+", " ", re.sub(r"<[^>]+>", " ", structured)).strip()
 
 
+def _extract_next_data_description(json_text: str) -> str | None:
+    try: data = json.loads(json_text)
+    except (ValueError, TypeError): return None
+    best = ""; stack: list[Any] = [data]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if k.lower() in ("description", "jobdescription", "descriptionhtml", "fulldescription", "jobdescriptionhtml"):
+                    if isinstance(v, str) and len(v) > len(best): best = v
+                else: stack.append(v)
+        elif isinstance(node, list): stack.extend(node)
+    return _html_to_text(best) if len(best) >= 100 else None
+
+
 def _extract_terminal_description(html_text: str) -> str | None:
     posting = extract_job_posting_jsonld(html_text)
     if posting:
         raw = str(posting.get("description") or "").strip()
         if raw:
             return _html_to_text(raw)
+    m = _NEXT_DATA_SCRIPT.search(html_text)
+    if m:
+        desc = _extract_next_data_description(m.group(1))
+        if desc: return desc
     text = _html_to_text(html_text)
-    match = _META_DESCRIPTION.search(html_text)
-    meta = _html_to_text(match.group(1)) if match else ""
+    m = _META_DESCRIPTION.search(html_text)
+    meta = _html_to_text(m.group(1)) if m else ""
     if len(text) >= max(200, len(meta) * 2):
         return text
     return meta or (text if len(text) >= 20 else None)
@@ -478,6 +499,22 @@ def _acquire_once(source_url: str, fetcher: Fetcher) -> TerminalVacancyEvidence 
     )
 
 
+def _acquire_ashby_api(source_url: str, fetcher: Fetcher) -> TerminalVacancyEvidence | None:
+    m = _ASHBY_POSTING_URL.search(source_url)
+    if not m: return None
+    api_url = f"https://api.ashbyhq.com/posting-api/job-board/{m.group(1)}/job-postings/{m.group(2)}"
+    try: data = json.loads(fetcher.get(api_url).body)
+    except Exception: return None
+    if not isinstance(data, dict): return None
+    desc = _html_to_text(str(data.get("descriptionHtml") or "").strip())
+    if not desc or len(desc) < 80: return None
+    return TerminalVacancyEvidence(
+        canonical_url=source_url, description_text=desc,
+        posting_date_raw=str(data.get("publishedAt") or data.get("updatedAt") or "").strip(),
+        evidence_source="ashby_api", resolution_chain=(source_url, api_url),
+    )
+
+
 def _acquire_linkedin_source_description(source_url: str, fetcher: Fetcher) -> TerminalVacancyEvidence | None:
     guest_url = _linkedin_guest_url(source_url)
     if not guest_url: return None
@@ -501,6 +538,9 @@ def acquire_terminal_vacancy_evidence(
     """Acquire authoritative terminal evidence, then one bounded fallback."""
     if not source_url or is_source_message_url(source_url):
         return None
+    ashby = _acquire_ashby_api(source_url, fetcher)
+    if ashby is not None:
+        return ashby
     evidence = _acquire_once(source_url, fetcher)
     if evidence is not None:
         return evidence
