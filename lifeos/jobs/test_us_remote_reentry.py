@@ -505,9 +505,12 @@ class TerminalEvidenceSatisfiedProof(unittest.TestCase):
         # Record has no AUTHORITATIVE fit; should still attempt resolver on next run
         first_upserts = repository.upsert_calls
         second = self._run(repository, browser_evidence={"pages": []})
-        # Without fix, second run's terminal_evidence_satisfied=False, resolver runs again
         self.assertEqual(second.exit_code, 1)  # still REVIEW_DEGRADED, unresolved
-        self.assertGreater(repository.upsert_calls - first_upserts, 0)
+        self.assertEqual(second.body["web"]["terminal_resolution_required"], 1)
+        self.assertEqual(second.body["web"]["terminal_resolution_skipped"], 0)
+        self.assertGreater(sum(second.body["web"]["terminal_resolution_replay_misses"].values()), 0)
+        # Dry-run identity means resolver retry no longer implies a redundant persistence write.
+        self.assertEqual(repository.upsert_calls - first_upserts, 0)
 
     def test_missing_apply_url_record_runs_resolver(self):
         """A persisted record without apply_url must not be skipped."""
