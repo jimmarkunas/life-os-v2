@@ -18,6 +18,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from html import unescape
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import parse_qs, quote, urlencode, urljoin, urlsplit
@@ -97,6 +98,23 @@ class _AnchorParser(HTMLParser):
         del self._stack[index:]
 
 
+class _TextParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        text = " ".join(data.split())
+        if text:
+            self.parts.append(text)
+
+
+def _greenhouse_content_text(value: Any) -> str:
+    parser = _TextParser()
+    parser.feed(unescape(unescape(str(value or ""))))
+    return "\n".join(parser.parts).strip()
+
+
 def _is_card_node(node: tuple[str, dict[str, str], list[str]]) -> bool:
     tag, attrs, _ = node
     return tag in {"article", "li"} or any(key.startswith("data-job") or key in {"data-title", "data-job-title", "data-requisition-id"} for key in attrs) or bool(_CARD_MARKERS.search(f"{attrs.get('class', '')} {attrs.get('id', '')}"))
@@ -140,6 +158,7 @@ def _observation(
     compensation: str | None = None,
     provider_job_id: str | None = None,
     description: str | None = None,
+    evidence_authority: str | None = None,
     received_at: datetime,
 ) -> SourceVacancyObservation:
     return SourceVacancyObservation(
@@ -155,6 +174,7 @@ def _observation(
         source_apply_url=url,
         provider_job_id=provider_job_id,
         source_description_text=description,
+        source_evidence_authority=evidence_authority,
         source_received_at=received_at,
     )
 
@@ -337,14 +357,23 @@ class USRemoteAcquirer:
             role = str(job.get("title") or "")
             location = str((job.get("location") or {}).get("name") or "")
             if _plausible(role, location):
+                apply_url = str(job.get("absolute_url") or "").strip() or None
+                jd_text = _greenhouse_content_text(job.get("content"))
+                authoritative = (
+                    "authoritative_provider_api"
+                    if apply_url and apply_url.startswith(("https://", "http://")) and len(jd_text) >= 80
+                    else None
+                )
                 out.append(
                     _observation(
                         source_id=source["id"],
                         company=source["company"],
                         role=role,
-                        url=job.get("absolute_url"),
+                        url=apply_url,
                         location=location,
                         provider_job_id=str(job.get("id") or "") or None,
+                        description=jd_text or None,
+                        evidence_authority=authoritative,
                         received_at=now,
                     )
                 )

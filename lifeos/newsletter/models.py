@@ -50,6 +50,8 @@ class SourceVacancyObservation:
     source_received_at: datetime | None = None
     route_evidence_status: str | None = None
     route_evidence_ref: str | None = None
+    source_evidence_authority: str | None = None
+    """Explicit authority for source-provided evidence, when proven."""
 
 @dataclass(frozen=True, slots=True)
 class ParseIssue:
