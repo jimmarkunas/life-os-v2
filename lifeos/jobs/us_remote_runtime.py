@@ -445,14 +445,16 @@ def execute_us_remote(
         def _mutation_counts(ingest_results: list[IngestResult]) -> dict:
             created = sum(1 for r in ingest_results if r.persistence_action is PersistenceAction.CREATED)
             updated = sum(1 for r in ingest_results if r.persistence_action is PersistenceAction.UPDATED)
-            no_op_updates = sum(1 for r in ingest_results if r.persistence_action is PersistenceAction.UPDATED and r.canonical_no_op)
-            persistence_failures = sum(
-                1 for r in ingest_results
+            unchanged = sum(1 for r in ingest_results if r.persistence_action is PersistenceAction.UNCHANGED)
+            persistence_failures = len({
+                r.stable_job_key
+                for r in ingest_results
                 if r.persistence_action is PersistenceAction.NONE
                 and r.detail is not None
                 and r.detail.startswith("persistence")
-            )
-            return {"created": created, "updated": updated, "canonical_no_op_updates": no_op_updates, "persistence_failures": persistence_failures}
+                and r.stable_job_key is not None
+            })
+            return {"created": created, "updated": updated, "unchanged": unchanged, "persistence_failures": persistence_failures}
 
         initial_pass_counts = _mutation_counts(initial_ingest_results)
         reconcile_pass_counts = _mutation_counts(list(enrichment_ingest_results))

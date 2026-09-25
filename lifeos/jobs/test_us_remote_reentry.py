@@ -19,6 +19,8 @@ from unittest.mock import patch
 
 from lifeos.core.runtime import RunContext
 from lifeos.jobs.fit_scoring import FitProfile
+from lifeos.jobs.newsletter_contract import Disposition, IngestResult, PersistenceAction, ingest
+from lifeos.jobs.qualification import LaneConfig
 from lifeos.jobs.repository import InMemoryCareerRepository
 from lifeos.jobs.us_remote_acquisition import AcquisitionResult, SourceHealth, USRemoteAcquirer
 from lifeos.jobs.us_remote_runtime import execute_us_remote, load_registry
@@ -183,6 +185,16 @@ class _FailingUpsertRepository(_CountingAuthoritativeRepository):
         raise RuntimeError("synthetic upsert failure")
 
 
+class _DuplicateAcquirer(_FakeAcquirer):
+    """Returns two observations resolving to the same stable key (same URL+provider_job_id)."""
+    def acquire(self, registry, **kwargs):
+        obs = _observation("synthetic-source", index=1)
+        return AcquisitionResult(
+            observations=(obs, replace(obs, evidence_ref="us-web:synthetic-source:vacancy-1-dup", source_subject="Program Manager (duplicate)")),
+            sources=(SourceHealth("synthetic-source", "COMPLETE", 2),),
+        )
+
+
 class UsRemoteReentryProof(unittest.TestCase):
     def test_full_sweep_covers_every_enabled_registry_source_and_accounts_health(self):
         registry = load_registry()
@@ -325,6 +337,93 @@ class UsRemoteReentryProof(unittest.TestCase):
         self.assertEqual(repo_failed.body["jobs"]["initial_pass"]["created"], 0)
         self.assertEqual(repo_failed.body["jobs"]["initial_pass"]["updated"], 0)
 
+        # --- Duplicate same-vacancy proof (via ingest() directly) ---
+        # Two observations resolving to the same stable key → one canonical
+        # persistence operation; duplicate result carries PersistenceAction.NONE;
+        # mutation telemetry count == 1, not 2.
+        from lifeos.jobs.models import Company, FitAuthority, FitEvidenceKind, FreshnessStatus, JobObservation, NormalizedCandidate, WorkMode
+        _dup_job = JobObservation(
+            company=Company("Dup Co"), role="PM", location="Remote, US",
+            work_mode=WorkMode.REMOTE, compensation_text=None, compensation_minimum=None,
+            posting_date=None, apply_url="https://boards.greenhouse.io/dup/jobs/1",
+            source_lane="US Remote", provider_job_id="dup-1",
+            source_provider="synthetic-dup",
+        )
+        _dup_lane = LaneConfig(name="US Remote", market="US", fit_floor=72, target_review_floor=None,
+                               work_mode_policy="remote_only", compensation_floor=None,
+                               freshness_gate=False, freshness_max_days=None)
+        _dup_candidate_a = NormalizedCandidate(
+            job=_dup_job, fit=80, fit_authority=FitAuthority.AUTHORITATIVE,
+            fit_evidence_kind=FitEvidenceKind.EMPLOYER_ATS_JD,
+            market="US", freshness_status=FreshnessStatus.FRESH,
+            evidence_ref="dup-ref-a", source_types=("web",),
+        )
+        _dup_candidate_b = NormalizedCandidate(
+            job=_dup_job, fit=80, fit_authority=FitAuthority.AUTHORITATIVE,
+            fit_evidence_kind=FitEvidenceKind.EMPLOYER_ATS_JD,
+            market="US", freshness_status=FreshnessStatus.FRESH,
+            evidence_ref="dup-ref-b", source_types=("web",),
+        )
+        _dup_repo = InMemoryCareerRepository()
+        _dup_results = ingest(
+            [_dup_candidate_a, _dup_candidate_b],
+            lane=_dup_lane, lane_priority={"US Remote": 0},
+            repository=_dup_repo, run_date=NOW.date(),
+        )
+        # One canonical key created; duplicate carries NONE.
+        _dup_primary = next(r for r in _dup_results if r.disposition is not Disposition.DUPLICATE)
+        _dup_dupe = next(r for r in _dup_results if r.disposition is Disposition.DUPLICATE)
+        self.assertEqual(_dup_primary.persistence_action, PersistenceAction.CREATED)
+        self.assertEqual(_dup_dupe.persistence_action, PersistenceAction.NONE)
+        # Mutation telemetry sees 1 create, not 2.
+        _dup_created = sum(1 for r in _dup_results if r.persistence_action is PersistenceAction.CREATED)
+        _dup_updated = sum(1 for r in _dup_results if r.persistence_action is PersistenceAction.UPDATED)
+        self.assertEqual(_dup_created, 1)
+        self.assertEqual(_dup_updated, 0)
+
+        # --- Canonically unchanged replay proof ---
+        # Second ingest of identical authoritative candidates produces UNCHANGED,
+        # not UPDATED; updated count stays 0; unchanged count increments.
+        _unchanged_repo = InMemoryCareerRepository()
+        _unch_results_1 = ingest(
+            [_dup_candidate_a],
+            lane=_dup_lane, lane_priority={"US Remote": 0},
+            repository=_unchanged_repo, run_date=NOW.date(),
+        )
+        self.assertEqual(_unch_results_1[0].persistence_action, PersistenceAction.CREATED)
+        _unch_results_2 = ingest(
+            [_dup_candidate_a],
+            lane=_dup_lane, lane_priority={"US Remote": 0},
+            repository=_unchanged_repo, run_date=NOW.date(),
+        )
+        self.assertEqual(_unch_results_2[0].persistence_action, PersistenceAction.UNCHANGED)
+        _unch_updated = sum(1 for r in _unch_results_2 if r.persistence_action is PersistenceAction.UPDATED)
+        _unch_unchanged = sum(1 for r in _unch_results_2 if r.persistence_action is PersistenceAction.UNCHANGED)
+        self.assertEqual(_unch_updated, 0)
+        self.assertEqual(_unch_unchanged, 1)
+
+        # --- Failure dedupe proof ---
+        # Two observations sharing one stable key + forced upsert failure →
+        # persistence_failures telemetry == 1 (one canonical operation failed),
+        # not 2 (number of observations).
+        _fail_dup_repo = _FailingUpsertRepository()
+        _fail_dup_results = ingest(
+            [_dup_candidate_a, _dup_candidate_b],
+            lane=_dup_lane, lane_priority={"US Remote": 0},
+            repository=_fail_dup_repo, run_date=NOW.date(),
+        )
+        _fail_failures = len({
+            r.stable_job_key
+            for r in _fail_dup_results
+            if r.persistence_action is PersistenceAction.NONE
+            and r.detail is not None
+            and r.detail.startswith("persistence")
+            and r.stable_job_key is not None
+        })
+        self.assertEqual(_fail_failures, 1, "one canonical failure must not be counted per duplicate observation")
+        self.assertEqual(sum(1 for r in _fail_dup_results if r.persistence_action is PersistenceAction.CREATED), 0)
+        self.assertEqual(sum(1 for r in _fail_dup_results if r.persistence_action is PersistenceAction.UPDATED), 0)
+
     def test_execute_us_remote_production_volume_two_pass_request_topology(self):
         """1,088-observation recovery keeps the second identity phase empty."""
         repository = _CountingAuthoritativeRepository()
@@ -401,42 +500,44 @@ class UsRemoteReentryProof(unittest.TestCase):
         # because fit=None until terminal JD is fetched.
         self.assertEqual(first.body["jobs"]["initial_pass"]["created"], 1088)
         self.assertEqual(first.body["jobs"]["initial_pass"]["updated"], 0)
-        self.assertEqual(first.body["jobs"]["initial_pass"]["canonical_no_op_updates"], 0)
+        self.assertEqual(first.body["jobs"]["initial_pass"]["unchanged"], 0)
         self.assertEqual(first.body["jobs"]["initial_pass"]["persistence_failures"], 0)
         # First run reconcile pass: 1,088 updates after terminal enrichment;
-        # none are no-ops because fit (and admission_status) changed.
+        # none are unchanged because fit (and admission_status) changed.
         self.assertEqual(first.body["jobs"]["reconcile_pass"]["created"], 0)
         self.assertEqual(first.body["jobs"]["reconcile_pass"]["updated"], 1088)
-        self.assertEqual(first.body["jobs"]["reconcile_pass"]["canonical_no_op_updates"], 0)
+        self.assertEqual(first.body["jobs"]["reconcile_pass"]["unchanged"], 0)
         self.assertEqual(first.body["jobs"]["reconcile_pass"]["persistence_failures"], 0)
         # Second run initial pass: all 1,088 exist with authoritative fit; all
-        # TES=True so none enter reconcile pass. Updates are not canonical no-ops
+        # TES=True so none enter reconcile pass. Updates are not unchanged
         # because admission_status transitions on replay (EXCLUDED→PASSED_REVIEW
         # while incoming fit is None, then EXCLUDED is re-confirmed in Notion).
         self.assertEqual(second.body["jobs"]["initial_pass"]["created"], 0)
         self.assertEqual(second.body["jobs"]["initial_pass"]["updated"], 1088)
+        self.assertEqual(second.body["jobs"]["initial_pass"]["unchanged"], 0)
         self.assertEqual(second.body["jobs"]["initial_pass"]["persistence_failures"], 0)
         # Second run reconcile pass: nothing to enrich (all TES-skipped).
         self.assertEqual(second.body["jobs"]["reconcile_pass"]["created"], 0)
         self.assertEqual(second.body["jobs"]["reconcile_pass"]["updated"], 0)
-        self.assertEqual(second.body["jobs"]["reconcile_pass"]["canonical_no_op_updates"], 0)
+        self.assertEqual(second.body["jobs"]["reconcile_pass"]["unchanged"], 0)
         self.assertEqual(second.body["jobs"]["reconcile_pass"]["persistence_failures"], 0)
-        # Reconcile with upsert_calls: total successful writes (created + updated,
-        # both passes) must equal the repository's observed upsert call count.
-        first_pass_writes = (
+        # Invariant: created + updated + unchanged == canonical primary outcomes.
+        # Actual write load = created + updated (unchanged is a no Notion write).
+        # Reconcile with upsert_calls: actual writes must equal observed upsert calls.
+        first_pass_actual_writes = (
             first.body["jobs"]["initial_pass"]["created"]
             + first.body["jobs"]["initial_pass"]["updated"]
             + first.body["jobs"]["reconcile_pass"]["created"]
             + first.body["jobs"]["reconcile_pass"]["updated"]
         )
-        self.assertEqual(first_upserts, first_pass_writes)
-        second_pass_writes = (
+        self.assertEqual(first_upserts, first_pass_actual_writes)
+        second_pass_actual_writes = (
             second.body["jobs"]["initial_pass"]["created"]
             + second.body["jobs"]["initial_pass"]["updated"]
             + second.body["jobs"]["reconcile_pass"]["created"]
             + second.body["jobs"]["reconcile_pass"]["updated"]
         )
-        self.assertEqual(repository.upsert_calls - first_upserts, second_pass_writes)
+        self.assertEqual(repository.upsert_calls - first_upserts, second_pass_actual_writes)
 
         # Conservative whole-run model anchored to the latest live timings.
         # The live 162.557s terminal stage covered 1,088 candidate resolutions

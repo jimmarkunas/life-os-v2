@@ -44,6 +44,7 @@ class Disposition(str, Enum):
 class PersistenceAction(str, Enum):
     CREATED = "created"
     UPDATED = "updated"
+    UNCHANGED = "unchanged"
     NONE = "none"
 
 
@@ -328,11 +329,20 @@ def ingest(
                     ("qualification_error", i in qualification_errors),
                 ) if missing
             )
-            _persist_action = PersistenceAction(primary_disposition.value)
+            # Primary result carries the canonical mutation outcome; duplicates carry NONE.
+            _is_primary = i == primary_index
+            if _is_primary:
+                _persist_action = (
+                    PersistenceAction.UNCHANGED
+                    if is_canonical_no_op
+                    else PersistenceAction(primary_disposition.value)
+                )
+            else:
+                _persist_action = PersistenceAction.NONE
             if evaluation_pending:
-                results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, persisted.job.stable_job_key, evaluation_pending if isinstance(evaluation_pending, str) else "evaluation pending", {"company": candidate.job.company.name, "role": candidate.job.role, "source": candidate.job.source_provider, "fit_evidence": candidate.fit_evidence_kind.value}, True, _tes, _diagnostics, canonical_no_op=is_canonical_no_op if i == primary_index else False, persistence_action=_persist_action)
+                results[i] = IngestResult(candidate.evidence_ref, Disposition.REVIEW_DEGRADED, persisted.job.stable_job_key, evaluation_pending if isinstance(evaluation_pending, str) else "evaluation pending", {"company": candidate.job.company.name, "role": candidate.job.role, "source": candidate.job.source_provider, "fit_evidence": candidate.fit_evidence_kind.value}, True, _tes, _diagnostics, canonical_no_op=is_canonical_no_op if _is_primary else False, persistence_action=_persist_action)
                 continue
-            if i == primary_index:
+            if _is_primary:
                 _is_excluded = qualification.admission_status is AdmissionStatus.EXCLUDED
                 results[i] = IngestResult(
                     candidate.evidence_ref,
@@ -356,7 +366,7 @@ def ingest(
                     True,
                     _tes,
                     _diagnostics,
-                    persistence_action=_persist_action,
+                    persistence_action=PersistenceAction.NONE,
                 )
 
     assert all(result is not None for result in results), "every input candidate must receive exactly one result"
