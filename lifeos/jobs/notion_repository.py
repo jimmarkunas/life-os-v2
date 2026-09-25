@@ -18,9 +18,10 @@ CareerRepository Protocol.
 """
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, timedelta
+from threading import Lock
 from typing import Any
 
 from lifeos.core.http import HttpError, HttpErrorKind
@@ -33,6 +34,7 @@ from lifeos.jobs.repository import ReadBackMismatch
 STABLE_KEY_PROPERTY = "Stable Job Key"
 MAX_IDENTITY_VALUES_PER_QUERY = 50  # matches NotionIdentityQuery's own cap
 MAX_IDENTITY_QUERY_CONCURRENCY = 4
+MAX_UPSERT_CONCURRENCY = 8
 _AMBIGUOUS_WRITE_KINDS = frozenset({HttpErrorKind.DEADLINE, HttpErrorKind.TIMEOUT})
 
 
@@ -427,32 +429,54 @@ class NotionCareerRepository:
         unchanged = {key: self._records[key] for key, record in expected.items() if key in self._records and _canonical_view(self._records[key]) == _canonical_view(record)}
         pending = {key: record for key, record in expected.items() if key not in unchanged}
         self._last_persistence_accounting = {"input": len(records), "unchanged": len(unchanged), "updated": sum(key in self._page_ids for key in pending), "created": sum(key not in self._page_ids for key in pending), "authoritative_read_back_verified": 0}
-        for key, record in pending.items():
-            properties, page_id = _record_to_properties(record), self._page_ids.get(key)
-            if page_id:
+
+        if pending:
+            cache_lock = Lock()
+            first_error: list[BaseException] = []
+
+            def _write_one(key: str, record: JobLedgerRecord) -> None:
+                properties = _record_to_properties(record)
+                with cache_lock:
+                    page_id = self._page_ids.get(key)
+                if page_id:
+                    try:
+                        written = self._transport.update_page(page_id, properties)
+                    except (TimeoutError, HttpError) as exc:
+                        if not _is_ambiguous_write_error(exc):
+                            raise
+                        observed = _page_to_record(self._transport.get_page(page_id))
+                        if _canonical_view(observed) == _canonical_view(record):
+                            return
+                        written = self._transport.update_page(page_id, properties)
+                    with cache_lock:
+                        self._page_ids[key] = str(written.get("id") or page_id)
+                    return
                 try:
-                    written = self._transport.update_page(page_id, properties)
+                    written = self._transport.create_page(self._config.data_source_id, properties)
                 except (TimeoutError, HttpError) as exc:
                     if not _is_ambiguous_write_error(exc):
                         raise
-                    observed = _page_to_record(self._transport.get_page(page_id))
-                    if _canonical_view(observed) == _canonical_view(record): continue
-                    written = self._transport.update_page(page_id, properties)
-                self._page_ids[key] = str(written.get("id") or page_id)
-                continue
-            try:
-                written = self._transport.create_page(self._config.data_source_id, properties)
-            except (TimeoutError, HttpError) as exc:
-                if not _is_ambiguous_write_error(exc):
-                    raise
-                observed = self.get_many([key]).get(key)
-                if observed is not None:
-                    if _canonical_view(observed) != _canonical_view(record): raise ReadBackMismatch(f"ambiguous create resolved to mismatched row for {key}")
-                    continue
-                written = self._transport.create_page(self._config.data_source_id, properties)
-            page_id = written.get("id")
-            if not page_id: raise ReadBackMismatch(f"Notion create response for {key} did not return a page id")
-            self._page_ids[key] = str(page_id)
+                    observed = self.get_many([key]).get(key)
+                    if observed is not None:
+                        if _canonical_view(observed) != _canonical_view(record):
+                            raise ReadBackMismatch(f"ambiguous create resolved to mismatched row for {key}")
+                        return
+                    written = self._transport.create_page(self._config.data_source_id, properties)
+                new_page_id = written.get("id")
+                if not new_page_id:
+                    raise ReadBackMismatch(f"Notion create response for {key} did not return a page id")
+                with cache_lock:
+                    self._page_ids[key] = str(new_page_id)
+
+            workers = min(MAX_UPSERT_CONCURRENCY, len(pending))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {pool.submit(_write_one, key, record): key for key, record in pending.items()}
+                for future in as_completed(futures):
+                    exc = future.exception()
+                    if exc is not None and not first_error:
+                        first_error.append(exc)
+            if first_error:
+                raise first_error[0]
 
         persisted = self.get_many(list(pending)) if pending else {}
         missing = [key for key in pending if key not in persisted]
