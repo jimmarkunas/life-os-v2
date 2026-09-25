@@ -47,6 +47,12 @@ class FitEvidenceKind(str, Enum):
     EMPLOYER_ATS_JD = "employer_ats_jd"
 
 
+class EvidenceStatus(str, Enum):
+    POSITIVE = "POSITIVE"
+    NEGATIVE = "NEGATIVE"
+    UNRESOLVED = "UNRESOLVED"
+
+
 @dataclass(frozen=True)
 class Company:
     """A hiring organization. Identity is the normalized display name until a
@@ -123,6 +129,8 @@ class NormalizedCandidate:
     source_types: tuple[str, ...] = field(default_factory=tuple)
     """Acquisition provenance labels observed for this candidate, such as
     provider name and mailbox alert type. These are not source-lane names."""
+    route_evidence_status: EvidenceStatus = EvidenceStatus.UNRESOLVED
+    geography_evidence_status: EvidenceStatus = EvidenceStatus.UNRESOLVED
 
 
 @dataclass(frozen=True)

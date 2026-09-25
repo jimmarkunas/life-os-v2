@@ -233,7 +233,7 @@ class HttpClientTests(unittest.TestCase):
     def test_retry_after_header_is_not_jittered(self) -> None:
         context = RunContext.start(timeout_seconds=30)
         backend = QueueBackend([
-            HttpResponse(429, {"Retry-After": "3"}, b"{}"),
+            HttpResponse(429, {"Retry-After": "10"}, b"{}"),
             HttpResponse(200, {}, b'{"ok":true}'),
         ])
         client = HttpClient(backend)
@@ -242,6 +242,12 @@ class HttpClientTests(unittest.TestCase):
                 context,
                 "GET",
                 "https://example.invalid/resource",
-                retry=RetryPolicy(max_attempts=2, backoff_seconds=1.0, max_backoff_seconds=10.0),
+                retry=RetryPolicy(max_attempts=2, backoff_seconds=1.0, max_backoff_seconds=1.0),
             )
-        sleep_mock.assert_called_once_with(3.0)
+        sleep_mock.assert_called_once_with(10.0)
+        with self.assertRaises(HttpError) as caught:
+            HttpClient(QueueBackend([HttpResponse(429, {"Retry-After": "10"}, b"{}")])).request(
+                RunContext.start(timeout_seconds=5), "GET", "https://example.invalid/resource",
+                retry=RetryPolicy(max_attempts=2, max_backoff_seconds=1.0),
+            )
+        self.assertEqual(caught.exception.kind, HttpErrorKind.DEADLINE)

@@ -19,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
-from lifeos.jobs.models import AdmissionStatus, FreshnessStatus, NormalizedCandidate, WorkMode
+from lifeos.jobs.models import AdmissionStatus, EvidenceStatus, FreshnessStatus, NormalizedCandidate, WorkMode
 
 UNIVERSAL_FIT_FLOOR = 72
 
@@ -47,6 +47,9 @@ class LaneConfig:
     freshness_gate: bool
     freshness_max_days: int | None
     is_target_bucket: bool = False
+    visa_route: str | None = None
+    visa_route_gate: bool = False
+    geography_gate: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "fit_floor", UNIVERSAL_FIT_FLOOR)
@@ -129,6 +132,18 @@ def qualify(candidate: NormalizedCandidate, *, lane: LaneConfig, run_date: date)
     if lane.freshness_gate and freshness != FreshnessStatus.FRESH:
         status = AdmissionStatus.PASSED_REVIEW if freshness == FreshnessStatus.UNRESOLVED else AdmissionStatus.EXCLUDED
         return QualificationResult(status, freshness_reason, freshness)
+
+    if lane.visa_route_gate:
+        if candidate.route_evidence_status is EvidenceStatus.NEGATIVE:
+            return QualificationResult(AdmissionStatus.EXCLUDED, "Scale-Up route evidence is negative", freshness)
+        if candidate.route_evidence_status is not EvidenceStatus.POSITIVE:
+            return QualificationResult(AdmissionStatus.PASSED_REVIEW, "Scale-Up route evidence unresolved", freshness)
+
+    if lane.geography_gate:
+        if candidate.geography_evidence_status is EvidenceStatus.NEGATIVE:
+            return QualificationResult(AdmissionStatus.EXCLUDED, "Scale-Up geography is non-qualifying", freshness)
+        if candidate.geography_evidence_status is not EvidenceStatus.POSITIVE:
+            return QualificationResult(AdmissionStatus.PASSED_REVIEW, "Scale-Up geography unresolved", freshness)
 
     if fit is None:
         return QualificationResult(AdmissionStatus.PASSED_REVIEW, "Fit unresolved", freshness)

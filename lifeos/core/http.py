@@ -237,7 +237,11 @@ class HttpClient:
             # retry waves when multiple runs/workers back off at the same time.
             requested = retry.backoff_seconds * (2 ** (attempt - 1))
             requested += random.random() * retry.backoff_seconds
-        requested = min(max(0.0, requested), retry.max_backoff_seconds)
+        requested = (
+            min(max(0.0, requested), retry.max_backoff_seconds)
+            if retry_after_seconds is None
+            else max(0.0, requested)
+        )
         if requested <= 0:
             context.require_time()
             return

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse, json, os
 from collections import Counter
 from datetime import datetime, timezone
+from dataclasses import replace
 from lifeos.core.config import ConfigField, RuntimeConfig
 from lifeos.core.http import HttpClient
 from lifeos.core.runtime import RunContext
@@ -68,6 +69,7 @@ def _load_inputs(context,http,notion,token,slot,nonce):
         if set(item.get("channels",[]))!=required or not item.get("searched_at"): raise ValueError("recovery evidence channel/timestamp coverage incomplete")
         observed=datetime.fromisoformat(str(item["searched_at"]).replace("Z","+00:00"))
         if (now-observed).total_seconds() < 0 or (now-observed).total_seconds() > 86400: raise ValueError("recovery evidence is stale")
+    lane = replace(lane, visa_route="Scale-up", visa_route_gate=True, geography_gate=True)
     return lane,priority,profile,market,source_lane,{x["company"]:{"channels":x["channels"],"state":x.get("state","INCOMPLETE"),"candidates":x.get("candidates",[]),"authoritative_zero":x.get("authoritative_zero",False)} for x in handoffs}
 def main() -> int:
     parser=argparse.ArgumentParser(); parser.add_argument("--timeout-seconds",type=float,default=300); args=parser.parse_args()
