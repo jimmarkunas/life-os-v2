@@ -242,7 +242,16 @@ class NewsletterJobsAdapter:
         posting_date: date | None = None
         unresolved_reason = None
 
-        if observation.source_apply_url:
+        source_has_authoritative_jd = (
+            getattr(observation, "source_evidence_authority", None) == "authoritative_provider_api"
+            and bool(observation.source_apply_url)
+            and str(observation.source_apply_url).startswith(("https://", "http://"))
+            and bool(source_description_text and source_description_text.strip())
+        )
+        if source_has_authoritative_jd:
+            apply_url = observation.source_apply_url
+            description_text = source_description_text
+        elif observation.source_apply_url:
             evidence = self._terminal_evidence_for(
                 observation.source_apply_url,
                 company=observation.company,

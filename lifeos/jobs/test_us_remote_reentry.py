@@ -9,16 +9,21 @@ from __future__ import annotations
 
 __test__ = False
 
+import json
 import unittest
 from contextlib import redirect_stdout
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from io import StringIO
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from lifeos.core.runtime import RunContext
 from lifeos.jobs.fit_scoring import FitProfile
+from lifeos.jobs.newsletter_adapter import NewsletterAdapterConfig, NewsletterJobsAdapter
+from lifeos.jobs.newsletter_contract import Disposition, ingest
+from lifeos.jobs.models import FitAuthority, FitEvidenceKind
 from lifeos.jobs.repository import InMemoryCareerRepository, ReadBackMismatch
 from lifeos.jobs.us_remote_acquisition import AcquisitionResult, SourceHealth, USRemoteAcquirer
 from lifeos.jobs.us_remote_runtime import execute_us_remote, load_registry
@@ -40,6 +45,82 @@ PROFILE = FitProfile(
     ("required", "must", "experience", "lead", "manage", "preferred", "plus"), (),
     ("hands-on coding", "software development"),
 )
+
+_GREENHOUSE_FIXTURE = Path(__file__).resolve().parents[2] / "tests" / "poc" / "greenhouse_authoritative_jd" / "greenhouse_real_job.json"
+_GREENHOUSE_PROFILE = FitProfile(
+    "greenhouse-authoritative-jd-proof",
+    {"DIRECT": (r"technical program manager",), "ADJACENT": (r"program manager",), "METHOD_EQUIVALENT": (r"delivery",), "UNSUPPORTED": (r"recruiter",)},
+    (r"infrastructure",),
+    {"role_seniority": (r"\b\d+\+ years\b",), "functional": (r"program management", r"stakeholder management", r"execution"), "technical_platform": (r"infrastructure", r"distributed systems", r"cloud-native", r"AWS", r"GCP"), "delivery_complexity": (r"large-scale", r"multi-team", r"reliability"), "competitive_advantage": (r"security", r"compliance", r"FedRAMP", r"SOC 2")},
+    {"DIRECT": (r"program management", r"infrastructure", r"cloud-native", r"distributed systems", r"security"), "ADJACENT": (r"execution", r"reliability"), "METHOD_EQUIVALENT": (r"coordination",), "UNSUPPORTED": (r"site reliability engineering",)},
+    (r"years", r"experience", r"skills", r"expertise"),
+    (r"benefits", r"equal opportunity"),
+    (r"account executive", r"recruiter"),
+)
+
+
+class _GreenhouseProofHttp:
+    def __init__(self, payload):
+        self.payload = payload
+        self.urls = []
+
+    def request_json(self, _context, _method, url, **_kwargs):
+        self.urls.append(url)
+        return self.payload
+
+
+class _GreenhouseProofFetcher:
+    def __init__(self):
+        self.calls = []
+
+    def get(self, url):
+        self.calls.append(url)
+        raise AssertionError("terminal/browser recovery must not run")
+
+
+def _greenhouse_authoritative_proof(case):
+    payload = json.loads(_GREENHOUSE_FIXTURE.read_text(encoding="utf-8"))
+    http = _GreenhouseProofHttp(payload)
+    observation = USRemoteAcquirer(context=RunContext.start(timeout_seconds=30), http=http)._greenhouse(
+        {"id": "figma", "slug": "figma", "company": "Figma"}, NOW, None
+    )[0]
+    case.assertEqual(http.urls, ["https://boards-api.greenhouse.io/v1/boards/figma/jobs?content=true"])
+    case.assertEqual(observation.provider_job_id, "6020719004")
+    case.assertEqual(observation.company, "Figma")
+    case.assertEqual(observation.role, "Technical Program Manager - Infrastructure")
+    case.assertEqual(observation.location_text, "San Francisco, CA • New York, NY • United States")
+    case.assertTrue(observation.source_apply_url and observation.source_apply_url.endswith("gh_jid=6020719004"))
+    case.assertIn("distributed systems", observation.source_description_text or "")
+    case.assertGreater(len(observation.source_description_text or ""), 500)
+    case.assertEqual(observation.source_evidence_authority, "authoritative_provider_api")
+
+    fetcher = _GreenhouseProofFetcher()
+    candidate = NewsletterJobsAdapter(
+        NewsletterAdapterConfig(fetcher=fetcher, fit_profile=_GREENHOUSE_PROFILE, market="US", source_lane="US Remote")
+    ).to_jobs_candidate(observation)
+    case.assertEqual(fetcher.calls, [])
+    case.assertEqual(candidate.fit_authority, FitAuthority.AUTHORITATIVE)
+    case.assertEqual(candidate.fit_evidence_kind, FitEvidenceKind.EMPLOYER_ATS_JD)
+    case.assertTrue(candidate.fit is not None and candidate.fit >= 72)
+    case.assertTrue(candidate.job.apply_url and candidate.job.description_text)
+    result = ingest([candidate], lane=LANE, lane_priority={"US Remote": 0}, repository=InMemoryCareerRepository(), run_date=date(2026, 9, 25))
+    case.assertEqual(result[0].disposition, Disposition.CREATED)
+
+    payload["jobs"][0]["content"] = ""
+    http = _GreenhouseProofHttp(payload)
+    observation = USRemoteAcquirer(context=RunContext.start(timeout_seconds=30), http=http)._greenhouse(
+        {"id": "figma", "slug": "figma", "company": "Figma"}, NOW, None
+    )[0]
+    case.assertIsNone(observation.source_evidence_authority)
+    case.assertIsNone(observation.source_description_text)
+    fetcher = _GreenhouseProofFetcher()
+    NewsletterJobsAdapter(NewsletterAdapterConfig(fetcher=fetcher, fit_profile=_GREENHOUSE_PROFILE, market="US", source_lane="US Remote")).to_jobs_candidate(observation)
+    case.assertEqual(len(fetcher.calls), 1)
+
+    observation = replace(observation, source_description_text="Program manager with infrastructure experience.")
+    fetcher = _GreenhouseProofFetcher()
+    NewsletterJobsAdapter(NewsletterAdapterConfig(fetcher=fetcher, fit_profile=_GREENHOUSE_PROFILE, market="US", source_lane="US Remote")).to_jobs_candidate(observation)
+    case.assertEqual(len(fetcher.calls), 1)
 
 
 def _observation(source_id: str = "synthetic-source", index: int = 1) -> SourceVacancyObservation:
@@ -469,6 +550,7 @@ class UsRemoteReentryProof(unittest.TestCase):
         self.assertEqual(composed.call_args.kwargs["inbox_mode"], "historical_recovery")
         self.assertIn('"status": "PASS"', output.getvalue())
         self.assertEqual(len(repository._store), 1)
+        _greenhouse_authoritative_proof(self)
 
 
 class TerminalEvidenceSatisfiedProof(unittest.TestCase):
