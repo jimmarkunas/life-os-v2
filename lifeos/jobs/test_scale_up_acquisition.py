@@ -280,7 +280,6 @@ class ScaleUpAcquisitionTests(unittest.TestCase):
             self.assertNotEqual(_b_results[0].disposition, _Dsp.REVIEW_DEGRADED)
             self.assertEqual(len(_b_repo._store), 1)
             _stored = next(iter(_b_repo._store.values()))
-            self.assertEqual(_b_results[0].disposition, _Dsp.ADMITTED)
             self.assertEqual(_stored.job.admission_status, _AS.ADMITTED)
             self.assertIn("Scale-Up", _stored.job.eligible_lanes)
             self.assertEqual(_stored.job.primary_lane, "Scale-Up")

@@ -47,7 +47,11 @@ def execute_scale_up(*, context, http, notion, data_source_id: str, lane: LaneCo
     initial_by_ref = {c.evidence_ref: r for c, r in zip(initial_candidates, initial_results)}
     persistence_verified = {obs.evidence_ref for obs in acquired.observations if initial_by_ref.get(obs.evidence_ref) and initial_by_ref[obs.evidence_ref].persistence_verified}
     enrichment_observations = tuple(obs for obs in acquired.observations if obs.evidence_ref in persistence_verified and not initial_by_ref[obs.evidence_ref].terminal_evidence_satisfied)
-    enrichment_candidates = _adapt_all(enrichment_observations, adapter=adapter, context=context, max_workers=8)
+    enrichment_candidates = (
+        _adapt_all(enrichment_observations, adapter=adapter, context=context, max_workers=8)
+        if enrichment_observations
+        else []
+    )
     enrichment_candidates = [
         replace(
             c,
