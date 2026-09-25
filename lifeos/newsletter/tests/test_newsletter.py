@@ -312,9 +312,14 @@ Content-Type: text/html; charset=utf-8
             def newsletter_backlog_snapshot(self, _boundary, *, now): return SimpleNamespace()
         def run(repo, evidence):
             calls = []
-            original = repo.upsert
-            def upsert(record): calls.append("read-back"); return original(record)
+            original_upsert = repo.upsert
+            original_upsert_many = getattr(repo, "upsert_many", None)
+            def upsert(record): calls.append("read-back"); return original_upsert(record)
+            def upsert_many(records):
+                calls.append("read-back")
+                return original_upsert_many(records) if original_upsert_many else {r.job.stable_job_key: upsert(r) for r in records}
             repo.upsert = upsert
+            repo.upsert_many = upsert_many
             def resolve(*_args, **_kwargs): calls.append("terminal"); return evidence
             gmail = Gmail()
             with patch("lifeos.jobs.newsletter_runtime.MailRouter.route_window"), patch("lifeos.jobs.newsletter_runtime.NewsletterProcessor.process_messages", return_value=processed), patch("lifeos.jobs.newsletter_runtime.NotionCareerRepository", return_value=repo), patch("lifeos.jobs.newsletter_adapter.acquire_terminal_vacancy_evidence", side_effect=resolve):

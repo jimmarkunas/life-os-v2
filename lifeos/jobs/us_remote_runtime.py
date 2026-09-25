@@ -16,7 +16,7 @@ from lifeos.integrations.gmail import GmailInboxMetadataPort, GmailMailboxTransp
 from lifeos.integrations.notion import NotionTransport
 from lifeos.jobs.fit_scoring import FitProfile
 from lifeos.jobs.newsletter_adapter import HttpClientFetcher, NewsletterAdapterConfig, NewsletterJobsAdapter, TerminalEvidenceCache
-from lifeos.jobs.newsletter_contract import Disposition, IngestResult, PersistenceAction, derive_review_these_jobs, ingest, result_is_accounted
+from lifeos.jobs.newsletter_contract import Disposition, IngestResult, derive_review_these_jobs, ingest, result_is_accounted
 from lifeos.jobs.newsletter_adapter import _adapt_all
 from lifeos.jobs.notion_repository import NotionCareerRepository, NotionCareerRepositoryConfig
 from lifeos.jobs.qualification import LaneConfig
@@ -297,6 +297,12 @@ def execute_us_remote(
             run_date=end.date(),
             context=context,
         )
+        _initial_pass_accounting = getattr(repository, "last_persistence_accounting", {})
+        _initial_pass_failures = len({
+            r.stable_job_key for r in initial_ingest_results
+            if r.stable_job_key and not r.persistence_verified
+            and r.detail and r.detail.startswith("persistence")
+        })
         initial_by_ref = {
             candidate.evidence_ref: result
             for candidate, result in zip(initial_candidates, initial_ingest_results)
@@ -317,20 +323,8 @@ def execute_us_remote(
             if observation.evidence_ref in persistence_verified
             and not initial_by_ref[observation.evidence_ref].terminal_evidence_satisfied
         )
-        newsletter_terminal_candidates = len(newsletter_to_resolve)
-        web_terminal_candidates = len(web_to_resolve)
-        newsletter_terminal_skipped = newsletter_terminal_candidates - len(newsletter_enrichment_observations)
-        web_terminal_skipped = web_terminal_candidates - len(web_enrichment_observations)
         newsletter_terminal_required_total = len(newsletter_enrichment_observations)
         web_terminal_required_total = len(web_enrichment_observations)
-        def replay_diagnostics(observations):
-            counts = {name: 0 for name in ("missing_fit", "non_authoritative_fit", "missing_apply_url", "qualification_error")}
-            for observation in observations:
-                for name in initial_by_ref[observation.evidence_ref].terminal_evidence_diagnostics:
-                    counts[name] += 1
-            return counts
-        newsletter_replay_diagnostics = replay_diagnostics(newsletter_to_resolve)
-        web_replay_diagnostics = replay_diagnostics(web_to_resolve)
         timings["initial_persist"] = round(perf_counter() - stage_started, 3)
 
         stage_started = perf_counter()
@@ -378,6 +372,12 @@ def execute_us_remote(
             run_date=end.date(),
             context=context,
         )
+        _reconcile_pass_accounting = getattr(repository, "last_persistence_accounting", {})
+        _reconcile_pass_failures = len({
+            r.stable_job_key for r in enrichment_ingest_results
+            if r.stable_job_key and not r.persistence_verified
+            and r.detail and r.detail.startswith("persistence")
+        })
         timings["reconcile_persist"] = round(perf_counter() - stage_started, 3)
 
         final_by_ref = dict(initial_by_ref)
@@ -441,24 +441,6 @@ def execute_us_remote(
         )
         web_lane_pass = web_result.complete and web_fully_accounted and not web_unresolved
         pass_run = mail_lane_pass and web_lane_pass
-
-        def _mutation_counts(ingest_results: list[IngestResult]) -> dict:
-            created = sum(1 for r in ingest_results if r.persistence_action is PersistenceAction.CREATED)
-            updated = sum(1 for r in ingest_results if r.persistence_action is PersistenceAction.UPDATED)
-            unchanged = sum(1 for r in ingest_results if r.persistence_action is PersistenceAction.UNCHANGED)
-            persistence_failures = len({
-                r.stable_job_key
-                for r in ingest_results
-                if r.persistence_action is PersistenceAction.NONE
-                and r.detail is not None
-                and r.detail.startswith("persistence")
-                and r.stable_job_key is not None
-            })
-            return {"created": created, "updated": updated, "unchanged": unchanged, "persistence_failures": persistence_failures}
-
-        initial_pass_counts = _mutation_counts(initial_ingest_results)
-        reconcile_pass_counts = _mutation_counts(list(enrichment_ingest_results))
-
         body = {
             "status": "PASS" if pass_run else "DEGRADED",
             "review_these_jobs": derive_review_these_jobs(list(newsletter_result.observations) + list(web_result.observations), newsletter_candidates + web_candidates, newsletter_results + web_results),
@@ -496,10 +478,7 @@ def execute_us_remote(
                 "deferred_observations": deferred_newsletter_observations,
                 "terminal_resolution_required": newsletter_terminal_required_total,
                 "terminal_resolution_budget": None,
-                "terminal_resolution_candidates": newsletter_terminal_candidates,
-                "terminal_resolution_skipped": newsletter_terminal_skipped,
-                "terminal_resolution_admitted": newsletter_terminal_required_total,
-                "terminal_resolution_replay_misses": newsletter_replay_diagnostics,
+                "terminal_resolution_admitted": attempted_newsletter_observations,
                 "state": newsletter_result.state.value,
                 "error_codes": [f"{item.operation}:{item.detail}" for item in newsletter_result.errors[:10]],
             },
@@ -508,10 +487,7 @@ def execute_us_remote(
                 "observations": len(web_result.observations),
                 "preexcluded": len(web_preexcluded),
                 "terminal_resolution_required": web_terminal_required_total,
-                "terminal_resolution_candidates": web_terminal_candidates,
-                "terminal_resolution_skipped": web_terminal_skipped,
-                "terminal_resolution_admitted": web_terminal_required_total,
-                "terminal_resolution_replay_misses": web_replay_diagnostics,
+                "terminal_resolution_admitted": len(web_to_resolve),
                 "deferred_observations": web_deferred_observations,
                 "complete_sources": sum(item.state == "COMPLETE" for item in web_result.sources),
                 "not_due_sources": sum(item.state == "NOT_DUE" for item in web_result.sources),
@@ -530,8 +506,8 @@ def execute_us_remote(
                     disposition.value: sum(item.disposition == disposition for item in results)
                     for disposition in Disposition
                 },
-                "initial_pass": initial_pass_counts,
-                "reconcile_pass": reconcile_pass_counts,
+                "initial_pass": {**_initial_pass_accounting, "persistence_failures": _initial_pass_failures},
+                "reconcile_pass": {**_reconcile_pass_accounting, "persistence_failures": _reconcile_pass_failures},
             },
             "timings": timings,
             "browser_fallback_available": fallback is not None,
