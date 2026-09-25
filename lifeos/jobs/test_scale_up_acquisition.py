@@ -1,5 +1,6 @@
 import json
 import unittest
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import patch
 from datetime import datetime, timezone
@@ -250,5 +251,91 @@ class ScaleUpAcquisitionTests(unittest.TestCase):
             result = ScaleUpAcquirer(context=RunContext.start(), http=EmptyHtml()).acquire(REGISTRY)
             self.assertEqual(next(s for s in result.sources if s.company == "Citisense Ltd").state, "DEGRADED")
             self.assertFalse(result.complete)
+        # Phase B proof: Scale-Up two-pass persist-before-enrich
+        from lifeos.jobs.scale_up_runtime import execute_scale_up as _b_run
+        from lifeos.jobs.newsletter_contract import Disposition as _Dsp
+        from lifeos.jobs.models import AdmissionStatus as _AS
+        from lifeos.jobs.repository import InMemoryCareerRepository as _PhBRepo, ReadBackMismatch as _RBM
+        from lifeos.jobs.qualification import LaneConfig as _LC
+        from lifeos.jobs.fit_scoring import FitProfile as _FP
+        from lifeos.newsletter.models import SourceVacancyObservation as _SVO
+        from lifeos.core.runtime import RunContext as _RC
+        _b_lane = _LC(name="Scale-Up", market="UK", fit_floor=72, target_review_floor=None, work_mode_policy="any", compensation_floor=None, freshness_gate=False, freshness_max_days=None, is_target_bucket=True, visa_route="Scale-up", visa_route_gate=True, geography_gate=True)
+        _b_profile = _FP("V3-su-phaseb", {"DIRECT": ("program", "technical program", "product"), "ADJACENT": ("architect",), "METHOD_EQUIVALENT": ("delivery",), "UNSUPPORTED": ("software engineer",)}, ("automation", "AI", "program", "technical", "product", "delivery", "management", "cloud", "data"), {"role_seniority": ("years? experience", "senior", "lead"), "functional": ("program", "delivery", "management"), "technical_platform": ("cloud", "platform", "data"), "delivery_complexity": ("complex", "cross-functional"), "competitive_advantage": ("strategy", "automation", "AI")}, {"DIRECT": ("required", "must", "experience"), "ADJACENT": ("preferred",), "METHOD_EQUIVALENT": ("plus",), "UNSUPPORTED": ("software engineer",)}, ("required", "must", "experience", "lead", "manage", "preferred", "plus"), (), ("hands-on coding", "software development"))
+        _b_html = "<h1>Senior Technical Program Manager</h1><p>Required: lead program delivery and cloud strategy. Must manage complex cross-functional programs with 8 years experience. Preferred technical platform, data, automation, and AI experience. Plus senior stakeholder management, product strategy, and delivery leadership.</p>"
+        _b_url = "https://boards.greenhouse.io/scaleupco/jobs/1"
+        _b_obs = _SVO(evidence_ref="scale-up:scaleupco:1", source_provider="scaleupco", source_mailbox="public-web", source_message_id="su-1", source_subject="Senior Technical Product Program Manager", company="Scale-Up Co Ltd", role="Senior Technical Product Program Manager", location_text="London, UK", compensation_text=None, source_apply_url=_b_url, provider_job_id="1", provider_score=99, source_received_at=datetime(2026, 1, 15, tzinfo=timezone.utc), route_evidence_status="POSITIVE")
+        class _BFakeHttp:
+            def request(self, *a, **kw): raise RuntimeError("phase_b network boundary")
+        class _BFakeAcquirer:
+            def __init__(self, **kw): pass
+            def acquire(self, reg, **kw): return SimpleNamespace(observations=(_b_obs,), complete=True, sources=())
+        _b_recovery = {"pages": [{"url": _b_url, "final_url": _b_url, "html": _b_html}]}
+        with self.subTest("phase_b happy path persist before terminal one row created"):
+            _b_repo = _PhBRepo()
+            with patch("lifeos.jobs.scale_up_runtime.ScaleUpAcquirer", _BFakeAcquirer), \
+                 patch("lifeos.jobs.scale_up_runtime.NotionCareerRepository", lambda **kw: _b_repo):
+                _, _b_results = _b_run(context=_RC.start(timeout_seconds=30), http=_BFakeHttp(), notion=SimpleNamespace(), data_source_id="synthetic", lane=_b_lane, lane_priority={"Scale-Up": 0}, fit_profile=_b_profile, market="UK", source_lane="Scale-Up", recovery_evidence=_b_recovery)
+            self.assertEqual(len(_b_results), 1)
+            self.assertNotEqual(_b_results[0].disposition, _Dsp.REVIEW_DEGRADED)
+            self.assertEqual(len(_b_repo._store), 1)
+            _stored = next(iter(_b_repo._store.values()))
+            self.assertEqual(_stored.job.admission_status, _AS.ADMITTED)
+            self.assertIn("Scale-Up", _stored.job.eligible_lanes)
+            self.assertEqual(_stored.job.primary_lane, "Scale-Up")
+            self.assertTrue(_stored.job.job.apply_url)
+            self.assertIsNotNone(_stored.job.fit)
+            self.assertEqual(_stored.job.fit_authority.value, "authoritative")
+            self.assertEqual(_b_results[0].stable_job_key, _stored.job.stable_job_key)
+        with self.subTest("phase_b persistence failure skips terminal evidence"):
+            class _BFailRepo(_PhBRepo):
+                def upsert(self, record): raise _RBM("synthetic ph-b fail")
+                def upsert_many(self, records): raise _RBM("synthetic ph-b batch fail")
+            _b_adapt_calls = []
+            def _b_tracking_adapt_all(*args, **kwargs):
+                _b_adapt_calls.append(1)
+                return []
+            with patch("lifeos.jobs.scale_up_runtime.ScaleUpAcquirer", _BFakeAcquirer), \
+                 patch("lifeos.jobs.scale_up_runtime.NotionCareerRepository", lambda **kw: _BFailRepo()), \
+                 patch("lifeos.jobs.scale_up_runtime._adapt_all", _b_tracking_adapt_all):
+                _, _bf_results = _b_run(context=_RC.start(timeout_seconds=30), http=_BFakeHttp(), notion=SimpleNamespace(), data_source_id="synthetic", lane=_b_lane, lane_priority={"Scale-Up": 0}, fit_profile=_b_profile, market="UK", source_lane="Scale-Up", recovery_evidence=_b_recovery)
+            self.assertEqual(len(_b_adapt_calls), 0, "terminal must not be called on persistence failure")
+            self.assertEqual(_bf_results[0].disposition, _Dsp.REVIEW_DEGRADED)
+        with self.subTest("phase_b terminal failure canonical identity preserved one row"):
+            _b_term_repo = _PhBRepo()
+            with patch("lifeos.jobs.scale_up_runtime.ScaleUpAcquirer", _BFakeAcquirer), \
+                 patch("lifeos.jobs.scale_up_runtime.NotionCareerRepository", lambda **kw: _b_term_repo):
+                _, _bt_results = _b_run(context=_RC.start(timeout_seconds=30), http=_BFakeHttp(), notion=SimpleNamespace(), data_source_id="synthetic", lane=_b_lane, lane_priority={"Scale-Up": 0}, fit_profile=_b_profile, market="UK", source_lane="Scale-Up", recovery_evidence={})
+            self.assertEqual(len(_bt_results), 1)
+            self.assertEqual(_bt_results[0].disposition, _Dsp.REVIEW_DEGRADED)
+            self.assertEqual(len(_b_term_repo._store), 1)
+        with self.subTest("phase_b replay idempotency second run same row"):
+            _b_replay_repo = _PhBRepo()
+            with patch("lifeos.jobs.scale_up_runtime.ScaleUpAcquirer", _BFakeAcquirer), \
+                 patch("lifeos.jobs.scale_up_runtime.NotionCareerRepository", lambda **kw: _b_replay_repo):
+                _b_run(context=_RC.start(timeout_seconds=30), http=_BFakeHttp(), notion=SimpleNamespace(), data_source_id="synthetic", lane=_b_lane, lane_priority={"Scale-Up": 0}, fit_profile=_b_profile, market="UK", source_lane="Scale-Up", recovery_evidence=_b_recovery)
+                _b_run(context=_RC.start(timeout_seconds=30), http=_BFakeHttp(), notion=SimpleNamespace(), data_source_id="synthetic", lane=_b_lane, lane_priority={"Scale-Up": 0}, fit_profile=_b_profile, market="UK", source_lane="Scale-Up", recovery_evidence=_b_recovery)
+            self.assertEqual(len(_b_replay_repo._store), 1)
+        with self.subTest("phase_b qualify gate fit floor 71 excluded 72 not excluded market excluded"):
+            from lifeos.jobs.qualification import qualify as _b_qualify, UNIVERSAL_FIT_FLOOR as _UFF
+            from lifeos.jobs.models import Company as _Co, WorkMode as _WM, FreshnessStatus as _FS, NormalizedCandidate as _NC, JobObservation as _JO, AdmissionStatus as _AS
+            from datetime import date as _d
+            self.assertEqual(_UFF, 72)
+            _qjob = _JO(company=_Co("Scale Co"), role="Program Manager", location="London, UK", work_mode=_WM.UNKNOWN, compensation_text=None, compensation_minimum=None, posting_date=None, apply_url="https://example.test/jobs/1", source_lane="Scale-Up")
+            self.assertEqual(_b_qualify(_NC(job=_qjob, fit=71, market="UK", freshness_status=_FS.UNRESOLVED, evidence_ref="scale-up:qual:1"), lane=_b_lane, run_date=_d(2026, 1, 15)).admission_status, _AS.EXCLUDED)
+            self.assertNotEqual(_b_qualify(_NC(job=_qjob, fit=72, market="UK", freshness_status=_FS.UNRESOLVED, evidence_ref="scale-up:qual:2"), lane=_b_lane, run_date=_d(2026, 1, 15)).admission_status, _AS.EXCLUDED)
+            self.assertEqual(_b_qualify(_NC(job=_qjob, fit=80, market="US", freshness_status=_FS.FRESH, evidence_ref="scale-up:qual:3"), lane=_b_lane, run_date=_d(2026, 1, 15)).admission_status, _AS.EXCLUDED)
+            from lifeos.jobs.models import EvidenceStatus as _ES
+            from lifeos.jobs.scale_up_runtime import _geography_status as _geo
+            _positive = _NC(job=_qjob, fit=72, market="UK", freshness_status=_FS.FRESH, evidence_ref="scale-up:gate:positive", route_evidence_status=_ES.POSITIVE, geography_evidence_status=_ES.POSITIVE)
+            self.assertEqual(_b_qualify(_positive, lane=_b_lane, run_date=_d(2026, 1, 15)).admission_status, _AS.ADMITTED)
+            for status in (_ES.UNRESOLVED, _ES.NEGATIVE):
+                with self.subTest(route_status=status):
+                    candidate = replace(_positive, route_evidence_status=status)
+                    expected = _AS.PASSED_REVIEW if status is _ES.UNRESOLVED else _AS.EXCLUDED
+                    self.assertEqual(_b_qualify(candidate, lane=_b_lane, run_date=_d(2026, 1, 15)).admission_status, expected)
+            for location, expected in (("London", _ES.POSITIVE), ("Greater London", _ES.POSITIVE), ("London, Ontario, Canada", _ES.NEGATIVE), ("Manchester", _ES.NEGATIVE), ("Paris", _ES.NEGATIVE), (None, _ES.UNRESOLVED), ("UK", _ES.UNRESOLVED), ("UK Remote", _ES.UNRESOLVED), ("Manchester / London", _ES.POSITIVE)):
+                with self.subTest(location=location):
+                    self.assertIs(_geo(location), expected)
 
 if __name__ == "__main__": unittest.main()

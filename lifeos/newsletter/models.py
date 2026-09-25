@@ -48,6 +48,8 @@ class SourceVacancyObservation:
     """Meaningful source vacancy text; not canonical employer/ATS JD truth."""
     issues: tuple[str, ...] = ()
     source_received_at: datetime | None = None
+    route_evidence_status: str | None = None
+    route_evidence_ref: str | None = None
 
 @dataclass(frozen=True, slots=True)
 class ParseIssue:

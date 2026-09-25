@@ -43,6 +43,7 @@ def _record(*, url: str = "https://boards.greenhouse.io/acme/jobs/1", fit: int |
 
 class FakeTransport:
     def __init__(self) -> None:
+        self.lock = threading.Lock()
         self.pages: dict[str, dict] = {}
         self.calls: list[tuple] = []
         self.timeout_create = False
@@ -69,32 +70,34 @@ class FakeTransport:
         return tuple(found)
 
     def create_page(self, _data_source_id, properties):
-        page_id = f"page-{len(self.pages) + 1}"
-        error = self.create_error
-        self.create_error = None
-        if error is not None and not self.create_error_commits:
+        with self.lock:
+            page_id = f"page-{len(self.pages) + 1}"
+            error = self.create_error
+            self.create_error = None
+            if error is not None and not self.create_error_commits:
+                self.calls.append(("create", page_id))
+                raise error
+            page = {"id": page_id, "properties": deepcopy(properties)}
+            self.pages[page_id] = page
             self.calls.append(("create", page_id))
-            raise error
-        page = {"id": page_id, "properties": deepcopy(properties)}
-        self.pages[page_id] = page
-        self.calls.append(("create", page_id))
-        if error is not None:
-            raise error
-        if self.timeout_create:
-            self.timeout_create = False
-            raise TimeoutError("synthetic ambiguous create")
-        return deepcopy(page)
+            if error is not None:
+                raise error
+            if self.timeout_create:
+                self.timeout_create = False
+                raise TimeoutError("synthetic ambiguous create")
+            return deepcopy(page)
 
     def update_page(self, page_id, properties):
-        self.calls.append(("update", page_id))
-        error = self.update_error
-        self.update_error = None
-        if error is not None and not self.update_error_commits:
-            raise error
-        self.pages[page_id]["properties"].update(deepcopy(properties))
-        if error is not None:
-            raise error
-        return deepcopy(self.pages[page_id])
+        with self.lock:
+            self.calls.append(("update", page_id))
+            error = self.update_error
+            self.update_error = None
+            if error is not None and not self.update_error_commits:
+                raise error
+            self.pages[page_id]["properties"].update(deepcopy(properties))
+            if error is not None:
+                raise error
+            return deepcopy(self.pages[page_id])
 
     def get_page(self, page_id):
         self.calls.append(("read_back", page_id))
