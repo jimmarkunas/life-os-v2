@@ -39,6 +39,12 @@ class CareerRepository(Protocol):
         """
         ...
 
+    def cache(self, record: JobLedgerRecord) -> None:
+        """Register a record in the execution-local cache without writing to
+        the canonical store. Used by dry-run passes to seed the known() cache
+        so subsequent passes can resolve identity without extra queries."""
+        ...
+
     def get_many(self, stable_job_keys: list[str]) -> dict[str, JobLedgerRecord]:
         """Narrow identity lookup for exactly the keys this run needs.
         Must never require scanning the full canonical store."""
@@ -84,6 +90,9 @@ class InMemoryCareerRepository:
             if url in requested:
                 found[url] = record
         return found
+
+    def cache(self, record: JobLedgerRecord) -> None:
+        self._store[record.job.stable_job_key] = record
 
     def upsert(self, record: JobLedgerRecord) -> JobLedgerRecord:
         key = record.job.stable_job_key
