@@ -118,6 +118,7 @@ class TerminalEvidenceCache:
         self.values: dict[str, TerminalVacancyEvidence | None] = {}
         self.in_flight: dict[str, Event] = {}
         self.lock = Lock()
+        self.resolution_calls = 0
 
 
 def _unresolved_candidate(
@@ -188,6 +189,7 @@ class NewsletterJobsAdapter:
         self._config = config
         cache = terminal_cache or TerminalEvidenceCache()
         self._terminal_evidence_cache = cache.values
+        self._terminal_evidence_cache_state = cache
         self._terminal_evidence_in_flight = cache.in_flight
         self._terminal_evidence_lock = cache.lock
 
@@ -340,6 +342,8 @@ class NewsletterJobsAdapter:
 
         evidence = None
         try:
+            with self._terminal_evidence_lock:
+                self._terminal_evidence_cache_state.resolution_calls += 1
             evidence = acquire_terminal_vacancy_evidence(
                 source_apply_url,
                 fetcher=self._config.fetcher,

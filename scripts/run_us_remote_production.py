@@ -116,7 +116,7 @@ def _policy_file_url(page: dict) -> str:
     return url
 
 
-def _load_private_policy_from_notion(context, http, notion, *, notion_token: str):
+def _load_private_policy_from_notion(context, http, notion, *, notion_token: str, load_recovery_evidence: bool = True):
     search = http.request_json(context, "POST", _NOTION_SEARCH_URL, headers={"Authorization": f"Bearer {notion_token}", "Notion-Version": _NOTION_VERSION, "Accept": "application/json", "Content-Type": "application/json"}, json_body={"query": _POLICY_DATABASE_TITLE, "filter": {"property": "object", "value": "data_source"}, "page_size": 20}, timeout_seconds=10.0, retry=RetryPolicy(max_attempts=2, backoff_seconds=0.1, max_backoff_seconds=1.0))
     if not isinstance(search, dict): raise ConfigurationError("Notion configuration search returned an invalid response")
     matches = [item for item in (search.get("results") or []) if isinstance(item, dict) and _plain_title(item) == _POLICY_DATABASE_TITLE and item.get("id")]
@@ -127,7 +127,7 @@ def _load_private_policy_from_notion(context, http, notion, *, notion_token: str
     raw = http.request_json(context, "GET", _policy_file_url(row), timeout_seconds=10.0, retry=RetryPolicy(max_attempts=2, backoff_seconds=0.1, max_backoff_seconds=1.0))
     if not isinstance(raw, dict): raise ConfigurationError("canonical private policy was not a JSON object")
     recovery_evidence = None
-    recovery_url = _file_url(row, _RECOVERY_EVIDENCE_FILE_PROPERTY, required=False)
+    recovery_url = _file_url(row, _RECOVERY_EVIDENCE_FILE_PROPERTY, required=False) if load_recovery_evidence else None
     if recovery_url:
         recovery_evidence = http.request_json(context, "GET", recovery_url, timeout_seconds=10.0, retry=RetryPolicy(max_attempts=2, backoff_seconds=0.1, max_backoff_seconds=1.0))
         if not isinstance(recovery_evidence, dict):
@@ -146,6 +146,11 @@ def _args(argv: list[str]) -> argparse.Namespace:
         "--newsletter-only",
         action="store_true",
         help="Run only the extracted Newsletter runtime; intended for controlled manual UAT before production cutover.",
+    )
+    parser.add_argument(
+        "--greenhouse-only",
+        action="store_true",
+        help="Run the existing US Remote path against Greenhouse sources only for bounded live acceptance.",
     )
     parser.add_argument(
         "--historical-inbox-recovery-hours",
@@ -178,11 +183,14 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    if args.greenhouse_only and (args.newsletter_only or args.full_web_sweep):
+        print("BLOCKED: --greenhouse-only cannot combine with Newsletter-only or full-web-sweep", file=sys.stderr)
+        return 2
 
     try:
         env = _require_env()
         registry = load_registry()
-        browser_evidence_payload = browser_evidence()
+        browser_evidence_payload = None if args.greenhouse_only else browser_evidence()
     except ConfigurationError as exc:
         print(f"BLOCKED: {exc}", file=sys.stderr)
         return 2
@@ -203,8 +211,9 @@ def main(argv: list[str] | None = None) -> int:
                 http,
                 notion,
                 notion_token=env["NOTION_API_TOKEN"],
+                load_recovery_evidence=not args.greenhouse_only,
             )
-            if browser_evidence_payload is None:
+            if browser_evidence_payload is None and not args.greenhouse_only:
                 browser_evidence_payload = notion_browser_evidence
         gmail_token = _exchange_gmail_access_token(
             context,
@@ -252,7 +261,7 @@ def main(argv: list[str] | None = None) -> int:
             dry_run=args.dry_run,
         )
     else:
-        web_since = end - timedelta(hours=args.web_lookback_hours)
+        web_since = None if args.greenhouse_only else end - timedelta(hours=args.web_lookback_hours)
         result = execute_us_remote(
             context=context,
             http=http,
@@ -273,6 +282,7 @@ def main(argv: list[str] | None = None) -> int:
             web_since=web_since,
             dry_run=args.dry_run,
             full_web_sweep=args.full_web_sweep,
+            greenhouse_only=args.greenhouse_only,
         )
     print(json.dumps(result.body, indent=result.indent, sort_keys=True))
     return result.exit_code

@@ -8,6 +8,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from time import perf_counter
 from typing import Any
+from types import SimpleNamespace
 
 from lifeos.core.http import HttpClient
 from lifeos.core.config import ConfigurationError
@@ -169,6 +170,7 @@ def execute_us_remote(
     web_since,
     dry_run: bool,
     full_web_sweep: bool,
+    greenhouse_only: bool = False,
 ) -> UsRemoteResult:
     """Newsletter + US Web acquire independently, then reconcile together
     through one shared Jobs ingest batch and one canonical Job Ledger.
@@ -185,14 +187,16 @@ def execute_us_remote(
             MailRouter(newsletter_boundary=NEWSLETTER_BOUNDARY).route_window(
                 [GmailInboxMetadataPort(gmail)], inbox_start, end
             )
-            if not dry_run
-            else None
+            if not dry_run and not greenhouse_only
+            else SimpleNamespace(checkpoint_safe=True, scanned_count=0, records=(), errors=())
         )
         timings["mail_stage"] = round(perf_counter() - stage_started, 3)
 
         stage_started = perf_counter()
-        newsletter_result = NewsletterProcessor(boundary_name=NEWSLETTER_BOUNDARY).process_window(
-            [gmail], start, end
+        newsletter_result = (
+            NewsletterProcessor(boundary_name=NEWSLETTER_BOUNDARY).process_window([gmail], start, end)
+            if not greenhouse_only
+            else SimpleNamespace(state=NewsletterExecutionState.PASS, messages=(), observations=(), errors=())
         )
         timings["newsletter_fetch_parse"] = round(perf_counter() - stage_started, 3)
 
@@ -204,11 +208,20 @@ def execute_us_remote(
         ).acquire(
             registry,
             browser_evidence=browser_evidence,
+            provider_kind="greenhouse" if greenhouse_only else None,
             since=web_since,
             full_sweep=full_web_sweep,
             now=end,
         )
         timings["web_acquire"] = round(perf_counter() - stage_started, 3)
+        greenhouse_observations_received = len(web_result.observations) if greenhouse_only else 0
+        greenhouse_authoritative_jds_consumed = sum(
+            1
+            for observation in web_result.observations
+            if getattr(observation, "source_evidence_authority", None) == "authoritative_provider_api"
+            and observation.source_apply_url
+            and observation.source_description_text
+        ) if greenhouse_only else 0
 
         if dry_run:
             body = {
@@ -445,30 +458,40 @@ def execute_us_remote(
         processed_errors: list[str] = []
         processed_count = 0
         stage_started = perf_counter()
-        accepted_message_ids = _accepted_newsletter_message_ids(
-            newsletter_result,
-            newsletter_results,
-            allowed_message_ids=selected_newsletter_message_ids,
-        )
-        for message_id in accepted_message_ids:
-            try:
-                gmail.mark_newsletter_processed(message_id, NEWSLETTER_BOUNDARY)
-            except Exception as exc:
-                processed_errors.append(type(exc).__name__)
-            else:
-                processed_count += 1
-        timings["newsletter_mark_processed"] = round(perf_counter() - stage_started, 3); retention = _retain_processed_newsletters(gmail, now=end); retention_errors = list(retention.errors)
+        if greenhouse_only:
+            retention = RetentionResult()
+            retention_errors: list[str] = []
+        else:
+            accepted_message_ids = _accepted_newsletter_message_ids(
+                newsletter_result,
+                newsletter_results,
+                allowed_message_ids=selected_newsletter_message_ids,
+            )
+            for message_id in accepted_message_ids:
+                try:
+                    gmail.mark_newsletter_processed(message_id, NEWSLETTER_BOUNDARY)
+                except Exception as exc:
+                    processed_errors.append(type(exc).__name__)
+                else:
+                    processed_count += 1
+            retention = _retain_processed_newsletters(gmail, now=end)
+            retention_errors = list(retention.errors)
+        timings["newsletter_mark_processed"] = round(perf_counter() - stage_started, 3)
 
         stage_started = perf_counter()
         backlog_errors: list[str] = []
-        try:
-            backlog = gmail.newsletter_backlog_snapshot(NEWSLETTER_BOUNDARY, now=end)
-            pending_source_messages = backlog.pending_source_messages
-            oldest_pending_age_seconds = backlog.oldest_pending_age_seconds
-        except Exception as exc:
-            pending_source_messages = None
+        if greenhouse_only:
+            pending_source_messages = 0
             oldest_pending_age_seconds = None
-            backlog_errors.append(type(exc).__name__)
+        else:
+            try:
+                backlog = gmail.newsletter_backlog_snapshot(NEWSLETTER_BOUNDARY, now=end)
+                pending_source_messages = backlog.pending_source_messages
+                oldest_pending_age_seconds = backlog.oldest_pending_age_seconds
+            except Exception as exc:
+                pending_source_messages = None
+                oldest_pending_age_seconds = None
+                backlog_errors.append(type(exc).__name__)
         timings["newsletter_backlog_health"] = round(perf_counter() - stage_started, 3)
 
         mail_lane_pass = (
@@ -481,7 +504,28 @@ def execute_us_remote(
             and (pending_source_messages == 0 or processed_count > 0)
         )
         web_lane_pass = web_result.complete and web_fully_accounted and not web_unresolved
-        pass_run = mail_lane_pass and web_lane_pass
+        greenhouse_terminal_resolver_calls = terminal_cache.resolution_calls if greenhouse_only else 0
+        greenhouse_fits_produced = sum(candidate.fit is not None for candidate in web_candidates) if greenhouse_only else 0
+        greenhouse_persistence_readbacks_completed = (
+            _reconcile_pass_accounting.get("authoritative_read_back_verified", 0)
+            if greenhouse_only else 0
+        )
+        pass_run = (
+            mail_lane_pass and web_lane_pass
+            if not greenhouse_only
+            else (
+                web_result.complete
+                and web_fully_accounted
+                and not web_unresolved
+                and greenhouse_observations_received > 0
+                and greenhouse_authoritative_jds_consumed > 0
+                and greenhouse_terminal_resolver_calls == 0
+                and greenhouse_fits_produced > 0
+                and greenhouse_persistence_readbacks_completed > 0
+                and fallback is None
+                and not full_web_sweep
+            )
+        )
         body = {
             "status": "PASS" if pass_run else "DEGRADED",
             "review_these_jobs": derive_review_these_jobs(list(newsletter_result.observations) + list(web_result.observations), newsletter_candidates + web_candidates, newsletter_results + web_results),
@@ -560,6 +604,15 @@ def execute_us_remote(
             "browser_fallback_available": fallback is not None,
             "within_45s_benchmark": context.elapsed_seconds() <= 45.0,
         }
+        if greenhouse_only:
+            body.update({
+                "greenhouse_observations_received": greenhouse_observations_received,
+                "greenhouse_authoritative_jds_consumed": greenhouse_authoritative_jds_consumed,
+                "greenhouse_terminal_resolver_calls": greenhouse_terminal_resolver_calls,
+                "greenhouse_fits_produced": greenhouse_fits_produced,
+                "greenhouse_persistence_readbacks_completed": greenhouse_persistence_readbacks_completed,
+                "elapsed_ms": round(context.elapsed_seconds() * 1000.0, 3),
+            })
         return UsRemoteResult(body=body, indent=2, exit_code=0 if pass_run else 1)
     except DeadlineExceeded:
         body = {
