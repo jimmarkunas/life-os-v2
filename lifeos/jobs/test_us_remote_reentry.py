@@ -326,6 +326,54 @@ class UsRemoteReentryProof(unittest.TestCase):
         self.assertEqual(observation.provider_job_id, "vanta-1")
         self.assertEqual(observation.source_apply_url, "https://jobs.ashbyhq.com/vanta/vanta-1")
         self.assertIn("Lead complex program delivery", observation.source_description_text)
+        self.assertEqual(observation.source_evidence_authority, "authoritative_provider_api")
+
+        class RecordingFetcher:
+            def __init__(self, body):
+                self.calls = []
+                self.body = body
+
+            def get(self, url):
+                self.calls.append(url)
+                return SimpleNamespace(final_url=url, body=self.body)
+
+        terminal = RecordingFetcher("{}")
+        browser = RecordingFetcher("<html><p>card only</p></html>")
+        candidate = NewsletterJobsAdapter(
+            NewsletterAdapterConfig(
+                fetcher=terminal, fallback_fetcher=browser, fit_profile=PROFILE,
+                market="US", source_lane="US Remote",
+            )
+        ).to_jobs_candidate(observation)
+        self.assertEqual(terminal.calls, [])
+        self.assertEqual(browser.calls, [])
+        self.assertEqual(candidate.job.apply_url, observation.source_apply_url)
+        self.assertIsNotNone(candidate.fit)
+        self.assertEqual(candidate.fit_authority, FitAuthority.AUTHORITATIVE)
+        self.assertEqual(candidate.fit_evidence_kind, FitEvidenceKind.EMPLOYER_ATS_JD)
+
+        weak_http = AshbyHttp()
+        weak_http.request_json = lambda _context, _method, _url, **_kwargs: {"jobs": [{
+            "id": "vanta-weak", "title": "Technical Program Manager",
+            "location": "Remote - United States", "jobUrl": observation.source_apply_url,
+            "descriptionPlain": "Too short", "publishedAt": "2026-01-15T00:00:00Z",
+        }]}
+        weak = USRemoteAcquirer(context=RunContext.start(timeout_seconds=30), http=weak_http)._ashby(
+            {"id": "vanta", "company": "Vanta", "slug": "vanta"}, NOW, None
+        )[0]
+        self.assertIsNone(weak.source_evidence_authority)
+        weak_terminal = RecordingFetcher("{}")
+        weak_browser = RecordingFetcher("<html><p>card only</p></html>")
+        weak_candidate = NewsletterJobsAdapter(
+            NewsletterAdapterConfig(
+                fetcher=weak_terminal, fallback_fetcher=weak_browser, fit_profile=PROFILE,
+                market="US", source_lane="US Remote",
+            )
+        ).to_jobs_candidate(weak)
+        self.assertTrue(weak_terminal.calls)
+        self.assertTrue(weak_browser.calls)
+        self.assertIsNone(weak_candidate.fit)
+        self.assertIn("mandatory enrichment unresolved", weak_candidate.unresolved_reason)
 
     def test_actual_runtime_composition_persists_before_enrichment_and_fails_closed_on_incomplete_source(self):
         repository = InMemoryCareerRepository()
