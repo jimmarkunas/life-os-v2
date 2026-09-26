@@ -246,6 +246,7 @@ class USRemoteAcquirer:
         registry: dict[str, Any],
         *,
         browser_evidence: dict[str, Any] | None = None,
+        provider_kind: str | None = None,
         since: datetime | None = None,
         full_sweep: bool = False,
         now: datetime | None = None,
@@ -258,6 +259,7 @@ class USRemoteAcquirer:
             for bucket in ("tier1_employers", "staffing_agencies", "discovery_helpers")
             for source in registry.get(bucket, [])
             if source.get("enabled", True)
+            and (provider_kind is None or str(source.get("kind") or "") == provider_kind)
         ]
         browser_by_id = {
             str(item.get("source_id")): item
@@ -269,7 +271,7 @@ class USRemoteAcquirer:
         due_sources: list[dict[str, Any]] = []
 
         for source in sources:
-            if _source_due(source, current, full_sweep=full_sweep):
+            if provider_kind is not None or _source_due(source, current, full_sweep=full_sweep):
                 due_sources.append(source)
             else:
                 health.append(SourceHealth(str(source.get("id")), "NOT_DUE", 0, "steady-state-cadence"))
