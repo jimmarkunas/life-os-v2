@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import json
 import unittest
 from datetime import date
 from types import SimpleNamespace
 
-from lifeos.jobs.identity import IdentityCollision, derive_identity_evidence, resolve_existing_identity
+from lifeos.jobs.identity import IdentityCollision, derive_identity_evidence, resolve_existing_identity, stable_job_key
+from lifeos.jobs.newsletter_adapter import NewsletterAdapterConfig, NewsletterJobsAdapter
 from lifeos.jobs.models import Company, FitAuthority, FreshnessStatus, JobObservation, NormalizedCandidate, WorkMode
 from lifeos.jobs.newsletter_contract import Disposition, ingest
 from lifeos.jobs.qualification import LaneConfig
 from lifeos.jobs.repository import InMemoryCareerRepository
+from lifeos.jobs.terminal_evidence import FetchResponse, acquire_terminal_vacancy_evidence
+from lifeos.jobs.fit_scoring import FitProfile
+from lifeos.newsletter.models import SourceVacancyObservation
 
 
 LANE = LaneConfig("US Remote", "US", 72, None, "remote_only", None, False, None)
@@ -49,6 +54,139 @@ def candidate(ref: str, job: JobObservation) -> NormalizedCandidate:
 
 
 class IdentityDedupeTests(unittest.TestCase):
+    def test_discovery_multihop_reconciles_with_direct_ats_and_conflict_fails_closed(self):
+        jd = "Technical Program Manager. Required: 5 years experience. Lead complex cloud platform delivery and stakeholder management across distributed teams."
+
+        class HopFetcher:
+            def __init__(self, pages):
+                self.pages = pages
+                self.calls = []
+
+            def get(self, url):
+                self.calls.append(url)
+                return FetchResponse(url, self.pages[url])
+
+        def jsonld(company, role):
+            return (
+                '<script type="application/ld+json">'
+                + json.dumps({"@type": "JobPosting", "description": jd, "hiringOrganization": {"name": company}, "title": role})
+                + "</script>"
+            )
+
+        greenhouse = "https://boards.greenhouse.io/acme/jobs/123456"
+        lensa_start = "https://lensa.com/jobs/acme-tpm-1"
+        lensa_hop = "https://lensa.com/jobs/acme-tpm-1/details"
+        lensa_pages = {
+            lensa_start: f'<a href="{lensa_hop}">continue</a>',
+            lensa_hop: f'<a href="{greenhouse}">apply</a>',
+            greenhouse: jsonld("Acme", "Technical Program Manager"),
+        }
+        lensa_evidence = acquire_terminal_vacancy_evidence(
+            lensa_start, fetcher=HopFetcher(lensa_pages), company="Acme", role="Technical Program Manager", provider_job_id="lensa-1"
+        )
+        self.assertIsNotNone(lensa_evidence)
+        self.assertEqual(lensa_evidence.canonical_url, greenhouse)
+        self.assertEqual(lensa_evidence.resolution_chain, (lensa_start, lensa_hop, greenhouse))
+
+        ashby = "https://jobs.ashbyhq.com/acme/abcdef12"
+        jobright_start = "https://jobright.ai/jobs/acme-tpm-2"
+        jobright_hop = "https://jobright.ai/jobs/acme-tpm-2/details"
+        jobright_pages = {
+            jobright_start: f'<a href="{jobright_hop}">continue</a>',
+            jobright_hop: f'<a href="{ashby}">apply</a>',
+            ashby: jsonld("Acme", "Technical Program Manager"),
+        }
+        jobright_evidence = acquire_terminal_vacancy_evidence(
+            jobright_start, fetcher=HopFetcher(jobright_pages), company="Acme", role="Technical Program Manager", provider_job_id="jobright-2"
+        )
+        self.assertIsNotNone(jobright_evidence)
+        self.assertEqual(jobright_evidence.canonical_url, ashby)
+        self.assertEqual(jobright_evidence.resolution_chain, (jobright_start, jobright_hop, ashby))
+
+        profile = FitProfile(
+            "cross-source-proof",
+            {"DIRECT": ("program manager",), "ADJACENT": (), "METHOD_EQUIVALENT": (), "UNSUPPORTED": ()},
+            ("cloud",),
+            {"role_seniority": ("years? experience",), "functional": ("program", "delivery"), "technical_platform": ("cloud",), "delivery_complexity": ("complex",), "competitive_advantage": ("stakeholder",)},
+            {"DIRECT": ("required", "experience"), "ADJACENT": (), "METHOD_EQUIVALENT": (), "UNSUPPORTED": ()},
+            ("required", "experience"), (), (),
+        )
+
+        def source(ref, provider, provider_id, url, description=None, authority=None):
+            return SourceVacancyObservation(
+                evidence_ref=ref, source_provider=provider, source_mailbox="gmail",
+                source_message_id=ref, source_subject="Acme Technical Program Manager",
+                company="Acme", role="Technical Program Manager", location_text="Remote - United States",
+                compensation_text=None, source_apply_url=url, provider_job_id=provider_id,
+                source_description_text=description, source_evidence_authority=authority,
+            )
+
+        adapter = NewsletterJobsAdapter(
+            NewsletterAdapterConfig(
+                fetcher=HopFetcher(lensa_pages), fit_profile=profile,
+                market="US", source_lane="US Remote",
+            )
+        )
+        lensa_candidate = adapter.to_jobs_candidate(source("lensa-ref", "Lensa", "lensa-1", lensa_start))
+        direct_greenhouse = NewsletterJobsAdapter(
+            NewsletterAdapterConfig(
+                fetcher=HopFetcher({}), fit_profile=profile,
+                market="US", source_lane="US Remote",
+            )
+        ).to_jobs_candidate(source("gh-ref", "Greenhouse", "gh-123456", greenhouse, jd, "authoritative_provider_api"))
+        self.assertEqual(lensa_candidate.job.apply_url, direct_greenhouse.job.apply_url)
+        self.assertEqual(
+            stable_job_key(lensa_candidate.job),
+            stable_job_key(direct_greenhouse.job),
+        )
+
+        ashby_candidate = NewsletterJobsAdapter(
+            NewsletterAdapterConfig(
+                fetcher=HopFetcher(jobright_pages), fit_profile=profile,
+                market="US", source_lane="US Remote",
+            )
+        ).to_jobs_candidate(source("jobright-ref", "Jobright", "jobright-2", jobright_start))
+        direct_ashby = NewsletterJobsAdapter(
+            NewsletterAdapterConfig(
+                fetcher=HopFetcher({}), fit_profile=profile,
+                market="US", source_lane="US Remote",
+            )
+        ).to_jobs_candidate(source("ashby-ref", "Ashby", "abcdef12", ashby, jd, "authoritative_provider_api"))
+        self.assertEqual(ashby_candidate.job.apply_url, direct_ashby.job.apply_url)
+        self.assertEqual(
+            stable_job_key(ashby_candidate.job),
+            stable_job_key(direct_ashby.job),
+        )
+        self.assertEqual(lensa_candidate.job.provider_job_id, "lensa-1")
+        self.assertNotEqual(lensa_candidate.job.provider_job_id, direct_greenhouse.job.provider_job_id)
+
+        repo = InMemoryCareerRepository()
+        for index, (discovery, direct) in enumerate(((lensa_candidate, direct_greenhouse), (ashby_candidate, direct_ashby)), start=1):
+            first = ingest([discovery], lane=LANE, lane_priority={"US Remote": 0}, repository=repo, run_date=date(2026, 1, 15))
+            second = ingest([direct], lane=LANE, lane_priority={"US Remote": 0}, repository=repo, run_date=date(2026, 1, 16))
+            replay = ingest([direct], lane=LANE, lane_priority={"US Remote": 0}, repository=repo, run_date=date(2026, 1, 17))
+            self.assertIn(first[0].disposition, (Disposition.CREATED, Disposition.EXCLUDED))
+            self.assertIn(second[0].disposition, (Disposition.UPDATED, Disposition.EXCLUDED))
+            self.assertIn(replay[0].disposition, (Disposition.UPDATED, Disposition.EXCLUDED))
+            self.assertEqual(first[0].stable_job_key, second[0].stable_job_key)
+            self.assertEqual(second[0].stable_job_key, replay[0].stable_job_key)
+            self.assertEqual(len(repo._store), index)
+        self.assertEqual(len(repo._store), 2)
+        self.assertEqual(repo.last_persistence_accounting["authoritative_read_back_verified"], 1)
+
+        conflict = observation(company="Acme", url="https://boards.greenhouse.io/acme/jobs/999999", provider="Lensa", provider_id="lensa-1")
+        with self.assertRaises(IdentityCollision):
+            resolve_existing_identity(
+                derive_identity_evidence(conflict),
+                records_by_stable_key={
+                    "Acme::lensa-1": SimpleNamespace(job=SimpleNamespace(stable_job_key="row-a")),
+                    "url:https://boards.greenhouse.io/acme/jobs/999999": SimpleNamespace(job=SimpleNamespace(stable_job_key="row-b")),
+                    "acme|technical program manager|united states": SimpleNamespace(job=SimpleNamespace(stable_job_key="row-c")),
+                    "Acme::lensa-2": SimpleNamespace(job=SimpleNamespace(stable_job_key="row-d")),
+                },
+                records_by_apply_url={},
+            )
+
     def test_two_providers_converge_and_merge_aliases_in_one_canonical_row(self):
         repo = InMemoryCareerRepository()
         results = ingest(
