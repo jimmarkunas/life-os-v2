@@ -13,6 +13,7 @@ on:
         type: choice
         options:
           - us-remote
+          - us-remote-greenhouse
           - us-remote-recovery
           - scale-up
       window_hours:
@@ -100,11 +101,18 @@ jobs:
           test -n "$slot"
           test -n "$nonce"
           dry_run="false"
+          greenhouse_only="false"
           case "$module" in
             us-remote)
               default_window="24"
               web_lookback_hours="24"
               full_web_sweep="false"
+              ;;
+            us-remote-greenhouse)
+              default_window="24"
+              web_lookback_hours="24"
+              full_web_sweep="false"
+              greenhouse_only="true"
               ;;
             us-remote-recovery)
               default_window="1440"
@@ -148,6 +156,7 @@ jobs:
           echo "web_lookback_hours=$web_lookback_hours" >> "$GITHUB_OUTPUT"
           echo "full_web_sweep=$full_web_sweep" >> "$GITHUB_OUTPUT"
           echo "dry_run=$dry_run" >> "$GITHUB_OUTPUT"
+          echo "greenhouse_only=$greenhouse_only" >> "$GITHUB_OUTPUT"
           echo "historical_inbox_recovery_hours=$historical_inbox_recovery_hours" >> "$GITHUB_OUTPUT"
           echo "nonce=$nonce" >> "$GITHUB_OUTPUT"
 
@@ -165,6 +174,9 @@ jobs:
           fi
           if [ "${{ steps.trigger.outputs.dry_run }}" = "true" ]; then
             extra+=(--dry-run)
+          fi
+          if [ "${{ steps.trigger.outputs.greenhouse_only }}" = "true" ]; then
+            extra+=(--greenhouse-only)
           fi
           if [ -n "${{ steps.trigger.outputs.historical_inbox_recovery_hours }}" ]; then
             extra+=(--historical-inbox-recovery-hours "${{ steps.trigger.outputs.historical_inbox_recovery_hours }}")
