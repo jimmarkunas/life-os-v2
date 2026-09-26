@@ -402,16 +402,32 @@ class USRemoteAcquirer:
             location = " | ".join(part for part in locations if part)
             if _plausible(role, location):
                 compensation = json.dumps(job.get("compensation"), sort_keys=True) if job.get("compensation") else None
+                apply_url = str(job.get("jobUrl") or job.get("applyUrl") or "").strip() or None
+                description = str(
+                    job.get("descriptionPlain")
+                    or job.get("descriptionText")
+                    or job.get("descriptionHtml")
+                    or ""
+                ).strip() or None
+                authoritative = (
+                    "authoritative_provider_api"
+                    if apply_url
+                    and apply_url.startswith(("https://", "http://"))
+                    and description
+                    and len(description) >= 80
+                    else None
+                )
                 out.append(
                     _observation(
                         source_id=source["id"],
                         company=source["company"],
                         role=role,
-                        url=job.get("jobUrl") or job.get("applyUrl"),
+                        url=apply_url,
                         location=location,
                         compensation=compensation,
                         provider_job_id=str(job.get("id") or job.get("jobId") or "") or None,
-                        description=str(job.get("descriptionPlain") or job.get("descriptionText") or job.get("descriptionHtml") or "") or None,
+                        description=description,
+                        evidence_authority=authoritative,
                         received_at=now,
                     )
                 )
